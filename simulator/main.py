@@ -1,11 +1,11 @@
 import time
 
 from devices import ColdRoom, RefrigeratedShowcase, DeviceStatus
-from sensors import TemperatureSensor
+from sensors import TemperatureSensor, HumiditySensor
 
 
 def main() -> None:
-    """Creates sample devices with temperature sensors and takes measurements."""
+    """Creates sample devices with temperature and humidity sensors."""
 
     # --- Devices ---
     cava_principal = ColdRoom(
@@ -35,9 +35,16 @@ def main() -> None:
     temp_sensor_2 = TemperatureSensor(device=cava_secundaria, min_temperature=0.0, max_temperature=4.0)
     temp_sensor_3 = TemperatureSensor(device=vitrina, min_temperature=3.0, max_temperature=8.0)
 
+    hum_sensor_1 = HumiditySensor(device=cava_principal)
+    hum_sensor_2 = HumiditySensor(device=cava_secundaria)
+    hum_sensor_3 = HumiditySensor(device=vitrina)
+
     cava_principal.add_sensor(temp_sensor_1)
+    cava_principal.add_sensor(hum_sensor_1)
     cava_secundaria.add_sensor(temp_sensor_2)
+    cava_secundaria.add_sensor(hum_sensor_2)
     vitrina.add_sensor(temp_sensor_3)
+    vitrina.add_sensor(hum_sensor_3)
 
     devices = [cava_principal, cava_secundaria, vitrina]
 
@@ -54,12 +61,23 @@ def main() -> None:
 
             for sensor in device.get_sensors():
                 measurement = sensor.read()
-                print(f"  Temperatura:")
-                print(f"  {measurement.value} {measurement.unit}")
+
+                if hasattr(sensor, "min_temperature"):
+                    label = "Temperatura"
+                    unit_label = measurement.unit
+                    state = sensor.current_temperature
+                elif hasattr(sensor, "min_humidity"):
+                    label = "Humedad"
+                    unit_label = measurement.unit
+                    state = sensor.current_humidity
+                else:
+                    continue
+
+                print(f"  {label}:")
+                print(f"  {measurement.value} {unit_label}")
                 print(f"  Hora:")
                 print(f"  {measurement.timestamp.strftime('%H:%M:%S')}")
-                if hasattr(sensor, "current_temperature"):
-                    print(f"  (estado interno: {sensor.current_temperature} {measurement.unit})")
+                print(f"  (estado interno: {state} {unit_label})")
 
             print(f"  {'-' * 30}")
 
