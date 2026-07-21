@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from .device_type import DeviceType, DeviceStatus
+
+if TYPE_CHECKING:
+    from sensors.base_sensor import BaseSensor
 
 
 @dataclass
@@ -19,7 +22,7 @@ class Device:
     status: DeviceStatus = DeviceStatus.ACTIVE
     registration_date: datetime = field(default_factory=datetime.now)
 
-    sensors: list["Sensor"] = field(default_factory=list)
+    sensors: list[BaseSensor] = field(default_factory=list)
 
     def __str__(self) -> str:
         return (
@@ -33,15 +36,15 @@ class Device:
         """Returns a one-line summary of the device."""
         return f"{self.code} - {self.name} ({self.status.value})"
 
-    def add_sensor(self, sensor: "Sensor") -> None:
+    def add_sensor(self, sensor: BaseSensor) -> None:
         """Associates a sensor with this device."""
         self.sensors.append(sensor)
 
-    def remove_sensor(self, sensor: "Sensor") -> None:
+    def remove_sensor(self, sensor: BaseSensor) -> None:
         """Removes a sensor from this device, if present."""
         if sensor in self.sensors:
             self.sensors.remove(sensor)
 
-    def get_sensors(self) -> list["Sensor"]:
+    def get_sensors(self) -> list[BaseSensor]:
         """Returns all sensors currently associated with this device."""
         return list(self.sensors)
