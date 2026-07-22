@@ -1,7 +1,7 @@
 import time
 
 from devices import ColdRoom, RefrigeratedShowcase, DeviceStatus
-from sensors import TemperatureSensor, HumiditySensor
+from sensors import TemperatureSensor, HumiditySensor, EnergyStatusSensor, EnergyState
 
 
 def main() -> None:
@@ -39,12 +39,19 @@ def main() -> None:
     hum_sensor_2 = HumiditySensor(device=cava_secundaria)
     hum_sensor_3 = HumiditySensor(device=vitrina)
 
+    energy_sensor_1 = EnergyStatusSensor(device=cava_principal)
+    energy_sensor_2 = EnergyStatusSensor(device=cava_secundaria, initial_state=EnergyState.POWERED)
+    energy_sensor_3 = EnergyStatusSensor(device=vitrina)
+
     cava_principal.add_sensor(temp_sensor_1)
     cava_principal.add_sensor(hum_sensor_1)
+    cava_principal.add_sensor(energy_sensor_1)
     cava_secundaria.add_sensor(temp_sensor_2)
     cava_secundaria.add_sensor(hum_sensor_2)
+    cava_secundaria.add_sensor(energy_sensor_2)
     vitrina.add_sensor(temp_sensor_3)
     vitrina.add_sensor(hum_sensor_3)
+    vitrina.add_sensor(energy_sensor_3)
 
     devices = [cava_principal, cava_secundaria, vitrina]
 
@@ -70,6 +77,10 @@ def main() -> None:
                     label = "Humedad"
                     unit_label = measurement.unit
                     state = sensor.current_humidity
+                elif hasattr(sensor, "current_state"):
+                    label = "Estado energético"
+                    unit_label = measurement.unit
+                    state = sensor.current_state.value
                 else:
                     continue
 
