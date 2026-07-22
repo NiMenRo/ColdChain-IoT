@@ -51,6 +51,35 @@ class TemperatureSensor(BaseSensor):
             random.uniform(min_temperature, max_temperature), 1
         )
 
+    def apply_behavior_override(self, overrides: dict[str, Any]) -> None:
+        """Temporarily shifts the temperature operating window for a scenario."""
+        if not self._normal_behavior:
+            self._normal_behavior = {
+                "min_temperature": self.min_temperature,
+                "max_temperature": self.max_temperature,
+                "current_temperature": self.current_temperature,
+            }
+
+        if "temperature_range" in overrides:
+            min_temp, max_temp = overrides["temperature_range"]
+            self.min_temperature = min_temp
+            self.max_temperature = max_temp
+            self.current_temperature = round(
+                max(min_temp, min(self.current_temperature, max_temp)),
+                1,
+            )
+
+    def restore_behavior(self) -> None:
+        """Restores the sensor to its default temperature operating bounds."""
+        if self._normal_behavior:
+            self.min_temperature = self._normal_behavior.get("min_temperature", self.min_temperature)
+            self.max_temperature = self._normal_behavior.get("max_temperature", self.max_temperature)
+            self.current_temperature = round(
+                self._normal_behavior.get("current_temperature", self.current_temperature),
+                1,
+            )
+        self._normal_behavior = {}
+
     def read(self) -> TemperatureMeasurement:
         """Advances *current_temperature* by a small random step and returns it."""
 
