@@ -20,11 +20,20 @@ class BaseSensor(ABC):
         self.sampling_interval_seconds = sampling_interval_seconds
         self.status = status
         self._last_measurement: Any = None
+        self._normal_behavior: dict[str, Any] = {}
 
     @abstractmethod
     def read(self) -> Any:
         """Generates and returns a new measurement."""
         ...
+
+    def apply_behavior_override(self, overrides: dict[str, Any]) -> None:
+        """Stores current behavior and applies temporary scenario-driven overrides."""
+        self._normal_behavior = dict(self._normal_behavior or {})
+
+    def restore_behavior(self) -> None:
+        """Reverts the sensor back to its standard operating behavior."""
+        self._normal_behavior = {}
 
     @property
     def last_measurement(self) -> Any:

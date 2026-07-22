@@ -1,6 +1,7 @@
 import time
 
 from devices import ColdRoom, RefrigeratedShowcase, DeviceStatus
+from scenarios import CriticalScenario, CriticalScenarioManager
 from sensors import TemperatureSensor, HumiditySensor, EnergyStatusSensor, EnergyState
 
 
@@ -55,11 +56,25 @@ def main() -> None:
 
     devices = [cava_principal, cava_secundaria, vitrina]
 
+    critical_manager = CriticalScenarioManager()
+    critical_scenario = CriticalScenario(
+        id="SCENARIO-HEAT-001",
+        name="Pérdida de control térmica",
+        devices=[vitrina],
+        temperature_range=(9.0, 12.0),
+        humidity_range=(95.0, 100.0),
+        energy_state=EnergyState.OFF,
+        duration_seconds=2.0,
+    )
+    critical_manager.activate(critical_scenario)
+
     # --- Measurements ---
     print("=" * 60)
 
     for cycle in range(1, 4):
         print(f"\n  --- Ciclo {cycle} ---")
+
+        critical_manager.update()
 
         for device in devices:
             print()

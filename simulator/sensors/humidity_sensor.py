@@ -51,6 +51,35 @@ class HumiditySensor(BaseSensor):
             random.uniform(min_humidity, max_humidity), 1
         )
 
+    def apply_behavior_override(self, overrides: dict[str, Any]) -> None:
+        """Temporarily shifts the humidity operating window for a scenario."""
+        if not self._normal_behavior:
+            self._normal_behavior = {
+                "min_humidity": self.min_humidity,
+                "max_humidity": self.max_humidity,
+                "current_humidity": self.current_humidity,
+            }
+
+        if "humidity_range" in overrides:
+            min_humidity, max_humidity = overrides["humidity_range"]
+            self.min_humidity = min_humidity
+            self.max_humidity = max_humidity
+            self.current_humidity = round(
+                max(min_humidity, min(self.current_humidity, max_humidity)),
+                1,
+            )
+
+    def restore_behavior(self) -> None:
+        """Restores the sensor to its default humidity operating bounds."""
+        if self._normal_behavior:
+            self.min_humidity = self._normal_behavior.get("min_humidity", self.min_humidity)
+            self.max_humidity = self._normal_behavior.get("max_humidity", self.max_humidity)
+            self.current_humidity = round(
+                self._normal_behavior.get("current_humidity", self.current_humidity),
+                1,
+            )
+        self._normal_behavior = {}
+
     def read(self) -> HumidityMeasurement:
         """Advances *current_humidity* by a small random step and returns it."""
 
