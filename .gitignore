@@ -5,3 +5,9 @@ graphify-out/
 __pycache__/
 *.pyc
 *.pyo
+
+# MQTT broker runtime data
+docker/mqtt/data/*
+docker/mqtt/log/*
+!docker/mqtt/data/.gitkeep
+!docker/mqtt/log/.gitkeep
