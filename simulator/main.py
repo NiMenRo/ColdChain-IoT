@@ -1,12 +1,25 @@
+import logging
 import time
 
+from config import SimulatorConfig
 from devices import ColdRoom, RefrigeratedShowcase, DeviceStatus
+from mqtt import MQTTClient, DevicePublisher
 from scenarios import CriticalScenario, CriticalScenarioManager
 from sensors import TemperatureSensor, HumiditySensor, EnergyStatusSensor, EnergyState
 
 
 def main() -> None:
-    """Creates sample devices with temperature and humidity sensors."""
+    config = SimulatorConfig()
+
+    logging.basicConfig(
+        level=getattr(logging, config.log_level),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    mqtt_client = MQTTClient(config.mqtt_host, config.mqtt_port)
+    mqtt_client.start()
+
+    device_publisher = DevicePublisher(mqtt_client, config.topic_prefix, config.mqtt_qos)
 
     # --- Devices ---
     cava_principal = ColdRoom(
@@ -71,45 +84,51 @@ def main() -> None:
     # --- Measurements ---
     print("=" * 60)
 
-    for cycle in range(1, 4):
-        print(f"\n  --- Ciclo {cycle} ---")
+    try:
+        for cycle in range(1, 4):
+            print(f"\n  --- Ciclo {cycle} ---")
 
-        critical_manager.update()
+            critical_manager.update()
 
-        for device in devices:
-            print()
-            print(f"  {device.code}")
-            print(f"  {'-' * 30}")
+            for device in devices:
+                print()
+                print(f"  {device.code}")
+                print(f"  {'-' * 30}")
 
-            for sensor in device.get_sensors():
-                measurement = sensor.read()
+                timestamp = None
+                for sensor in device.get_sensors():
+                    measurement = sensor.read()
 
-                if hasattr(sensor, "min_temperature"):
-                    label = "Temperatura"
-                    unit_label = measurement.unit
-                    state = sensor.current_temperature
-                elif hasattr(sensor, "min_humidity"):
-                    label = "Humedad"
-                    unit_label = measurement.unit
-                    state = sensor.current_humidity
-                elif hasattr(sensor, "current_state"):
-                    label = "Estado energético"
-                    unit_label = measurement.unit
-                    state = sensor.current_state.value
-                else:
-                    continue
+                    if timestamp is None:
+                        timestamp = measurement.timestamp
 
-                print(f"  {label}:")
-                print(f"  {measurement.value} {unit_label}")
-                print(f"  Hora:")
-                print(f"  {measurement.timestamp.strftime('%H:%M:%S')}")
-                print(f"  (estado interno: {state} {unit_label})")
+                    if hasattr(sensor, "min_temperature"):
+                        label = "Temperatura"
+                        state = sensor.current_temperature
+                    elif hasattr(sensor, "min_humidity"):
+                        label = "Humedad"
+                        state = sensor.current_humidity
+                    elif hasattr(sensor, "current_state"):
+                        label = "Estado energético"
+                        state = sensor.current_state.value
+                    else:
+                        continue
 
-            print(f"  {'-' * 30}")
+                    print(f"  {label}:")
+                    print(f"  {measurement.value} {measurement.unit}")
+                    print(f"  Hora:")
+                    print(f"  {measurement.timestamp.strftime('%H:%M:%S')}")
+                    print(f"  (estado interno: {state} {measurement.unit})")
 
-        time.sleep(1)
+                device_publisher.publish_telemetry(device)
 
-    print("=" * 60)
+                print(f"  {'-' * 30}")
+
+            time.sleep(config.sampling_interval)
+
+        print("=" * 60)
+    finally:
+        mqtt_client.stop()
 
 
 if __name__ == "__main__":
