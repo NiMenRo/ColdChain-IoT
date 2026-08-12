@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from datetime import datetime
 from typing import Any, Optional
@@ -13,7 +15,8 @@ class MQTTMessageValidator:
     """Validates inbound MQTT payloads before they reach the backend pipeline."""
 
     REQUIRED_FIELDS = ("device_code", "device_type", "timestamp")
-    OPTIONAL_READING_FIELDS = ("temperature", "humidity", "energy")
+    NUMERIC_READING_FIELDS = ("temperature", "humidity")
+    ENERGY_VALID_STATES = ("on", "off")
 
     def __init__(self) -> None:
         self._invalid_messages: list[dict[str, Any]] = []
@@ -43,9 +46,17 @@ class MQTTMessageValidator:
                 "Payload must contain at least one telemetry reading field"
             )
 
-        for field in self.OPTIONAL_READING_FIELDS:
+        for field in self.NUMERIC_READING_FIELDS:
             if field in payload and (not isinstance(payload[field], (int, float)) or isinstance(payload[field], bool)):
                 raise MessageValidationError(f"Field '{field}' must be numeric")
+
+        if "energy" in payload:
+            energy_val = payload["energy"]
+            if isinstance(energy_val, str):
+                if energy_val.lower() not in self.ENERGY_VALID_STATES:
+                    raise MessageValidationError("Field 'energy' must be 'on' or 'off'")
+            elif not isinstance(energy_val, (int, float)) or isinstance(energy_val, bool):
+                raise MessageValidationError("Field 'energy' must be numeric or 'on'/'off'")
 
         return payload
 
@@ -63,4 +74,4 @@ class MQTTMessageValidator:
 
     @classmethod
     def _has_reading(cls, payload: dict[str, Any]) -> bool:
-        return any(field in payload for field in cls.OPTIONAL_READING_FIELDS)
+        return any(field in payload for field in cls.NUMERIC_READING_FIELDS + ("energy",))
