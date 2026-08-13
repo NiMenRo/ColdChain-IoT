@@ -18,7 +18,6 @@ class TrafficClassificationTests(unittest.TestCase):
             "criticality": 5.0,
             "priority": "medium",
             "queue": "FIFO",
-            "dscp": 0,
             "classification_time": datetime(2026, 8, 12, 10, 0, 0),
             "timestamp": datetime(2026, 8, 12, 9, 59, 30),
         }
@@ -30,7 +29,6 @@ class TrafficClassificationTests(unittest.TestCase):
         self.assertEqual(tc.criticality, 5.0)
         self.assertEqual(tc.priority, "medium")
         self.assertEqual(tc.queue, "FIFO")
-        self.assertEqual(tc.dscp, 0)
         self.assertIsInstance(tc.classification_time, datetime)
         self.assertIsInstance(tc.timestamp, datetime)
 
@@ -88,18 +86,6 @@ class TrafficClassificationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             TrafficClassification(**kwargs)
 
-    def test_rejects_non_integer_dscp(self):
-        kwargs = self._make_valid_kwargs()
-        kwargs["dscp"] = 46.5
-        with self.assertRaises(TypeError):
-            TrafficClassification(**kwargs)
-
-    def test_rejects_boolean_dscp(self):
-        kwargs = self._make_valid_kwargs()
-        kwargs["dscp"] = True
-        with self.assertRaises(TypeError):
-            TrafficClassification(**kwargs)
-
     def test_rejects_non_datetime_classification_time(self):
         kwargs = self._make_valid_kwargs()
         kwargs["classification_time"] = "2026-08-12T10:00:00"
@@ -117,13 +103,6 @@ class TrafficClassificationTests(unittest.TestCase):
         kwargs["criticality"] = 7
         tc = TrafficClassification(**kwargs)
         self.assertEqual(tc.criticality, 7)
-
-    def test_accepts_negative_dscp(self):
-        kwargs = self._make_valid_kwargs()
-        kwargs["dscp"] = -1
-        tc = TrafficClassification(**kwargs)
-        self.assertEqual(tc.dscp, -1)
-
 
 if __name__ == "__main__":
     unittest.main()

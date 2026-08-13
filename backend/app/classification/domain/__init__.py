@@ -11,8 +11,8 @@ class TrafficClassification:
 
     This entity stores the output of the classification process applied to a
     ``SensorReading``.  At this stage it is a plain data container — the
-    business rules that populate ``criticality``, ``priority``, ``queue`` and
-    ``dscp`` will be implemented in a future task.
+    business rules that populate ``criticality``, ``priority`` and ``queue``
+    will be implemented in a future task.
     """
 
     id: UUID
@@ -20,7 +20,6 @@ class TrafficClassification:
     criticality: float
     priority: str
     queue: str
-    dscp: int
     classification_time: datetime
     timestamp: datetime
 
@@ -30,7 +29,6 @@ class TrafficClassification:
         self._validate_criticality()
         self._validate_priority()
         self._validate_queue()
-        self._validate_dscp()
         self._validate_classification_time()
         self._validate_timestamp()
 
@@ -55,10 +53,6 @@ class TrafficClassification:
     def _validate_queue(self) -> None:
         if not isinstance(self.queue, str) or not self.queue.strip():
             raise ValueError("'queue' must be a non-empty string")
-
-    def _validate_dscp(self) -> None:
-        if isinstance(self.dscp, bool) or not isinstance(self.dscp, int):
-            raise TypeError("'dscp' must be an integer")
 
     def _validate_classification_time(self) -> None:
         if not isinstance(self.classification_time, datetime):
