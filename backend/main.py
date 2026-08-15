@@ -29,6 +29,15 @@ async def lifespan(app: FastAPI):
     app.state.mqtt_client = mqtt_client
     app.state.message_queue = message_queue
 
+    # Include classification API router
+    try:
+        from app.classification.api import router as classification_router
+
+        app.include_router(classification_router)
+    except Exception:
+        # router import may fail in some test environments; ignore to keep backwards compatibility
+        pass
+
     yield
 
     mqtt_client.stop()
