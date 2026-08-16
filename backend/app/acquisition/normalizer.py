@@ -26,6 +26,22 @@ class TelemetryNormalizer:
         "energy": "energy",
     }
 
+    ENERGY_STATE_MAP = {
+        "on": 1.0,
+        "off": 0.0,
+    }
+
+    @classmethod
+    def _normalize_value(cls, field_name: str, value: Any) -> float:
+        if field_name == "energy":
+            if isinstance(value, str):
+                return float(cls.ENERGY_STATE_MAP.get(value.strip().lower(), 0.0))
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return float(value)
+            raise ValueError("Energy value must be numeric or 'on'/'off'")
+
+        return float(value)
+
     def normalize(self, message: dict[str, Any]) -> list[NormalizedReading]:
         payload = message.get("payload", {})
         device_origin = message.get("device_origin", {})
@@ -50,7 +66,7 @@ class TelemetryNormalizer:
                         device_code=device_code,
                         device_type=device_type,
                         sensor_name=sensor_name,
-                        value=float(value),
+                        value=self._normalize_value(field_name, value),
                         timestamp=timestamp,
                         raw_value=value,
                     )

@@ -33,6 +33,28 @@ class TelemetryNormalizerTests(unittest.TestCase):
         self.assertEqual(normalized[0].timestamp, "2026-08-04T10:00:00")
         self.assertEqual(normalized[1].sensor_name, "humidity")
 
+    def test_normalizes_energy_state_strings_to_numeric_values(self):
+        normalizer = TelemetryNormalizer()
+        message = {
+            "payload": {
+                "device_code": "CAVA-001",
+                "device_type": "cold_room",
+                "timestamp": "2026-08-04T10:00:00",
+                "energy": "off",
+            },
+            "device_origin": {
+                "device_code": "CAVA-001",
+                "device_type": "cold_room",
+            },
+        }
+
+        normalized = normalizer.normalize(message)
+
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0].sensor_name, "energy")
+        self.assertEqual(normalized[0].value, 0.0)
+        self.assertEqual(normalized[0].raw_value, "off")
+
     def test_rejects_messages_without_readable_fields(self):
         normalizer = TelemetryNormalizer()
         message = {
