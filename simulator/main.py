@@ -95,12 +95,10 @@ def main() -> None:
                 print(f"  {device.code}")
                 print(f"  {'-' * 30}")
 
-                timestamp = None
+                measurements = {}
                 for sensor in device.get_sensors():
                     measurement = sensor.read()
-
-                    if timestamp is None:
-                        timestamp = measurement.timestamp
+                    measurements[sensor] = measurement
 
                     if hasattr(sensor, "min_temperature"):
                         label = "Temperatura"
@@ -120,7 +118,7 @@ def main() -> None:
                     print(f"  {measurement.timestamp.strftime('%H:%M:%S')}")
                     print(f"  (estado interno: {state} {measurement.unit})")
 
-                device_publisher.publish_telemetry(device)
+                device_publisher.publish_telemetry(device, measurements)
 
                 print(f"  {'-' * 30}")
 

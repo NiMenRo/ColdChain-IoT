@@ -99,6 +99,8 @@ def get_classification_results():
                 "timestamp": classification.timestamp.isoformat(timespec="seconds"),
                 "device_code": entry.get("device_code"),
                 "sensor_name": getattr(reading, "sensor_name", None),
+                "value": getattr(reading, "value", None),
+                "raw_value": getattr(reading, "raw_value", None),
                 "received_at": entry.get("received_at"),
                 "topic": entry.get("topic"),
             }
