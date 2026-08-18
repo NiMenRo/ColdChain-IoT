@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 
 import paho.mqtt.client as mqtt
 
@@ -8,10 +9,11 @@ logger = logging.getLogger(__name__)
 
 class MQTTClient:
 
-    def __init__(self, host: str, port: int, client_id: str = "coldchain-simulator"):
+    def __init__(self, host: str, port: int, client_id: str | None = None):
         self._host = host
         self._port = port
-        self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
+        effective_client_id = client_id or f"coldchain-simulator-{uuid.uuid4().hex[:8]}"
+        self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=effective_client_id)
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
 
