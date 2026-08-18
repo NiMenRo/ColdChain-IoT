@@ -8,18 +8,6 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-def _safe_int(value: Optional[int], default: int = 2) -> int:
-    try:
-        if value is None:
-            return default
-        v = int(value)
-        if v < 1 or v > 3:
-            return default
-        return v
-    except Exception:
-        return default
-
-
 def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
     """Background worker that consumes messages, normalizes them and sends to classifier.
 
@@ -35,11 +23,13 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
     )
     from app.classification.application.criticality_calculator import CriticalityCalculator
     from app.classification.application.priority_assigner import PriorityAssigner
+    from app.classification.application.risk_matrix_evaluator import RiskMatrixEvaluator
 
     normalizer = TelemetryNormalizer()
     calculator = CriticalityCalculator()
     assigner = PriorityAssigner()
     service = ClassificationService(calculator=calculator, assigner=assigner)
+    risk_evaluator = RiskMatrixEvaluator()
 
     # ensure classifications list exists
     if not hasattr(app_state, "classifications"):
@@ -58,15 +48,19 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                 logger.exception("Failed to normalize message: %s", exc)
                 continue
 
-            # allow optional impact/urgency/risk in payload, otherwise default to 2
-            payload = message.get("payload", {})
-            impact = _safe_int(payload.get("impact"), 2)
-            urgency = _safe_int(payload.get("urgency"), 2)
-            risk = _safe_int(payload.get("risk"), 2)
-
+            # Derive I/U/R from each reading using the risk matrix. The
+            # evaluator is the source of truth; payload impact/urgency/risk
+            # fields are intentionally ignored to keep classifications
+            # consistent with the real sensor conditions.
             for reading in readings:
                 try:
-                    classification = service.classify(reading=reading, impact=impact, urgency=urgency, risk=risk)
+                    criteria = risk_evaluator.evaluate(reading)
+                    classification = service.classify(
+                        reading=reading,
+                        impact=criteria.impact,
+                        urgency=criteria.urgency,
+                        risk=criteria.risk,
+                    )
                 except Exception as exc:
                     logger.exception("Classification failed for reading %s: %s", reading, exc)
                     continue

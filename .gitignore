@@ -6,6 +6,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Demos locales (no subir al repositorio)
+backend/demo_schedulers.py
+
 # MQTT broker runtime data
 docker/mqtt/data/*
 docker/mqtt/log/*
