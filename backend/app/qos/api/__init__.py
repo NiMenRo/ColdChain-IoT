@@ -13,6 +13,8 @@ from app.qos.application.traffic_planning_service import TrafficPlanningService
 
 router = APIRouter(prefix="/qos", tags=["qos"])
 
+__all__ = ["router"]
+
 
 class TrafficClassificationRequest(BaseModel):
     id: str
