@@ -6,6 +6,8 @@ from fastapi import FastAPI
 from app.config import BackendConfig
 from app.acquisition import MessageQueue
 from app.acquisition.infrastructure import MQTTClient, MQTTSubscriber
+from app.qos.application.qos_metrics_service import QoSMetricsService
+from app.qos.application.traffic_planning_service import TrafficPlanningService
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,9 @@ async def lifespan(app: FastAPI):
     app.state.message_queue = message_queue
     # Prepare a place to store classification results produced by the integration pipeline
     app.state.classifications = []
+    app.state.qos_service = TrafficPlanningService()
+    app.state.qos_metrics_service = QoSMetricsService()
+    app.state.qos_records = []
 
     # Start acquisition -> classification pipeline worker
     try:
@@ -42,7 +47,7 @@ async def lifespan(app: FastAPI):
         # Avoid raising to keep test environments lightweight.
         logger.exception("Failed to start acquisition pipeline")
 
-    # Include classification API router
+    # Include API routers
     try:
         from app.classification.api import router as classification_router
 
@@ -50,6 +55,13 @@ async def lifespan(app: FastAPI):
     except Exception:
         # router import may fail in some test environments; ignore to keep backwards compatibility
         pass
+
+    try:
+        from app.qos.api import router as qos_router
+
+        app.include_router(qos_router)
+    except Exception:
+        logger.exception("Failed to register QoS API router")
 
     yield
 

@@ -1,4 +1,5 @@
 from .application.fifo_scheduler import FIFOScheduler
+from .application.qos_metrics_service import QoSMetricsService, QoSMetricService
 from .application.round_robin_scheduler import RoundRobinScheduler
 from .application.scheduler import Scheduler
 from .application.traffic_planning_service import TrafficPlanningService
@@ -8,6 +9,8 @@ from .domain import QoSMetric
 
 __all__ = [
     "QoSMetric",
+    "QoSMetricsService",
+    "QoSMetricService",
     "TrafficQueueOrganizer",
     "TrafficPlanningService",
     "Scheduler",
