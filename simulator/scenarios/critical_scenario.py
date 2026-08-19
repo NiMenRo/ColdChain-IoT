@@ -5,11 +5,11 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 try:
-    from devices import Device
-    from sensors import EnergyState, EnergyStatusSensor, HumiditySensor, TemperatureSensor
-except ModuleNotFoundError:  # pragma: no cover - fallback for package-style imports
     from simulator.devices import Device
     from simulator.sensors import EnergyState, EnergyStatusSensor, HumiditySensor, TemperatureSensor
+except ModuleNotFoundError:  # pragma: no cover - script-style execution from simulator/
+    from devices import Device
+    from sensors import EnergyState, EnergyStatusSensor, HumiditySensor, TemperatureSensor
 
 
 @dataclass

@@ -13,8 +13,6 @@ from app.qos.application.traffic_planning_service import TrafficPlanningService
 
 router = APIRouter(prefix="/qos", tags=["qos"])
 
-__all__ = ["router"]
-
 
 class TrafficClassificationRequest(BaseModel):
     id: str
@@ -91,7 +89,7 @@ def plan_classification(request: TrafficClassificationRequest, request_obj: Requ
             classification_time=datetime.fromisoformat(request.classification_time),
             timestamp=datetime.fromisoformat(request.timestamp),
         )
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover - validation guard for malformed payloads
         raise HTTPException(status_code=400, detail=f"Invalid TrafficClassification payload: {exc}") from exc
 
     service: TrafficPlanningService = getattr(request_obj.app.state, "qos_service", TrafficPlanningService())

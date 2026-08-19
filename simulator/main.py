@@ -1,11 +1,24 @@
 import logging
+import os
+import sys
 import time
 
-from config import SimulatorConfig
-from devices import ColdRoom, RefrigeratedShowcase, DeviceStatus
-from mqtt import MQTTClient, DevicePublisher
-from scenarios import CriticalScenario, CriticalScenarioManager
-from sensors import TemperatureSensor, HumiditySensor, EnergyStatusSensor, EnergyState
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+if __package__ in (None, ""):
+    from config import SimulatorConfig
+    from devices import ColdRoom, RefrigeratedShowcase, DeviceStatus
+    from mqtt import MQTTClient, DevicePublisher
+    from scenarios import CriticalScenario, CriticalScenarioManager
+    from sensors import TemperatureSensor, HumiditySensor, EnergyStatusSensor, EnergyState
+else:  # pragma: no cover - package-style execution from repo root
+    from simulator.config import SimulatorConfig
+    from simulator.devices import ColdRoom, RefrigeratedShowcase, DeviceStatus
+    from simulator.mqtt import MQTTClient, DevicePublisher
+    from simulator.scenarios import CriticalScenario, CriticalScenarioManager
+    from simulator.sensors import TemperatureSensor, HumiditySensor, EnergyStatusSensor, EnergyState
 
 
 def main() -> None:
@@ -70,23 +83,48 @@ def main() -> None:
     devices = [cava_principal, cava_secundaria, vitrina]
 
     critical_manager = CriticalScenarioManager()
-    critical_scenario = CriticalScenario(
-        id="SCENARIO-HEAT-001",
-        name="Pérdida de control térmica",
-        devices=[vitrina],
-        temperature_range=(9.0, 12.0),
-        humidity_range=(95.0, 100.0),
-        energy_state=EnergyState.OFF,
-        duration_seconds=2.0,
-    )
-    critical_manager.activate(critical_scenario)
+    scenarios = [
+        CriticalScenario(
+            id="SCENARIO-LOW-001",
+            name="Alerta baja - frío insuficiente para carne",
+            devices=[vitrina],
+            temperature_range=(4.5, 6.0),
+            humidity_range=(78.0, 82.0),
+            energy_state=EnergyState.ON,
+            duration_seconds=2.0,
+        ),
+        CriticalScenario(
+            id="SCENARIO-MEDIUM-001",
+            name="Alerta media - pérdida parcial del frío",
+            devices=[vitrina],
+            temperature_range=(6.5, 8.0),
+            humidity_range=(72.0, 78.0),
+            energy_state=EnergyState.ON,
+            duration_seconds=2.0,
+        ),
+        CriticalScenario(
+            id="SCENARIO-HIGH-001",
+            name="Alerta alta - fallo eléctrico / descongelación",
+            devices=[vitrina],
+            temperature_range=(9.0, 12.0),
+            humidity_range=(95.0, 100.0),
+            energy_state=EnergyState.OFF,
+            duration_seconds=2.0,
+        ),
+    ]
 
     # --- Measurements ---
     print("=" * 60)
+    print("Simulación de cuarto frío para almacenamiento de carne.")
+    print("Se alternan escenarios de baja, media y alta criticidad.")
+    print("La pérdida de energía o el aumento de temperatura afectan directamente el riesgo de la carne.")
+    print("=" * 60)
 
     try:
-        for cycle in range(1, 4):
-            print(f"\n  --- Ciclo {cycle} ---")
+        for cycle_index, scenario in enumerate(scenarios, start=1):
+            critical_manager.deactivate_all()
+            critical_manager.activate(scenario)
+            print(f"\n  --- Ciclo {cycle_index}: {scenario.name} ---")
 
             critical_manager.update()
 

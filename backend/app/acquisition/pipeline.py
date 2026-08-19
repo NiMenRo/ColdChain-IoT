@@ -24,6 +24,7 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
     from app.classification.application.criticality_calculator import CriticalityCalculator
     from app.classification.application.priority_assigner import PriorityAssigner
     from app.classification.application.risk_matrix_evaluator import RiskMatrixEvaluator
+    from app.qos.application.qos_metrics_service import MessageDeliveryRecord
 
     normalizer = TelemetryNormalizer()
     calculator = CriticalityCalculator()
@@ -74,6 +75,35 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                     "topic": message.get("topic"),
                 }
                 app_state.classifications.append(entry)
+
+                try:
+                    qos_service = getattr(app_state, "qos_service", None)
+                    if qos_service is not None:
+                        qos_service.plan(classification)
+                        qos_records = getattr(app_state, "qos_records", None)
+                        if qos_records is not None:
+                            qos_records.append(
+                                MessageDeliveryRecord(
+                                    message_id=str(classification.id),
+                                    sent_at=classification.timestamp,
+                                    received_at=classification.classification_time,
+                                    size_bytes=128.0,
+                                    delivered=True,
+                                    criticality=classification.criticality,
+                                    priority=classification.priority,
+                                )
+                            )
+                        logger.info(
+                            "Queued classified reading %s into %s queue for QoS processing",
+                            classification.id,
+                            classification.queue,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Failed to enqueue classified reading %s into the QoS pipeline",
+                        classification.id,
+                    )
+
                 logger.info(
                     "Classified reading from %s:%s as %s",
                     reading.device_code,
