@@ -155,7 +155,7 @@ def get_metrics(request: Request):
     if not records:
         return {"count": 0, "summary": {"latency": 0.0, "jitter": 0.0, "throughput": 0.0, "pdr": 0.0, "packet_loss": 0.0}, "by_priority": {}}
 
-    summary = metrics_service.summarize(records)
+    summary = metrics_service.summarize(records, include_priority_summary=False)
     by_priority = metrics_service.summarize_by_priority(records)
     return {"count": len(records), "summary": summary, "by_priority": by_priority}
 
@@ -180,6 +180,6 @@ def calculate_metrics(body: list[DeliveryRecordRequest], request: Request):
     ]
     return {
         "count": len(records),
-        "summary": metrics_service.summarize(records),
+        "summary": metrics_service.summarize(records, include_priority_summary=False),
         "by_priority": metrics_service.summarize_by_priority(records),
     }

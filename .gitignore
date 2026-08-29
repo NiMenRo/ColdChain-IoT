@@ -5,9 +5,12 @@ graphify-out/
 __pycache__/
 *.pyc
 *.pyo
+.venv/
 
 # Demos locales (no subir al repositorio)
 backend/demo_schedulers.py
+coldchain.ps1
+.coldchain/
 
 # MQTT broker runtime data
 docker/mqtt/data/*
