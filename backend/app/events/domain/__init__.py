@@ -213,3 +213,112 @@ class RuleEvaluation:
             raise TypeError("'evaluated_at' must be a datetime instance")
         if self.evaluated_at.tzinfo is None:
             raise TypeError("'evaluated_at' must be timezone-aware")
+
+
+_SUPPORTED_EVENT_TYPES = (
+    "TEMPERATURE_EXCEEDED",
+    "TEMPERATURE_BELOW_MIN",
+    "HUMIDITY_ABOVE_MAX",
+    "HUMIDITY_BELOW_MIN",
+    "ENERGY_STATE_ANOMALY",
+)
+
+
+@dataclass
+class DetectedEvent:
+    """Critical condition detected from a rule evaluation breach.
+
+    Represents the fact that a monitored variable exceeded its configured
+    threshold.  It carries no severity or criticality — those concepts
+    belong to ``TrafficClassification`` and will be used downstream when
+    building ``Alert`` objects.
+    """
+
+    id: UUID
+    device_code: str
+    variable: str
+    event_type: str
+    message: str
+    observed_value: float | str
+    threshold: tuple[float, float] | frozenset[str]
+    detected_at: datetime
+
+    def __post_init__(self) -> None:
+        self._validate_id()
+        self._validate_device_code()
+        self._validate_variable()
+        self._validate_event_type()
+        self._validate_message()
+        self._validate_observed_value()
+        self._validate_threshold()
+        self._validate_detected_at()
+
+    def _validate_id(self) -> None:
+        if not isinstance(self.id, UUID):
+            raise TypeError("'id' must be a UUID instance")
+
+    def _validate_device_code(self) -> None:
+        if not isinstance(self.device_code, str):
+            raise TypeError("'device_code' must be a str instance")
+        if not self.device_code.strip():
+            raise ValueError("'device_code' must be a non-empty string")
+
+    def _validate_variable(self) -> None:
+        if self.variable not in _SUPPORTED_VARIABLES:
+            raise ValueError(
+                f"'variable' must be one of {_SUPPORTED_VARIABLES}"
+            )
+
+    def _validate_event_type(self) -> None:
+        if not isinstance(self.event_type, str):
+            raise TypeError("'event_type' must be a str instance")
+        if not self.event_type.strip():
+            raise ValueError("'event_type' must be a non-empty string")
+
+    def _validate_message(self) -> None:
+        if not isinstance(self.message, str):
+            raise TypeError("'message' must be a str instance")
+        if not self.message.strip():
+            raise ValueError("'message' must be a non-empty string")
+
+    def _validate_observed_value(self) -> None:
+        if self.variable in ("temperature", "humidity"):
+            if isinstance(self.observed_value, bool) or not isinstance(
+                self.observed_value, (int, float)
+            ):
+                raise TypeError(
+                    "'observed_value' must be numeric for temperature/humidity"
+                )
+        else:
+            if not isinstance(self.observed_value, str):
+                raise TypeError("'observed_value' must be a str for energy")
+            if not self.observed_value.strip():
+                raise ValueError(
+                    "'observed_value' must be a non-empty string for energy"
+                )
+
+    def _validate_threshold(self) -> None:
+        if self.variable in ("temperature", "humidity"):
+            if (
+                not isinstance(self.threshold, tuple)
+                or len(self.threshold) != 2
+                or any(
+                    isinstance(t, bool) or not isinstance(t, (int, float))
+                    for t in self.threshold
+                )
+            ):
+                raise TypeError(
+                    "'threshold' must be a (min, max) numeric tuple for "
+                    "temperature/humidity"
+                )
+        else:
+            if not isinstance(self.threshold, frozenset):
+                raise TypeError(
+                    "'threshold' must be a frozenset for energy"
+                )
+
+    def _validate_detected_at(self) -> None:
+        if not isinstance(self.detected_at, datetime):
+            raise TypeError("'detected_at' must be a datetime instance")
+        if self.detected_at.tzinfo is None:
+            raise TypeError("'detected_at' must be timezone-aware")
