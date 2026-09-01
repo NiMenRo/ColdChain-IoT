@@ -31,6 +31,8 @@ class QoSMetricsService:
     compared with and without prioritization.
     """
 
+    _PRIORITY_ORDER = ("low", "medium", "high")
+
     def calculate_latency(self, sent_at: datetime, received_at: datetime) -> float:
         sent_at = self._require_datetime(sent_at, "sent_at")
         received_at = self._require_datetime(received_at, "received_at")
@@ -103,7 +105,7 @@ class QoSMetricsService:
     ) -> dict[str, Any]:
         normalized = [self._normalize_record(record) for record in records]
         if not normalized:
-            return {
+            summary = {
                 "latency": 0.0,
                 "jitter": 0.0,
                 "throughput": 0.0,
@@ -111,8 +113,10 @@ class QoSMetricsService:
                 "packet_loss": 0.0,
                 "sent_count": 0,
                 "received_count": 0,
-                "priority_summary": {},
             }
+            if include_priority_summary:
+                summary["priority_summary"] = {}
+            return summary
 
         latencies = [
             self.calculate_latency(record.sent_at, record.received_at)
@@ -131,7 +135,6 @@ class QoSMetricsService:
             "packet_loss": self.calculate_packet_loss(sent_count, received_count),
             "sent_count": sent_count,
             "received_count": received_count,
-            "priority_summary": {},
         }
         if include_priority_summary:
             summary["priority_summary"] = self._summarize_by_priority(normalized, interval_seconds)
@@ -178,10 +181,19 @@ class QoSMetricsService:
         for record in normalized:
             priority = self._priority_for_record(record)
             buckets[priority].append(record)
-        return {
-            priority: self.summarize(bucket, interval_seconds)
-            for priority, bucket in buckets.items()
-        }
+
+        result: dict[str, dict[str, float | int]] = {}
+        for priority in self._PRIORITY_ORDER:
+            if priority in buckets:
+                result[priority] = self.summarize(
+                    buckets[priority], interval_seconds, include_priority_summary=False
+                )
+        for priority in buckets:
+            if priority not in result:
+                result[priority] = self.summarize(
+                    buckets[priority], interval_seconds, include_priority_summary=False
+                )
+        return result
 
     def _summarize_by_priority(
         self,
@@ -194,8 +206,10 @@ class QoSMetricsService:
             buckets[priority].append(record)
 
         metrics_by_priority: dict[str, dict[str, float | int]] = {}
-        for priority, bucket in buckets.items():
-            bucket_summary = self.summarize(bucket, interval_seconds, include_priority_summary=False)
+        for priority in self._PRIORITY_ORDER + tuple(p for p in buckets if p not in self._PRIORITY_ORDER):
+            if priority not in buckets:
+                continue
+            bucket_summary = self.summarize(buckets[priority], interval_seconds, include_priority_summary=False)
             metrics_by_priority[priority] = {
                 "latency": bucket_summary["latency"],
                 "jitter": bucket_summary["jitter"],
