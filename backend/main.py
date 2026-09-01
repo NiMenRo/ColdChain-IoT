@@ -51,6 +51,7 @@ async def lifespan(app: FastAPI):
     )
     app.state.events = []
     app.state.alerts = []
+    app.state.enriched_events = []
 
     # Start acquisition -> classification pipeline worker
     try:
