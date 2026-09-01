@@ -35,6 +35,33 @@ class DetectedEventResponse(BaseModel):
     detected_at: str
 
 
+class EnrichedEventResponse(BaseModel):
+    """Enriched event with full contextual information."""
+    alert_id: str
+    alert_type: str
+    alert_message: str
+    alert_criticality: float
+    alert_acknowledged: bool
+    alert_created_at: str
+    device_id: str
+    device_code: str
+    device_type: str
+    device_location: Optional[str]
+    classification_id: str
+    reading_id: str
+    traffic_priority: str
+    traffic_queue: str
+    classification_time: str
+    sensor_timestamp: str
+    enrichment_timestamp: str
+    qos_latency: float
+    qos_jitter: float
+    qos_throughput: float
+    qos_pdr: float
+    qos_packet_loss: float
+    user_id: str
+
+
 class EventProcessingResponse(BaseModel):
     """Full response from event processing."""
     event_count: int
@@ -168,3 +195,57 @@ def get_critical_alerts(request: Request):
 def health_check():
     """Health check endpoint for the events subsystem."""
     return {"status": "ok", "subsystem": "events"}
+
+
+@router.get("/enriched")
+def get_enriched_events(request: Request, limit: Optional[int] = None):
+    """Get all enriched events with full contextual information.
+    
+    An enriched event combines:
+    - The alert that was generated
+    - Device information (code, type, location)
+    - Traffic classification (priority, queue, criticality)
+    - QoS metrics (latency, jitter, throughput, PDR, packet loss)
+    - Complete timestamp chain for traceability
+    
+    Query Parameters:
+    - limit: Maximum number of recent enriched events to return (optional)
+    """
+    enriched_events_list = getattr(request.app.state, "enriched_events", [])
+    
+    # If limit is specified, return the last N events
+    if limit is not None and limit > 0:
+        enriched_events_list = enriched_events_list[-limit:]
+    
+    result = []
+    for enriched in enriched_events_list:
+        result.append({
+            "alert_id": str(enriched.alert_id),
+            "alert_type": enriched.alert_type,
+            "alert_message": enriched.alert_message,
+            "alert_criticality": enriched.alert_criticality,
+            "alert_acknowledged": enriched.alert_acknowledged,
+            "alert_created_at": enriched.alert_created_at.isoformat(timespec="seconds"),
+            "device_id": str(enriched.device_id),
+            "device_code": enriched.device_code,
+            "device_type": enriched.device_type,
+            "device_location": enriched.device_location,
+            "classification_id": str(enriched.classification_id),
+            "reading_id": str(enriched.reading_id),
+            "traffic_priority": enriched.traffic_priority,
+            "traffic_queue": enriched.traffic_queue,
+            "classification_time": enriched.classification_time.isoformat(timespec="seconds"),
+            "sensor_timestamp": enriched.sensor_timestamp.isoformat(timespec="seconds"),
+            "enrichment_timestamp": enriched.enrichment_timestamp.isoformat(timespec="seconds"),
+            "qos_latency": enriched.qos_latency,
+            "qos_jitter": enriched.qos_jitter,
+            "qos_throughput": enriched.qos_throughput,
+            "qos_pdr": enriched.qos_pdr,
+            "qos_packet_loss": enriched.qos_packet_loss,
+            "user_id": str(enriched.user_id),
+        })
+    
+    return {
+        "count": len(result),
+        "enriched_events": result,
+    }
