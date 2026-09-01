@@ -15,6 +15,9 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
     contains the generated TrafficClassification and a reference to the originating
     normalized reading. This is intentionally simple to keep the integration light
     and easy to extend later (persisting to DB, forwarding to QoS, etc.).
+    
+    The pipeline also processes events through the event processing service to generate
+    alerts based on threshold breaches.
     """
     from app.acquisition.normalizer import TelemetryNormalizer
 
@@ -35,6 +38,10 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
     # ensure classifications list exists
     if not hasattr(app_state, "classifications"):
         app_state.classifications = []
+    if not hasattr(app_state, "events"):
+        app_state.events = []
+    if not hasattr(app_state, "alerts"):
+        app_state.alerts = []
 
     while not stop_event.is_set():
         try:
@@ -101,6 +108,36 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                 except Exception:
                     logger.exception(
                         "Failed to enqueue classified reading %s into the QoS pipeline",
+                        classification.id,
+                    )
+
+                # Process events through the event processing service
+                try:
+                    event_service = getattr(app_state, "event_processing_service", None)
+                    if event_service is not None:
+                        # Pass all readings for this message and the classification
+                        result = event_service.process(readings, classification)
+                        
+                        # Store events and alerts
+                        events_list = getattr(app_state, "events", None)
+                        alerts_list = getattr(app_state, "alerts", None)
+                        
+                        if events_list is not None:
+                            events_list.extend(result["events"])
+                        
+                        if alerts_list is not None:
+                            alerts_list.extend(result["alerts"])
+                        
+                        if result["alert_count"] > 0:
+                            logger.warning(
+                                "Generated %d alerts for device %s (classification %s)",
+                                result["alert_count"],
+                                reading.device_code,
+                                classification.id,
+                            )
+                except Exception:
+                    logger.exception(
+                        "Failed to process events for classification %s",
                         classification.id,
                     )
 

@@ -6,6 +6,8 @@ from fastapi import FastAPI
 from app.config import BackendConfig
 from app.acquisition import MessageQueue
 from app.acquisition.infrastructure import MQTTClient, MQTTSubscriber
+from app.events.domain import ThresholdConfig
+from app.events.application.event_processing_service import EventProcessingService
 from app.qos.application.qos_metrics_service import QoSMetricsService
 from app.qos.application.traffic_planning_service import TrafficPlanningService
 
@@ -36,6 +38,20 @@ async def lifespan(app: FastAPI):
     app.state.qos_metrics_service = QoSMetricsService()
     app.state.qos_records = []
 
+    # Initialize event processing service with cold-storage thresholds
+    threshold_config = ThresholdConfig(
+        min_temperature=0.0,
+        max_temperature=4.0,
+        min_humidity=85.0,
+        max_humidity=90.0,
+        allowed_energy_states=frozenset({"on"}),
+    )
+    app.state.event_processing_service = EventProcessingService(
+        threshold_config=threshold_config
+    )
+    app.state.events = []
+    app.state.alerts = []
+
     # Start acquisition -> classification pipeline worker
     try:
         from app.acquisition.pipeline import AcquisitionPipeline
@@ -62,6 +78,13 @@ async def lifespan(app: FastAPI):
         app.include_router(qos_router)
     except Exception:
         logger.exception("Failed to register QoS API router")
+
+    try:
+        from app.events.api import router as events_router
+
+        app.include_router(events_router)
+    except Exception:
+        logger.exception("Failed to register Events API router")
 
     yield
 

@@ -1,4 +1,5 @@
 from .application.event_detector import EventDetector
+from .application.event_processing_service import EventProcessingService
 from .application.rule_engine import RuleEngine
 from .domain import (
     Alert,
@@ -13,6 +14,7 @@ __all__ = [
     "Alert",
     "DetectedEvent",
     "EventDetector",
+    "EventProcessingService",
     "RuleEngine",
     "RuleEvaluation",
     "ThresholdConfig",
