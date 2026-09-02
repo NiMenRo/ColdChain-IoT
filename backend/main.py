@@ -106,6 +106,13 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to register Events API router")
 
+    try:
+        from app.history.api.router import router as history_router
+
+        app.include_router(history_router)
+    except Exception:
+        logger.exception("Failed to register History API router")
+
     yield
 
     # Shutdown pipeline and MQTT client
