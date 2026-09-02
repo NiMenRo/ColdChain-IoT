@@ -36,7 +36,7 @@ class SensorReadingORM(Base):
     device_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("devices.id"), nullable=False)
     temperature: Mapped[float] = mapped_column(Float, nullable=False)
     humidity: Mapped[float] = mapped_column(Float, nullable=False)
-    energy: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    energy: Mapped[str] = mapped_column(String, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     device: Mapped[DeviceORM] = relationship(back_populates="sensor_readings")

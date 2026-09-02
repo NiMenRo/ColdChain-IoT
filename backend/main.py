@@ -6,6 +6,10 @@ from fastapi import FastAPI
 from app.config import BackendConfig
 from app.acquisition import MessageQueue
 from app.acquisition.infrastructure import MQTTClient, MQTTSubscriber
+try:
+    from app.database.application.persistence_service import PersistenceService
+except ImportError:
+    PersistenceService = None  # type: ignore
 from app.events.domain import ThresholdConfig
 from app.events.application.event_processing_service import EventProcessingService
 from app.qos.application.qos_metrics_service import QoSMetricsService
@@ -49,6 +53,21 @@ async def lifespan(app: FastAPI):
     app.state.event_processing_service = EventProcessingService(
         threshold_config=threshold_config
     )
+    try:
+        app.state.persistence_service = PersistenceService() if PersistenceService else None
+    except Exception:
+        logger.exception("PersistenceService no disponible")
+        app.state.persistence_service = None
+    # TSK-042A/B: seed Device + User before pipeline can persist (FKs)
+    try:
+        if app.state.persistence_service is not None:
+            from app.database.infrastructure.session import SessionLocal
+            from app.database.seed import seed_all
+
+            with SessionLocal() as db:
+                seed_all(db)
+    except Exception:
+        logger.exception("Seed devices/users failed")
     app.state.events = []
     app.state.alerts = []
     app.state.enriched_events = []
