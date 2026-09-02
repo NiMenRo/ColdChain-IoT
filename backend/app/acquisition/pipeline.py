@@ -123,8 +123,8 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                 try:
                     event_service = getattr(app_state, "event_processing_service", None)
                     if event_service is not None:
-                        # Pass all readings for this message and the classification
-                        result = event_service.process(readings, classification)
+                        # Process only the current reading, not the full batch
+                        result = event_service.process([reading], classification)
                         
                         # Store events and alerts
                         events_list = getattr(app_state, "events", None)

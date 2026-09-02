@@ -162,6 +162,21 @@ def get_alerts(request: Request, limit: Optional[int] = None):
     return {"count": len(alerts_list), "alerts": [_serialize_alert(alert) for alert in alerts_list]}
 
 
+@router.get("/alerts/critical")
+def get_critical_alerts(request: Request, limit: Optional[int] = None):
+    """Get only high-criticality alerts (criticality >= 7)."""
+    try:
+        normalized_limit = _validated_limit(limit)
+    except HTTPException:
+        raise
+
+    alerts_list = [alert for alert in getattr(request.app.state, "alerts", []) if alert.criticality >= 7.0]
+    if normalized_limit is not None:
+        alerts_list = alerts_list[-normalized_limit:]
+
+    return {"count": len(alerts_list), "alerts": [_serialize_alert(alert) for alert in alerts_list]}
+
+
 @router.get("/alerts/{alert_id}")
 def get_alert_by_id(request: Request, alert_id: str):
     """Return a single alert by its identifier."""
@@ -234,21 +249,6 @@ def get_event_summary(request: Request):
         "alert_types": alert_types,
         "event_types": event_types,
     }
-
-
-@router.get("/alerts/critical")
-def get_critical_alerts(request: Request, limit: Optional[int] = None):
-    """Get only high-criticality alerts (criticality >= 7)."""
-    try:
-        normalized_limit = _validated_limit(limit)
-    except HTTPException:
-        raise
-
-    alerts_list = [alert for alert in getattr(request.app.state, "alerts", []) if alert.criticality >= 7.0]
-    if normalized_limit is not None:
-        alerts_list = alerts_list[-normalized_limit:]
-
-    return {"count": len(alerts_list), "alerts": [_serialize_alert(alert) for alert in alerts_list]}
 
 
 @router.get("/health")
