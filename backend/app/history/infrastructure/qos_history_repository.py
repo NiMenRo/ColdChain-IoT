@@ -24,7 +24,11 @@ class QoSHistoryRepository:
     def get_by_id(self, db: Session, id: UUID):
         return db.query(QoSMetricORM).filter_by(id=id).first()
     def trends(self, db: Session, *, device_code: str | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, interval: str = "hour"):
-        trunc = func.date_trunc(interval, QoSMetricORM.timestamp)
+        if db.bind and db.bind.dialect.name == "sqlite":
+            fmt = {"minute": "%Y-%m-%d %H:%M:00", "hour": "%Y-%m-%d %H:00:00", "day": "%Y-%m-%d 00:00:00"}.get(interval, "%Y-%m-%d %H:00:00")
+            trunc = func.strftime(fmt, QoSMetricORM.timestamp)
+        else:
+            trunc = func.date_trunc(interval, QoSMetricORM.timestamp)
         q = db.query(
             trunc.label("bucket"),
             func.avg(QoSMetricORM.latency).label("avg_latency"),

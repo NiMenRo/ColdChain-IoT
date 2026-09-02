@@ -44,7 +44,11 @@ class ReadingHistoryRepository:
 
     def trends(self, db: Session, *, device_code: str | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, interval: str = "hour"):
         # interval: minute, hour, day
-        trunc = func.date_trunc(interval, SensorReadingORM.timestamp)
+        if db.bind and db.bind.dialect.name == "sqlite":
+            fmt = {"minute": "%Y-%m-%d %H:%M:00", "hour": "%Y-%m-%d %H:00:00", "day": "%Y-%m-%d 00:00:00"}.get(interval, "%Y-%m-%d %H:00:00")
+            trunc = func.strftime(fmt, SensorReadingORM.timestamp)
+        else:
+            trunc = func.date_trunc(interval, SensorReadingORM.timestamp)
         q = db.query(
             trunc.label("bucket"),
             func.avg(SensorReadingORM.temperature).label("avg_temp"),

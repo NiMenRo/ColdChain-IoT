@@ -47,14 +47,12 @@ class PersistenceService:
         predictions: list[dict] | None = None,
     ) -> dict:
         """Persiste un bundle coherente SensorReading 1:1 TrafficClassification -> QoSMetric/Alert/Prediction."""
-        # Atomic bundle: SensorReading -> TC -> QoS -> Alert/Prediction
-        ctx = db.begin_nested() if db.in_transaction() else db.begin()
-        with ctx:
+        was_in_transaction = db.in_transaction()
+        try:
             sensor_row = self.sensor_repo.save(db, readings, device_id)
             tc_row = self.tc_repo.save(db, classification, sensor_row.id)
             qos_row = None
             if qos_metric is not None:
-                # Re-asociar classification_id al TC persistido si difiere
                 if qos_metric.classification_id != tc_row.id:
                     qos_metric = QoSMetric(
                         id=qos_metric.id,
@@ -70,7 +68,6 @@ class PersistenceService:
             alert_rows = []
             if alerts:
                 for a in alerts:
-                    # Remap to real DeviceORM.id of bundle (same as SensorReading.device_id)
                     remapped = Alert(
                         id=a.id,
                         device_id=sensor_row.device_id,
@@ -95,6 +92,12 @@ class PersistenceService:
                             prediction_time=p.get("prediction_time"),
                         )
                     )
+            if not was_in_transaction:
+                db.commit()
+        except Exception:
+            if not was_in_transaction:
+                db.rollback()
+            raise
         return {
             "sensor_reading": sensor_row,
             "traffic_classification": tc_row,
