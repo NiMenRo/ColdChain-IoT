@@ -15,6 +15,10 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
     contains the generated TrafficClassification and a reference to the originating
     normalized reading. This is intentionally simple to keep the integration light
     and easy to extend later (persisting to DB, forwarding to QoS, etc.).
+    
+    The pipeline also processes events through the event processing service to generate
+    alerts based on threshold breaches, then enriches those alerts with contextual
+    information (device, classification, QoS metrics) for complete traceability.
     """
     from app.acquisition.normalizer import TelemetryNormalizer
 
@@ -24,6 +28,10 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
     from app.classification.application.criticality_calculator import CriticalityCalculator
     from app.classification.application.priority_assigner import PriorityAssigner
     from app.classification.application.risk_matrix_evaluator import RiskMatrixEvaluator
+    from app.events.application.event_enrichment_service import (
+        DeviceInfo,
+        EventEnrichmentService,
+    )
     from app.qos.application.qos_metrics_service import MessageDeliveryRecord
 
     normalizer = TelemetryNormalizer()
@@ -31,10 +39,17 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
     assigner = PriorityAssigner()
     service = ClassificationService(calculator=calculator, assigner=assigner)
     risk_evaluator = RiskMatrixEvaluator()
+    enrichment_service = EventEnrichmentService()
 
     # ensure classifications list exists
     if not hasattr(app_state, "classifications"):
         app_state.classifications = []
+    if not hasattr(app_state, "events"):
+        app_state.events = []
+    if not hasattr(app_state, "alerts"):
+        app_state.alerts = []
+    if not hasattr(app_state, "enriched_events"):
+        app_state.enriched_events = []
 
     while not stop_event.is_set():
         try:
@@ -101,6 +116,84 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                 except Exception:
                     logger.exception(
                         "Failed to enqueue classified reading %s into the QoS pipeline",
+                        classification.id,
+                    )
+
+                # Process events through the event processing service
+                try:
+                    event_service = getattr(app_state, "event_processing_service", None)
+                    if event_service is not None:
+                        # Pass all readings for this message and the classification
+                        result = event_service.process(readings, classification)
+                        
+                        # Store events and alerts
+                        events_list = getattr(app_state, "events", None)
+                        alerts_list = getattr(app_state, "alerts", None)
+                        enriched_events_list = getattr(app_state, "enriched_events", None)
+                        
+                        if events_list is not None:
+                            events_list.extend(result["events"])
+                        
+                        if alerts_list is not None:
+                            alerts_list.extend(result["alerts"])
+                        
+                        # Enrich alerts with contextual information
+                        if enriched_events_list is not None and result["alert_count"] > 0:
+                            for alert in result["alerts"]:
+                                try:
+                                    # Extract device information from reading
+                                    device_info = DeviceInfo(
+                                        device_id=alert.device_id,
+                                        device_code=reading.device_code,
+                                        device_type=reading.device_type or "unknown",
+                                        location=None,  # Location would come from device registry
+                                    )
+                                    
+                                    # Get QoS metrics if available
+                                    qos_context = None
+                                    qos_service = getattr(app_state, "qos_service", None)
+                                    if qos_service is not None:
+                                        # For now, create a dummy QoS context
+                                        # In production, this would be fetched from actual QoS records
+                                        from app.events.application.event_enrichment_service import (
+                                            QoSContext,
+                                        )
+                                        qos_context = QoSContext(
+                                            latency=0.0,
+                                            jitter=0.0,
+                                            throughput=0.0,
+                                            pdr=100.0,
+                                            packet_loss=0.0,
+                                        )
+                                    
+                                    # Enrich the alert
+                                    enriched = enrichment_service.enrich(
+                                        alert=alert,
+                                        device_info=device_info,
+                                        classification=classification,
+                                        qos_context=qos_context,
+                                    )
+                                    enriched_events_list.append(enriched)
+                                    
+                                    logger.debug(
+                                        "Enriched alert %s with device, classification, and QoS data",
+                                        alert.id,
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to enrich alert %s", alert.id
+                                    )
+                        
+                        if result["alert_count"] > 0:
+                            logger.warning(
+                                "Generated %d alerts for device %s (classification %s)",
+                                result["alert_count"],
+                                reading.device_code,
+                                classification.id,
+                            )
+                except Exception:
+                    logger.exception(
+                        "Failed to process events for classification %s",
                         classification.id,
                     )
 
