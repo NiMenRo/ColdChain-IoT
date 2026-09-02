@@ -1,4 +1,16 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: coldchain
+      POSTGRES_USER: coldchain
+      POSTGRES_PASSWORD: coldchain
+    volumes:
+      - ./docker/postgres/data:/var/lib/postgresql/data
+
   mqtt:
     image: eclipse-mosquitto:2
     restart: unless-stopped
