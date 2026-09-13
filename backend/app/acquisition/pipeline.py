@@ -64,6 +64,14 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                 logger.exception("Failed to normalize message: %s", exc)
                 continue
 
+            # Bundle persistence: SensorReading 1:1 TrafficClassification
+            # Persisted as one transaction per MQTT message via PersistenceService.
+            # Grouping by (device_code, timestamp) is a technical adaptation to map
+            # NormalizedReading (per sensor) to SensorReadingORM (temp+hum+energy in one row).
+            classifications_for_bundle: list = []
+            qos_for_bundle = None
+            alerts_for_bundle: list = []
+
             # Derive I/U/R from each reading using the risk matrix. The
             # evaluator is the source of truth; payload impact/urgency/risk
             # fields are intentionally ignored to keep classifications
@@ -91,23 +99,31 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                 }
                 app_state.classifications.append(entry)
 
+                classifications_for_bundle.append(classification)
+
                 try:
                     qos_service = getattr(app_state, "qos_service", None)
                     if qos_service is not None:
                         qos_service.plan(classification)
                         qos_records = getattr(app_state, "qos_records", None)
                         if qos_records is not None:
-                            qos_records.append(
-                                MessageDeliveryRecord(
-                                    message_id=str(classification.id),
-                                    sent_at=classification.timestamp,
-                                    received_at=classification.classification_time,
-                                    size_bytes=128.0,
-                                    delivered=True,
-                                    criticality=classification.criticality,
-                                    priority=classification.priority,
-                                )
+                            record = MessageDeliveryRecord(
+                                message_id=str(classification.id),
+                                sent_at=classification.timestamp,
+                                received_at=classification.classification_time,
+                                size_bytes=128.0,
+                                delivered=True,
+                                criticality=classification.criticality,
+                                priority=classification.priority,
                             )
+                            qos_records.append(record)
+                            # Build QoSMetric for persistence (reemplaza, no duplica)
+                            try:
+                                qos_metrics_service = getattr(app_state, "qos_metrics_service", None)
+                                if qos_metrics_service is not None:
+                                    qos_for_bundle = qos_metrics_service.build_metric(record, classification_id=classification.id)
+                            except Exception:
+                                logger.exception("Failed to build QoSMetric for %s", classification.id)
                         logger.info(
                             "Queued classified reading %s into %s queue for QoS processing",
                             classification.id,
@@ -123,8 +139,9 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                 try:
                     event_service = getattr(app_state, "event_processing_service", None)
                     if event_service is not None:
-                        # Pass all readings for this message and the classification
-                        result = event_service.process(readings, classification)
+                        # Process only the current reading, not the full batch
+                        result = event_service.process([reading], classification)
+                        alerts_for_bundle.extend(result["alerts"])
                         
                         # Store events and alerts
                         events_list = getattr(app_state, "events", None)
@@ -203,6 +220,39 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                     reading.sensor_name,
                     classification.priority,
                 )
+
+            # Persist bundle (SensorReading 1:1 TrafficClassification) – one transaction per message
+            # QoSMetric is produced by QoS module, not calculated here (TSK-042 only persists)
+            try:
+                persistence_service = getattr(app_state, "persistence_service", None)
+                if persistence_service is not None and classifications_for_bundle:
+                    from app.database.infrastructure.session import SessionLocal
+                    from app.database.infrastructure.models import DeviceORM
+
+                    # Resolve device FK without fabricating placeholder
+                    device_code = readings[0].device_code if readings else None
+                    if device_code:
+                        with SessionLocal() as db:
+                            with db.begin():
+                                device_row = db.query(DeviceORM).filter_by(code=device_code).first()
+                                if device_row is None:
+                                    logger.warning("Skipping persistence: Device code %s not found in DB", device_code)
+                                else:
+                                    # Use first classification as representative for 1:1 bundle
+                                    tc = classifications_for_bundle[0]
+                                    persistence_service.persist_bundle(
+                                        db,
+                                        readings=readings,
+                                        device_id=device_row.id,
+                                        classification=tc,
+                                        qos_metric=qos_for_bundle,
+                                        alerts=alerts_for_bundle,
+                                        predictions=None,
+                                    )
+                                    logger.info("Persisted bundle for device %s: SensorReading + TC %s + %d alerts", device_code, tc.id, len(alerts_for_bundle))
+            except Exception:
+                logger.exception("Failed to persist bundle for message %s", message.get("topic"))
+
         except Exception:
             logger.exception("Unhandled error in acquisition->classification worker loop")
 
