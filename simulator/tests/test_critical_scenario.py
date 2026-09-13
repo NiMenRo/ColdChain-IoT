@@ -52,7 +52,7 @@ def test_critical_scenario_updates_and_restores_sensor_behavior():
     assert hum_sensor.max_humidity == 100.0
     assert energy_sensor.current_state == EnergyState.OFF
 
-    # Simulamos la generación de lectura con el comportamiento alterado
+    # Simulate reading generation with altered behavior
     temp_read = temp_sensor.read()
     hum_read = hum_sensor.read()
     energy_read = energy_sensor.read()

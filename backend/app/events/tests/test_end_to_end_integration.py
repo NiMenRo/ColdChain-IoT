@@ -41,6 +41,9 @@ class EndToEndEventProcessingTests(unittest.TestCase):
             allowed_energy_states=frozenset({"on"}),
         )
         self.event_service = EventProcessingService(threshold_config=threshold_config)
+        # Register test device as known (no fake UUID)
+        self._test_device_id = uuid4()
+        self.event_service.set_device_mapping({"MEAT-VAULT-001": self._test_device_id})
 
     def _simulate_mqtt_message(
         self,

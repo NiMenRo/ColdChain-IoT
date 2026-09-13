@@ -223,18 +223,19 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
 
             # Persist bundle (SensorReading 1:1 TrafficClassification) – one transaction per message
             # QoSMetric is produced by QoS module, not calculated here (TSK-042 only persists)
+            # Resolution is DeviceRepository.get_by_code() -> real Device.id (no fake UUID)
             try:
                 persistence_service = getattr(app_state, "persistence_service", None)
                 if persistence_service is not None and classifications_for_bundle:
+                    from app.database.infrastructure.repositories import DeviceRepository
                     from app.database.infrastructure.session import SessionLocal
-                    from app.database.infrastructure.models import DeviceORM
 
-                    # Resolve device FK without fabricating placeholder
+                    # Resolve device FK via DeviceRepository (single source of truth)
                     device_code = readings[0].device_code if readings else None
                     if device_code:
                         with SessionLocal() as db:
                             with db.begin():
-                                device_row = db.query(DeviceORM).filter_by(code=device_code).first()
+                                device_row = DeviceRepository().get_by_code(db, device_code)
                                 if device_row is None:
                                     logger.warning("Skipping persistence: Device code %s not found in DB", device_code)
                                 else:

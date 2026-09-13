@@ -3,8 +3,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Uuid
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, String, UniqueConstraint, Uuid
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.database.infrastructure.base import Base
 
@@ -15,6 +15,17 @@ def _utcnow() -> datetime:
 
 class DeviceORM(Base):
     __tablename__ = "devices"
+    __table_args__ = (
+        UniqueConstraint("code", name="uq_devices_code"),
+        CheckConstraint(
+            "status IN ('active','inactive','maintenance','error')",
+            name="ck_devices_status",
+        ),
+        CheckConstraint(
+            "device_type IN ('cold_room','refrigerated_showcase')",
+            name="ck_devices_device_type",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     code: Mapped[str] = mapped_column(String, nullable=False)
@@ -81,6 +92,7 @@ class QoSMetricORM(Base):
 
 class UserORM(Base):
     __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("email", name="uq_users_email"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String, nullable=False)
@@ -90,6 +102,12 @@ class UserORM(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     alerts: Mapped[list[AlertORM]] = relationship(back_populates="user")
+
+    @validates("email")
+    def _normalize_email(self, key: str, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("email must be a string")
+        return value.strip().lower()
 
 
 class AlertORM(Base):

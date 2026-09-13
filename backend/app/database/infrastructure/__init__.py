@@ -11,10 +11,12 @@ from app.database.infrastructure.models import (
 )
 from app.database.infrastructure.repositories import (
     AlertRepository,
+    DeviceRepository,
     PredictionRepository,
     QoSMetricRepository,
     SensorReadingRepository,
     TrafficClassificationRepository,
+    UserRepository,
 )
 from app.database.infrastructure.session import SessionLocal, engine, get_db
 
@@ -23,6 +25,7 @@ __all__ = [
     "AlertRepository",
     "Base",
     "DeviceORM",
+    "DeviceRepository",
     "PredictionORM",
     "PredictionRepository",
     "QoSMetricORM",
@@ -34,6 +37,7 @@ __all__ = [
     "TrafficClassificationORM",
     "TrafficClassificationRepository",
     "UserORM",
+    "UserRepository",
     "engine",
     "get_db",
 ]
