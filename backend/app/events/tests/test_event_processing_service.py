@@ -25,6 +25,9 @@ class EventProcessingServiceTests(unittest.TestCase):
             allowed_energy_states=frozenset({"on"}),
         )
         self.service = EventProcessingService(threshold_config=self.config)
+        # Register the default test device as known (DB is source of truth)
+        self._default_device_id = uuid4()
+        self.service.set_device_mapping({"MEAT-VAULT-001": self._default_device_id})
 
     def _make_reading(
         self,
@@ -185,16 +188,20 @@ class EventProcessingServiceTests(unittest.TestCase):
         self.assertEqual(alert.device_id, expected_device_id)
 
     def test_device_id_auto_generated_when_not_mapped(self):
-        """Device ID should be auto-generated if device_code is not in mapping."""
+        """Unknown device_code must not generate a fake UUID — alert is skipped with warning."""
+        # Use a breaching reading so an alert would be generated if device were known
         readings = [
-            self._make_reading(device_code="UNKNOWN-DEVICE")
+            self._make_reading(device_code="UNKNOWN-DEVICE", sensor_name="temperature", value=8.5)
         ]
         classification = self._make_classification()
 
-        result = self.service.process(readings, classification)
+        with self.assertLogs("app.events.application.event_processing_service", level="WARNING") as cm:
+            result = self.service.process(readings, classification)
 
-        # Should have at least generated a device_id
-        self.assertIsNotNone(result["alerts"])
+        self.assertEqual(result["event_count"], 1)
+        self.assertEqual(result["alert_count"], 0)
+        self.assertEqual(len(result["alerts"]), 0)
+        self.assertTrue(any("Unknown device_code UNKNOWN-DEVICE" in m for m in cm.output))
 
     def test_uses_injected_user_id_in_alerts(self):
         """Alerts should use user_id from service configuration."""
@@ -202,6 +209,8 @@ class EventProcessingServiceTests(unittest.TestCase):
         service = EventProcessingService(
             threshold_config=self.config, user_id=expected_user_id
         )
+        # Register device for the new service instance as well
+        service.set_device_mapping({"MEAT-VAULT-001": uuid4()})
 
         readings = [
             self._make_reading(sensor_name="temperature", value=8.0)

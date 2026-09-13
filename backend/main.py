@@ -58,14 +58,28 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("PersistenceService not available")
         app.state.persistence_service = None
-    # TSK-042A/B: seed Device + User before pipeline can persist (FKs)
+    # TSK-042A/B + TSK-047.4: seed Device + User before pipeline can persist (FKs)
+    # and load the real device_code -> Device.id mapping for event resolution.
     try:
         if app.state.persistence_service is not None:
             from app.database.infrastructure.session import SessionLocal
-            from app.database.seed import seed_all
+            from app.database.seed import SYSTEM_USER_ID, seed_all
 
             with SessionLocal() as db:
                 seed_all(db)
+                # Load real Device.id mapping as the only source of truth
+                try:
+                    from app.database.infrastructure.repositories import DeviceRepository
+
+                    _, items = DeviceRepository().list(db, page=1, per_page=100)
+                    mapping = {d.code: d.id for d in items}
+                    app.state.event_processing_service.set_device_mapping(mapping)
+                    import uuid as _uuid
+
+                    app.state.event_processing_service.set_user_id(_uuid.UUID(SYSTEM_USER_ID))
+                    logger.info("Loaded %d device mappings for event resolution", len(mapping))
+                except Exception:
+                    logger.exception("Failed to load device mappings for events")
     except Exception:
         logger.exception("Seed devices/users failed")
     app.state.events = []

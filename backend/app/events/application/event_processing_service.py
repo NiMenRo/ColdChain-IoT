@@ -6,6 +6,7 @@ when conditions are met.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
@@ -16,6 +17,8 @@ from app.events.application.event_detector import EventDetector
 from app.events.application.rule_engine import RuleEngine
 from app.events.domain import Alert, DetectedEvent, ThresholdConfig
 from app.qos.application.qos_metrics_service import MessageDeliveryRecord
+
+logger = logging.getLogger(__name__)
 
 
 class EventProcessingService:
@@ -123,17 +126,22 @@ class EventProcessingService:
         """Convert detected events into Alert objects.
 
         An Alert is generated for each DetectedEvent, enriched with:
-        - device_id (from device_mapping or generated)
+        - device_id (from device_mapping, must be a real Device.id)
         - user_id (from config or placeholder)
         - criticality (from classification)
         - type (from event)
         - message (from event)
         - created_at (now)
+
+        Unknown device_code values are skipped with a warning and do not
+        generate a fake UUID.
         """
         alerts: list[Alert] = []
 
         for event in events:
             device_id = self._resolve_device_id(event.device_code)
+            if device_id is None:
+                continue
             alert = Alert(
                 id=uuid4(),
                 device_id=device_id,
@@ -148,14 +156,16 @@ class EventProcessingService:
 
         return alerts
 
-    def _resolve_device_id(self, device_code: str) -> UUID:
-        """Resolve device_code to device_id using configured mapping.
+    def _resolve_device_id(self, device_code: str) -> UUID | None:
+        """Resolve device_code to the real Device.id from the mapping.
 
-        If device_code is not in mapping, a new UUID is generated and cached.
+        Returns None for unknown device_code values and logs a warning.
+        No fake UUID is generated.
         """
-        if device_code not in self._device_mapping:
-            self._device_mapping[device_code] = uuid4()
-        return self._device_mapping[device_code]
+        if device_code in self._device_mapping:
+            return self._device_mapping[device_code]
+        logger.warning("Unknown device_code %s — skipping alert (no fake UUID)", device_code)
+        return None
 
     def set_device_mapping(self, mapping: dict[str, UUID]) -> None:
         """Update or replace the device_code → device_id mapping."""

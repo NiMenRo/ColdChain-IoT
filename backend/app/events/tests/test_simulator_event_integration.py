@@ -64,6 +64,11 @@ class SimulatorEventIntegrationTests(unittest.TestCase):
             allowed_energy_states=frozenset({"on"}),
         )
         self.event_service = EventProcessingService(threshold_config=self.threshold_config)
+        # Register simulator device as known (no fake UUID for unknown devices)
+        import uuid
+
+        self._sim_device_id = uuid.uuid4()
+        self.event_service.set_device_mapping({self.device.code: self._sim_device_id})
 
     def _build_simulator_message(self):
         temperature = self.temperature_sensor.read().value
