@@ -32,12 +32,12 @@ class SensorReadingRepository:
     def save(self, db: Session, readings: list[NormalizedReading], device_id: uuid.UUID) -> SensorReadingORM:
         if not readings:
             raise ValueError("readings must not be empty")
-        # Group by same device_code + timestamp (agrupación documentada, no mapper genérico)
-        # Se asume que readings pertenecen al mismo bundle (mismo mensaje MQTT)
+        # Group by same device_code + timestamp (documented grouping, no generic mapper)
+        # Assume readings belong to the same bundle (same MQTT message)
         by_key: dict[tuple[str, str], list[NormalizedReading]] = {}
         for r in readings:
             by_key.setdefault((r.device_code, r.timestamp), []).append(r)
-        # Para TSK-042 se persiste 1 SensorReading por bundle; si hay múltiples keys, se usa la primera
+        # For TSK-042, persist 1 SensorReading per bundle; if multiple keys, use the first
         first_key = next(iter(by_key))
         group = by_key[first_key]
         values: dict[str, object] = {}
@@ -137,7 +137,7 @@ class PredictionRepository:
 
 
 # ---------------------------------------------------------------------------
-# TSK-047.2 — Device / User repositories (sin commit, UNIQUE como fuente de verdad)
+# TSK-047.2 — Device / User repositories (no commit, UNIQUE as source of truth)
 # ---------------------------------------------------------------------------
 
 _ALLOWED_STATUSES = frozenset({"active", "inactive", "maintenance", "error"})
@@ -312,8 +312,8 @@ class UserRepository:
             raise ValueError("password_hash must be a non-empty string")
         if not isinstance(role, str) or not role.strip():
             raise ValueError("role must be a non-empty string")
-        # Normalización lower/strip delegada también a @validates en UserORM, pero se hace aquí
-        # para que exists_email / UNIQUE sean consistentes antes del flush.
+        # Lower/strip normalization also delegated to @validates in UserORM, but done here
+        # so exists_email / UNIQUE are consistent before flush.
         email = email.strip().lower()
         obj = UserORM(
             name=name.strip(),

@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000"
 
-# Fuente: simulator/main.py:38-58 (no duplicar modelo, solo datos)
+# Source of truth — simulator fetches via DB; keep data only here (no duplicate definition in simulator/main.py)
 DEVICE_SEED = [
     {"code": "CAVA-001", "name": "Cava Principal", "location": "Sótano - Sector A", "device_type": "cold_room", "status": "active"},
     {"code": "CAVA-002", "name": "Cava Secundaria", "location": "Sótano - Sector B", "device_type": "cold_room", "status": "maintenance"},

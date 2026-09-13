@@ -4,12 +4,12 @@ Revision ID: 17003a138539
 Revises: 7b7ca6d02489
 Create Date: 2026-09-13
 
-TSK-047.1 — Corrección de integridad Device/User:
+TSK-047.1 — Device/User integrity fix:
 - Device.code UNIQUE (uq_devices_code)
-- User.email UNIQUE (uq_users_email) con normalización lower/strip en ORM
+- User.email UNIQUE (uq_users_email) with lower/strip normalization in ORM
 - Device.status CHECK active/inactive/maintenance/error
 - Device.device_type CHECK cold_room/refrigerated_showcase
-Antes de aplicar, detecta duplicados y aborta sin dedup silencioso.
+Before applying, detect duplicates and abort without silent dedup.
 Reversible: upgrade -> downgrade -> upgrade.
 """
 from typing import Sequence, Union
@@ -29,7 +29,7 @@ def upgrade() -> None:
     """Upgrade schema."""
     from alembic import context as alembic_context
 
-    # — Detección de duplicados (sin dedup automática) — solo en modo online
+    # — Duplicate detection (no auto-dedup) — online mode only
     if not alembic_context.is_offline_mode():
         bind = op.get_bind()
         if bind is not None:
@@ -45,11 +45,11 @@ def upgrade() -> None:
             )
             if dup_devices or dup_users:
                 raise RuntimeError(
-                    f"TSK-047.1 abortado: duplicados detectados — devices={dup_devices} users={dup_users}. "
-                    "Corrija manualmente antes de reintentar."
+                    f"TSK-047.1 aborted: duplicates detected — devices={dup_devices} users={dup_users}. "
+                    "Please fix manually before retrying."
                 )
 
-    # — Constraints (UNIQUE ya crea índice btree en PG, no crear índice adicional) —
+    # — Constraints (UNIQUE already creates btree index in PG, do not create extra index) —
     op.create_unique_constraint("uq_devices_code", "devices", ["code"])
     op.create_unique_constraint("uq_users_email", "users", ["email"])
     op.create_check_constraint(

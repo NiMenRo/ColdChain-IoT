@@ -10,12 +10,16 @@ if PROJECT_ROOT not in sys.path:
 if __package__ in (None, ""):
     from config import SimulatorConfig
     from devices import ColdRoom, RefrigeratedShowcase, DeviceStatus
+    from devices.device_type import DeviceType
+    from devices.factory import orm_to_device
     from mqtt import MQTTClient, DevicePublisher
     from scenarios import CriticalScenario, CriticalScenarioManager
     from sensors import TemperatureSensor, HumiditySensor, EnergyStatusSensor, EnergyState
 else:  # pragma: no cover - package-style execution from repo root
     from simulator.config import SimulatorConfig
     from simulator.devices import ColdRoom, RefrigeratedShowcase, DeviceStatus
+    from simulator.devices.device_type import DeviceType
+    from simulator.devices.factory import orm_to_device
     from simulator.mqtt import MQTTClient, DevicePublisher
     from simulator.scenarios import CriticalScenario, CriticalScenarioManager
     from simulator.sensors import TemperatureSensor, HumiditySensor, EnergyStatusSensor, EnergyState
@@ -34,60 +38,66 @@ def main() -> None:
 
     device_publisher = DevicePublisher(mqtt_client, config.topic_prefix, config.mqtt_qos)
 
-    # --- Devices ---
-    cava_principal = ColdRoom(
-        id="DEV-001",
-        code="CAVA-001",
-        name="Cava Principal",
-        location="Sótano - Sector A",
-    )
+    # --- Devices (DB is the single source of truth) ---
+    from simulator.database.session import SessionLocal
 
-    cava_secundaria = ColdRoom(
-        id="DEV-002",
-        code="CAVA-002",
-        name="Cava Secundaria",
-        location="Sótano - Sector B",
-        status=DeviceStatus.MAINTENANCE,
-    )
+    orm_devices = None
+    for attempt in range(15):
+        try:
+            with SessionLocal() as db:
+                # Direct DB access via DeviceRepository pattern without importing backend
+                from sqlalchemy import text as _sa_text
 
-    vitrina = RefrigeratedShowcase(
-        id="DEV-003",
-        code="VITRINA-001",
-        name="Vitrina Mostrador 1",
-        location="Salón Principal - Zona Clientes",
-    )
+                # Use DeviceRepository logic via direct query to avoid backend import cycle
+                # Ordered by code to keep deterministic display
+                rows = db.execute(_sa_text("SELECT id, code, name, location, device_type, status, registration_date FROM devices ORDER BY code ASC")).fetchall()
+                if rows:
+                    # Map rows to ORM-like objects for factory
+                    class _Row:
+                        pass
 
-    # --- Sensors ---
-    temp_sensor_1 = TemperatureSensor(device=cava_principal, min_temperature=2.0, max_temperature=6.0)
-    temp_sensor_2 = TemperatureSensor(device=cava_secundaria, min_temperature=0.0, max_temperature=4.0)
-    temp_sensor_3 = TemperatureSensor(device=vitrina, min_temperature=3.0, max_temperature=8.0)
+                    orm_devices = []
+                    for r in rows:
+                        o = _Row()
+                        o.id, o.code, o.name, o.location, o.device_type, o.status, o.registration_date = r
+                        orm_devices.append(o)
+                    break
+                else:
+                    logging.getLogger(__name__).warning("No devices in DB (attempt %d/15) — waiting for seed", attempt + 1)
+        except Exception as e:
+            logging.getLogger(__name__).warning("DB fetch failed (attempt %d/15): %s", attempt + 1, e)
+        time.sleep(1)
 
-    hum_sensor_1 = HumiditySensor(device=cava_principal)
-    hum_sensor_2 = HumiditySensor(device=cava_secundaria)
-    hum_sensor_3 = HumiditySensor(device=vitrina)
+    if not orm_devices:
+        logging.getLogger(__name__).error("No devices available or DB unreachable — aborting simulator (DB is source of truth, no hardcoded fallback)")
+        mqtt_client.stop()
+        sys.exit(1)
 
-    energy_sensor_1 = EnergyStatusSensor(device=cava_principal)
-    energy_sensor_2 = EnergyStatusSensor(device=cava_secundaria, initial_state=EnergyState.POWERED)
-    energy_sensor_3 = EnergyStatusSensor(device=vitrina)
+    devices = [orm_to_device(o) for o in orm_devices]
 
-    cava_principal.add_sensor(temp_sensor_1)
-    cava_principal.add_sensor(hum_sensor_1)
-    cava_principal.add_sensor(energy_sensor_1)
-    cava_secundaria.add_sensor(temp_sensor_2)
-    cava_secundaria.add_sensor(hum_sensor_2)
-    cava_secundaria.add_sensor(energy_sensor_2)
-    vitrina.add_sensor(temp_sensor_3)
-    vitrina.add_sensor(hum_sensor_3)
-    vitrina.add_sensor(energy_sensor_3)
+    # --- Sensors (by device_type, no code-specific logic) ---
+    for device in devices:
+        if device.device_type == DeviceType.COLD_ROOM:
+            temp_range = (0.0, 4.0)
+        else:  # REFRIGERATED_SHOWCASE
+            temp_range = (3.0, 8.0)
+        device.add_sensor(TemperatureSensor(device=device, min_temperature=temp_range[0], max_temperature=temp_range[1]))
+        device.add_sensor(HumiditySensor(device=device))
+        initial = EnergyState.POWERED if device.status == DeviceStatus.MAINTENANCE else EnergyState.ON
+        device.add_sensor(EnergyStatusSensor(device=device, initial_state=initial))
 
-    devices = [cava_principal, cava_secundaria, vitrina]
+    # --- Critical scenarios (resolved by device_type, no hardcoded VITRINA-001) ---
+    by_type: dict[DeviceType, list] = {}
+    for d in devices:
+        by_type.setdefault(d.device_type, []).append(d)
+    target_devices = by_type.get(DeviceType.REFRIGERATED_SHOWCASE) or devices[:1]
 
     critical_manager = CriticalScenarioManager()
     scenarios = [
         CriticalScenario(
             id="SCENARIO-LOW-001",
             name="Alerta baja - frío insuficiente para carne",
-            devices=[vitrina],
+            devices=list(target_devices),
             temperature_range=(4.5, 6.0),
             humidity_range=(78.0, 82.0),
             energy_state=EnergyState.ON,
@@ -96,7 +106,7 @@ def main() -> None:
         CriticalScenario(
             id="SCENARIO-MEDIUM-001",
             name="Alerta media - pérdida parcial del frío",
-            devices=[vitrina],
+            devices=list(target_devices),
             temperature_range=(6.5, 8.0),
             humidity_range=(72.0, 78.0),
             energy_state=EnergyState.ON,
@@ -105,7 +115,7 @@ def main() -> None:
         CriticalScenario(
             id="SCENARIO-HIGH-001",
             name="Alerta alta - fallo eléctrico / descongelación",
-            devices=[vitrina],
+            devices=list(target_devices),
             temperature_range=(9.0, 12.0),
             humidity_range=(95.0, 100.0),
             energy_state=EnergyState.OFF,

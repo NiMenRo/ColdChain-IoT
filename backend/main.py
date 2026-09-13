@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI):
     try:
         app.state.persistence_service = PersistenceService() if PersistenceService else None
     except Exception:
-        logger.exception("PersistenceService no disponible")
+        logger.exception("PersistenceService not available")
         app.state.persistence_service = None
     # TSK-042A/B: seed Device + User before pipeline can persist (FKs)
     try:
@@ -130,7 +130,7 @@ app = FastAPI(title="ColdChain API", lifespan=lifespan)
 
 @app.get("/acquisition/messages")
 def get_messages():
-    # TODO: eliminar cuando exista el pipeline completo de adquisición (TSK-010+)
+    # TODO: remove when the full acquisition pipeline exists (TSK-010+)
     return {
         "connected": app.state.mqtt_client.is_connected,
         "count": len(app.state.message_queue.get_all()),

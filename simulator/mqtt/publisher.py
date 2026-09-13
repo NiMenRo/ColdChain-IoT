@@ -24,16 +24,17 @@ class DevicePublisher:
         self._qos = qos
 
     def publish_telemetry(self, device, measurements=None) -> bool:
-        """Publica la telemetría de un dispositivo.
+        """Publish telemetry for a device.
 
-        Cuando se proporciona ``measurements`` (dict {sensor: measurement}), el
-        payload se construye reutilizando esas mediciones ya capturadas, sin
-        volver a llamar a ``sensor.read()``. Esto garantiza que la medición
-        mostrada en consola y la publicada por MQTT sean exactamente la misma.
+        When ``measurements`` (dict {sensor: measurement}) is provided, the
+        payload is built by reusing those already captured measurements,
+        without calling ``sensor.read()`` again. This ensures the
+        measurement shown in the console and the one published via MQTT
+        are exactly the same.
         """
         topic = f"{self._topic_prefix}/{device.code}/telemetry"
         payload = self._build_payload(device, measurements=measurements)
-        logger.debug("Publicando telemetría de %s en %s", device.code, topic)
+        logger.debug("Publishing telemetry for %s to %s", device.code, topic)
         return self._mqtt_client.publish(topic, payload, self._qos)
 
     def _build_payload(self, device, measurements=None) -> dict:

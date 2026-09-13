@@ -156,7 +156,7 @@ def test_user_repos_do_not_commit(db):
     assert repo.get_by_email(db, "nocommit@example.com") is None
 
 
-def test_user_inexistente_retorna_none(db):
+def test_user_nonexistent_returns_none(db):
     repo = UserRepository()
     assert repo.get_by_id(db, uuid.uuid4()) is None
     assert repo.get_by_email(db, "nope@example.com") is None

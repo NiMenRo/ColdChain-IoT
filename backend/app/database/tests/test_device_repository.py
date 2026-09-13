@@ -161,7 +161,7 @@ def test_device_repos_do_not_commit(db):
     assert repo.get_by_code(db, "NOCOMMIT-001") is None
 
 
-def test_device_inexistente_retorna_none(db):
+def test_device_nonexistent_returns_none(db):
     repo = DeviceRepository()
     assert repo.get_by_id(db, uuid.uuid4()) is None
     assert repo.get_by_code(db, "NO-EXISTE") is None

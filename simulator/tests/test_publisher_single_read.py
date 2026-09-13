@@ -40,7 +40,7 @@ def _make_device():
 def test_publish_uses_the_same_measurements_that_were_displayed():
     device, sensors = _make_device()
 
-    # Capturamos exactamente una lectura por sensor: la que se muestra en consola.
+    # Capture exactly one reading per sensor: the one shown in the console.
     measurements = {}
     for sensor in sensors:
         measurements[sensor] = sensor.read()
@@ -48,8 +48,8 @@ def test_publish_uses_the_same_measurements_that_were_displayed():
     fake_client = FakeMQTTClient()
     publisher = DevicePublisher(fake_client, topic_prefix="coldchain/device", qos=0)
 
-    # Si el publisher volviera a leer un sensor, el AssertionError rompe el test
-    # (regresión de la doble lectura).
+    # If the publisher were to re-read a sensor, the AssertionError fails the test
+    # (double-read regression).
     patches = [
         mock.patch.object(sensor, "read", side_effect=AssertionError("publisher must not re-read sensors"))
         for sensor in sensors
