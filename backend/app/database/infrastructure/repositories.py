@@ -34,6 +34,14 @@ class SensorReadingRepository:
     def save(self, db: Session, readings: list[NormalizedReading], device_id: uuid.UUID) -> SensorReadingORM:
         if not readings:
             raise ValueError("readings must not be empty")
+        device = db.query(DeviceORM).filter_by(id=device_id).first()
+        if device is None:
+            raise ValueError(f"device_id {device_id} is not registered")
+        device_codes = {reading.device_code for reading in readings}
+        if device_codes != {device.code}:
+            raise ValueError(
+                "reading device_code does not match the registered device_id"
+            )
         # Group by same device_code + timestamp (documented grouping, no generic mapper)
         # Assume readings belong to the same bundle (same MQTT message)
         by_key: dict[tuple[str, str], list[NormalizedReading]] = {}
