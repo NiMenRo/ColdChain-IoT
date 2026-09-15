@@ -17,6 +17,7 @@ from app.database.infrastructure.models import (
     TrafficClassificationORM,
     UserORM,
 )
+from app.database.infrastructure.models import HUMAN_USER_ROLES
 from app.database.seed import SYSTEM_USER_ID
 from app.events.domain import Alert
 from app.qos.domain import QoSMetric
@@ -322,8 +323,10 @@ class UserRepository:
             raise ValueError("email must be a non-empty string")
         if not isinstance(password_hash, str) or not password_hash:
             raise ValueError("password_hash must be a non-empty string")
-        if not isinstance(role, str) or not role.strip():
-            raise ValueError("role must be a non-empty string")
+        if not isinstance(role, str) or role.strip().lower() not in HUMAN_USER_ROLES:
+            raise ValueError(
+                f"role must be one of {sorted(HUMAN_USER_ROLES)} for human users"
+            )
         # Lower/strip normalization also delegated to @validates in UserORM, but done here
         # so exists_email / UNIQUE are consistent before flush.
         email = email.strip().lower()
@@ -331,7 +334,7 @@ class UserRepository:
             name=name.strip(),
             email=email,
             password_hash=password_hash,
-            role=role.strip(),
+            role=role.strip().lower(),
             created_at=created_at or datetime.now(timezone.utc),
         )
         db.add(obj)
@@ -350,7 +353,17 @@ class UserRepository:
             elif key in ("name", "role"):
                 if not isinstance(value, str) or not value.strip():
                     raise ValueError(f"{key} must be a non-empty string")
-                setattr(user, key, value.strip())
+                if key == "role":
+                    normalized_role = value.strip().lower()
+                    if normalized_role not in HUMAN_USER_ROLES:
+                        raise ValueError(
+                            f"role must be one of {sorted(HUMAN_USER_ROLES)} for human users"
+                        )
+                    if user.id == uuid.UUID(SYSTEM_USER_ID):
+                        raise ValueError("the technical system user must keep role 'system'")
+                    setattr(user, key, normalized_role)
+                else:
+                    setattr(user, key, value.strip())
             elif key == "password_hash":
                 if not isinstance(value, str) or not value:
                     raise ValueError("password_hash must be a non-empty string")

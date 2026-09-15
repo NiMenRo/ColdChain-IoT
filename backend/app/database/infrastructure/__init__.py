@@ -6,6 +6,7 @@ from app.database.infrastructure.models import (
     QoSMetricORM,
     SensorReadingORM,
     SystemConfigORM,
+    USER_ROLE_RESPONSIBILITIES,
     TrafficClassificationORM,
     UserORM,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "SessionLocal",
     "SystemConfigORM",
     "SystemConfigRepository",
+    "USER_ROLE_RESPONSIBILITIES",
     "TrafficClassificationORM",
     "TrafficClassificationRepository",
     "UserORM",

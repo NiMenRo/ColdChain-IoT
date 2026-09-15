@@ -8,6 +8,17 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.database.infrastructure.base import Base
 
+HUMAN_USER_ROLES = frozenset({"admin", "supervisor", "operador", "auditor"})
+TECHNICAL_USER_ROLE = "system"
+VALID_USER_ROLES = HUMAN_USER_ROLES | {TECHNICAL_USER_ROLE}
+USER_ROLE_RESPONSIBILITIES = {
+    "admin": "Administracion general del sistema",
+    "supervisor": "Supervision, configuracion y gestion de alertas",
+    "operador": "Operacion diaria y atencion de alertas",
+    "auditor": "Consulta de informacion historica y trazabilidad",
+    "system": "Identidad tecnica para procesos internos",
+}
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -92,7 +103,13 @@ class QoSMetricORM(Base):
 
 class UserORM(Base):
     __tablename__ = "users"
-    __table_args__ = (UniqueConstraint("email", name="uq_users_email"),)
+    __table_args__ = (
+        UniqueConstraint("email", name="uq_users_email"),
+        CheckConstraint(
+            "role IN ('admin','supervisor','operador','auditor','system')",
+            name="ck_users_role",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String, nullable=False)
@@ -108,6 +125,17 @@ class UserORM(Base):
         if not isinstance(value, str):
             raise ValueError("email must be a string")
         return value.strip().lower()
+
+    @validates("role")
+    def _validate_role(self, key: str, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("role must be a string")
+        normalized = value.strip().lower()
+        if normalized not in VALID_USER_ROLES:
+            raise ValueError(
+                "role must be one of admin, supervisor, operador, auditor, or system"
+            )
+        return normalized
 
 
 class AlertORM(Base):
