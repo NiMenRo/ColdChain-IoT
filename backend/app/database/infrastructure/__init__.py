@@ -15,6 +15,7 @@ from app.database.infrastructure.repositories import (
     PredictionRepository,
     QoSMetricRepository,
     SensorReadingRepository,
+    SystemConfigRepository,
     TrafficClassificationRepository,
     UserRepository,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "SensorReadingRepository",
     "SessionLocal",
     "SystemConfigORM",
+    "SystemConfigRepository",
     "TrafficClassificationORM",
     "TrafficClassificationRepository",
     "UserORM",

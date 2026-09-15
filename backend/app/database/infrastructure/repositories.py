@@ -13,6 +13,7 @@ from app.database.infrastructure.models import (
     PredictionORM,
     QoSMetricORM,
     SensorReadingORM,
+    SystemConfigORM,
     TrafficClassificationORM,
     UserORM,
 )
@@ -134,6 +135,17 @@ class PredictionRepository:
         db.add(obj)
         db.flush()
         return obj
+
+
+class SystemConfigRepository:
+    """Reads the persisted system configuration used by application services."""
+
+    def get_current(self, db: Session) -> SystemConfigORM | None:
+        return (
+            db.query(SystemConfigORM)
+            .order_by(SystemConfigORM.id.asc())
+            .first()
+        )
 
 
 # ---------------------------------------------------------------------------
