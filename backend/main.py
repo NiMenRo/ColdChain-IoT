@@ -107,6 +107,17 @@ async def lifespan(app: FastAPI):
     app.state.events = []
     app.state.alerts = []
     app.state.enriched_events = []
+    app.state.notifications = []
+    try:
+        from app.notifications.application import (
+            AlertAcknowledgementService,
+            NotificationService,
+        )
+
+        app.state.notification_service = NotificationService()
+        app.state.alert_acknowledgement_service = AlertAcknowledgementService()
+    except Exception:
+        logger.exception("Failed to initialize notification services")
 
     # Start acquisition -> classification pipeline worker
     try:
@@ -148,6 +159,13 @@ async def lifespan(app: FastAPI):
         app.include_router(history_router)
     except Exception:
         logger.exception("Failed to register History API router")
+
+    try:
+        from app.notifications.api import router as notifications_router
+
+        app.include_router(notifications_router)
+    except Exception:
+        logger.exception("Failed to register Notifications API router")
 
     yield
 

@@ -1,3 +1,6 @@
+from app.notifications.application.alert_acknowledgement_service import (
+    AlertAcknowledgementService,
+)
 from app.notifications.application.notification_manager import NotificationManager
 from app.notifications.application.notification_service import (
     NotificationProcessResult,
@@ -16,6 +19,7 @@ from app.notifications.application.notification_channel import (
 )
 
 __all__ = [
+    "AlertAcknowledgementService",
     "DashboardNotificationChannel",
     "EmailNotificationChannel",
     "InMemoryNotificationChannel",
