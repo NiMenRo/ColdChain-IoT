@@ -89,6 +89,36 @@ class ThresholdConfig:
     max_humidity: float
     allowed_energy_states: frozenset[str]
 
+    @classmethod
+    def from_persisted_config(
+        cls,
+        persisted_config: object,
+        allowed_energy_states: frozenset[str] = frozenset({"on"}),
+    ) -> "ThresholdConfig":
+        """Build thresholds from the existing persisted system configuration."""
+        required_fields = (
+            "min_temperature",
+            "max_temperature",
+            "min_humidity",
+            "max_humidity",
+        )
+        missing_fields = [
+            field for field in required_fields if not hasattr(persisted_config, field)
+        ]
+        if missing_fields:
+            raise ValueError(
+                "Persisted configuration is missing threshold fields: "
+                + ", ".join(missing_fields)
+            )
+
+        return cls(
+            min_temperature=float(persisted_config.min_temperature),
+            max_temperature=float(persisted_config.max_temperature),
+            min_humidity=float(persisted_config.min_humidity),
+            max_humidity=float(persisted_config.max_humidity),
+            allowed_energy_states=allowed_energy_states,
+        )
+
     def __post_init__(self) -> None:
         self._validate_temperature()
         self._validate_humidity()

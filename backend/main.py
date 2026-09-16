@@ -8,8 +8,12 @@ from app.acquisition import MessageQueue
 from app.acquisition.infrastructure import MQTTClient, MQTTSubscriber
 try:
     from app.database.application.persistence_service import PersistenceService
+    from app.database.infrastructure.repositories import SystemConfigRepository
+    from app.database.seed import DEFAULT_SYSTEM_CONFIG
 except ImportError:
     PersistenceService = None  # type: ignore
+    SystemConfigRepository = None  # type: ignore
+    DEFAULT_SYSTEM_CONFIG = None  # type: ignore
 from app.events.domain import ThresholdConfig
 from app.events.application.event_processing_service import EventProcessingService
 from app.qos.application.qos_metrics_service import QoSMetricsService
@@ -41,18 +45,10 @@ async def lifespan(app: FastAPI):
     app.state.qos_service = TrafficPlanningService()
     app.state.qos_metrics_service = QoSMetricsService()
     app.state.qos_records = []
+    device_mapping = None
+    system_user_id = None
+    threshold_config = None
 
-    # Initialize event processing service with cold-storage thresholds
-    threshold_config = ThresholdConfig(
-        min_temperature=0.0,
-        max_temperature=4.0,
-        min_humidity=85.0,
-        max_humidity=90.0,
-        allowed_energy_states=frozenset({"on"}),
-    )
-    app.state.event_processing_service = EventProcessingService(
-        threshold_config=threshold_config
-    )
     try:
         app.state.persistence_service = PersistenceService() if PersistenceService else None
     except Exception:
@@ -67,24 +63,61 @@ async def lifespan(app: FastAPI):
 
             with SessionLocal() as db:
                 seed_all(db)
+                if SystemConfigRepository is None:
+                    raise RuntimeError("SystemConfigRepository is not available")
+                persisted_config = SystemConfigRepository().get_current(db)
+                if persisted_config is None:
+                    raise RuntimeError("No persisted system configuration was found")
+                threshold_config = ThresholdConfig.from_persisted_config(
+                    persisted_config
+                )
                 # Load real Device.id mapping as the only source of truth
                 try:
                     from app.database.infrastructure.repositories import DeviceRepository
 
                     _, items = DeviceRepository().list(db, page=1, per_page=100)
-                    mapping = {d.code: d.id for d in items}
-                    app.state.event_processing_service.set_device_mapping(mapping)
-                    import uuid as _uuid
-
-                    app.state.event_processing_service.set_user_id(_uuid.UUID(SYSTEM_USER_ID))
-                    logger.info("Loaded %d device mappings for event resolution", len(mapping))
+                    device_mapping = {d.code: d.id for d in items}
+                    system_user_id = SYSTEM_USER_ID
+                    logger.info("Loaded %d device mappings for event resolution", len(device_mapping))
                 except Exception:
                     logger.exception("Failed to load device mappings for events")
     except Exception:
         logger.exception("Seed devices/users failed")
+
+    if threshold_config is None:
+        logger.warning(
+            "Using emergency cold-chain thresholds because persisted configuration "
+            "could not be loaded"
+        )
+        if DEFAULT_SYSTEM_CONFIG is None:
+            raise RuntimeError("No threshold configuration source is available")
+        threshold_config = ThresholdConfig.from_persisted_config(
+            DEFAULT_SYSTEM_CONFIG
+        )
+
+    app.state.event_processing_service = EventProcessingService(
+        threshold_config=threshold_config
+    )
+    if device_mapping is not None:
+        app.state.event_processing_service.set_device_mapping(device_mapping)
+    if system_user_id is not None:
+        import uuid as _uuid
+
+        app.state.event_processing_service.set_user_id(_uuid.UUID(system_user_id))
     app.state.events = []
     app.state.alerts = []
     app.state.enriched_events = []
+    app.state.notifications = []
+    try:
+        from app.notifications.application import (
+            AlertAcknowledgementService,
+            NotificationService,
+        )
+
+        app.state.notification_service = NotificationService()
+        app.state.alert_acknowledgement_service = AlertAcknowledgementService()
+    except Exception:
+        logger.exception("Failed to initialize notification services")
 
     # Start acquisition -> classification pipeline worker
     try:
@@ -126,6 +159,13 @@ async def lifespan(app: FastAPI):
         app.include_router(history_router)
     except Exception:
         logger.exception("Failed to register History API router")
+
+    try:
+        from app.notifications.api import router as notifications_router
+
+        app.include_router(notifications_router)
+    except Exception:
+        logger.exception("Failed to register Notifications API router")
 
     yield
 

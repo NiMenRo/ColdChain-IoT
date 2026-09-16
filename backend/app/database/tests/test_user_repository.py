@@ -90,7 +90,7 @@ def test_user_list_pagination_and_filters(db):
     repo = UserRepository()
     for name, email, role in [
         ("Alice", "alice@example.com", "admin"),
-        ("Bob", "bob@example.com", "operator"),
+        ("Bob", "bob@example.com", "operador"),
         ("Carol", "carol@example.com", "admin"),
     ]:
         repo.create(db, name=name, email=email, password_hash="!", role=role)
@@ -130,9 +130,9 @@ def test_user_update(db):
     u = repo.create(db, name="Old", email="old@example.com", password_hash="!", role="admin")
     db.commit()
 
-    repo.update(db, u, name="New", role="operator")
+    repo.update(db, u, name="New", role="operador")
     db.commit()
-    assert u.name == "New" and u.role == "operator"
+    assert u.name == "New" and u.role == "operador"
 
     repo.update(db, u, email="  NEW@Example.COM ")
     db.commit()

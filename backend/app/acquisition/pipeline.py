@@ -201,6 +201,25 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                                         "Failed to enrich alert %s", alert.id
                                     )
                         
+                        # Dispatch notifications for generated alerts
+                        notification_service = getattr(app_state, "notification_service", None)
+                        notifications_list = getattr(app_state, "notifications", None)
+                        if notification_service is not None and result["alert_count"] > 0:
+                            for alert in result["alerts"]:
+                                try:
+                                    notif_result = notification_service.process(alert)
+                                    if notif_result.notification is not None and notifications_list is not None:
+                                        notifications_list.append(notif_result.notification)
+                                    logger.info(
+                                        "Processed notification %s for alert %s",
+                                        getattr(notif_result.notification, "id", None),
+                                        alert.id,
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to process notification for alert %s", alert.id
+                                    )
+
                         if result["alert_count"] > 0:
                             logger.warning(
                                 "Generated %d alerts for device %s (classification %s)",

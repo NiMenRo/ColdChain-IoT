@@ -13,9 +13,11 @@ from app.database.infrastructure.models import (
     PredictionORM,
     QoSMetricORM,
     SensorReadingORM,
+    SystemConfigORM,
     TrafficClassificationORM,
     UserORM,
 )
+from app.database.infrastructure.models import HUMAN_USER_ROLES
 from app.database.seed import SYSTEM_USER_ID
 from app.events.domain import Alert
 from app.qos.domain import QoSMetric
@@ -32,6 +34,14 @@ class SensorReadingRepository:
     def save(self, db: Session, readings: list[NormalizedReading], device_id: uuid.UUID) -> SensorReadingORM:
         if not readings:
             raise ValueError("readings must not be empty")
+        device = db.query(DeviceORM).filter_by(id=device_id).first()
+        if device is None:
+            raise ValueError(f"device_id {device_id} is not registered")
+        device_codes = {reading.device_code for reading in readings}
+        if device_codes != {device.code}:
+            raise ValueError(
+                "reading device_code does not match the registered device_id"
+            )
         # Group by same device_code + timestamp (documented grouping, no generic mapper)
         # Assume readings belong to the same bundle (same MQTT message)
         by_key: dict[tuple[str, str], list[NormalizedReading]] = {}
@@ -134,6 +144,17 @@ class PredictionRepository:
         db.add(obj)
         db.flush()
         return obj
+
+
+class SystemConfigRepository:
+    """Reads the persisted system configuration used by application services."""
+
+    def get_current(self, db: Session) -> SystemConfigORM | None:
+        return (
+            db.query(SystemConfigORM)
+            .order_by(SystemConfigORM.id.asc())
+            .first()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -310,8 +331,10 @@ class UserRepository:
             raise ValueError("email must be a non-empty string")
         if not isinstance(password_hash, str) or not password_hash:
             raise ValueError("password_hash must be a non-empty string")
-        if not isinstance(role, str) or not role.strip():
-            raise ValueError("role must be a non-empty string")
+        if not isinstance(role, str) or role.strip().lower() not in HUMAN_USER_ROLES:
+            raise ValueError(
+                f"role must be one of {sorted(HUMAN_USER_ROLES)} for human users"
+            )
         # Lower/strip normalization also delegated to @validates in UserORM, but done here
         # so exists_email / UNIQUE are consistent before flush.
         email = email.strip().lower()
@@ -319,7 +342,7 @@ class UserRepository:
             name=name.strip(),
             email=email,
             password_hash=password_hash,
-            role=role.strip(),
+            role=role.strip().lower(),
             created_at=created_at or datetime.now(timezone.utc),
         )
         db.add(obj)
@@ -338,7 +361,17 @@ class UserRepository:
             elif key in ("name", "role"):
                 if not isinstance(value, str) or not value.strip():
                     raise ValueError(f"{key} must be a non-empty string")
-                setattr(user, key, value.strip())
+                if key == "role":
+                    normalized_role = value.strip().lower()
+                    if normalized_role not in HUMAN_USER_ROLES:
+                        raise ValueError(
+                            f"role must be one of {sorted(HUMAN_USER_ROLES)} for human users"
+                        )
+                    if user.id == uuid.UUID(SYSTEM_USER_ID):
+                        raise ValueError("the technical system user must keep role 'system'")
+                    setattr(user, key, normalized_role)
+                else:
+                    setattr(user, key, value.strip())
             elif key == "password_hash":
                 if not isinstance(value, str) or not value:
                     raise ValueError("password_hash must be a non-empty string")
