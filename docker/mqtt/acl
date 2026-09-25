@@ -1,0 +1,9 @@
+# TSK-056 ACL: minimo privilegio por usuario MQTT.
+# Solo topics reales del proyecto (sin comodines amplios).
+# Este archivo NO contiene secretos y SI esta versionado.
+
+user simulator
+topic write coldchain/device/+/telemetry
+
+user backend
+topic read coldchain/device/+/telemetry

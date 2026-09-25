@@ -5,9 +5,16 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.auth.authorization import (
+    authenticated,
+    require_ack,
+    require_admin,
+    require_notification_write,
+)
+from app.auth.dependencies import AuthenticatedUser
 from app.events.domain import Alert
 from app.notifications.application import (
     AlertAcknowledgementService,
@@ -54,6 +61,8 @@ class NotificationHistoryResponse(BaseModel):
 
 
 class AcknowledgeAlertRequest(BaseModel):
+    # Accepted for backward compatibility but IGNORED: the acting
+    # user always comes from the validated token (TSK-055).
     user_id: Optional[str] = None
     acknowledged: Optional[bool] = True
 
@@ -67,6 +76,8 @@ class NotificationProcessRequest(BaseModel):
     recipient: Optional[str] = None
     message: Optional[str] = None
     device_id: Optional[str] = None
+    # Accepted for backward compatibility but IGNORED: the alert
+    # owner is always the authenticated user (TSK-055).
     user_id: Optional[str] = None
     type: Optional[str] = None
     criticality: Optional[float] = None
@@ -222,6 +233,7 @@ def get_notifications_history(
     status_filter: Optional[str] = Query(None, alias="status"),
     channel: Optional[str] = Query(None),
     alert_id: Optional[str] = Query(None),
+    _current: AuthenticatedUser = Depends(authenticated),
 ):
     """Retrieve notification history with optional filtering and pagination."""
     normalized_limit = _validated_limit(limit)
@@ -287,7 +299,11 @@ def get_notifications_history(
 # ---------------------------------------------------------------------------
 
 @router.get("/{notification_id}")
-def get_notification_by_id(request: Request, notification_id: str):
+def get_notification_by_id(
+    request: Request,
+    notification_id: str,
+    _current: AuthenticatedUser = Depends(authenticated),
+):
     """Retrieve a single notification record by its identifier."""
     notif_uuid = _validate_uuid(notification_id, "notification_id")
     notifications_list = _get_notifications_list(request)
@@ -305,7 +321,11 @@ def get_notification_by_id(request: Request, notification_id: str):
 
 
 @router.get("/{notification_id}/status")
-def get_notification_status(request: Request, notification_id: str):
+def get_notification_status(
+    request: Request,
+    notification_id: str,
+    _current: AuthenticatedUser = Depends(authenticated),
+):
     """Consult the current status of a notification."""
     notif_uuid = _validate_uuid(notification_id, "notification_id")
     notifications_list = _get_notifications_list(request)
@@ -339,6 +359,7 @@ def update_notification_status(
     request: Request,
     notification_id: str,
     body: UpdateNotificationStatusRequest,
+    _current: AuthenticatedUser = Depends(require_notification_write),
 ):
     """Update delivery status of a notification."""
     notif_uuid = _validate_uuid(notification_id, "notification_id")
@@ -376,7 +397,7 @@ def update_notification_status(
 def _perform_acknowledgement(
     request: Request,
     alert_uuid: UUID,
-    user_id_str: Optional[str] = None,
+    actor: AuthenticatedUser,
 ) -> dict[str, Any]:
     alert = _find_alert_by_id(request, alert_uuid)
     if alert is None:
@@ -385,12 +406,10 @@ def _perform_acknowledgement(
             detail="Alert not found.",
         )
 
-    parsed_user_id: Optional[UUID] = None
-    if user_id_str is not None:
-        parsed_user_id = _validate_uuid(user_id_str, "user_id")
-
+    # TSK-055: the acting user comes from the validated token.
+    # Any client-provided user_id is ignored by the callers.
     ack_service = _get_ack_service(request)
-    updated_alert = ack_service.acknowledge(alert, user_id=parsed_user_id)
+    updated_alert = ack_service.acknowledge(alert, user_id=actor.id)
 
     # Ensure any notifications linking to this alert are in sync
     notifications_list = _get_notifications_list(request)
@@ -415,17 +434,18 @@ def acknowledge_alert(
     request: Request,
     alert_id: str,
     body: Optional[AcknowledgeAlertRequest] = None,
+    current: AuthenticatedUser = Depends(require_ack),
 ):
-    """Register acknowledgement of an Alert by a user."""
+    """Register acknowledgement of an Alert by the authenticated user."""
     alert_uuid = _validate_uuid(alert_id, "alert_id")
-    user_id = body.user_id if body else None
-    return _perform_acknowledgement(request, alert_uuid, user_id)
+    return _perform_acknowledgement(request, alert_uuid, current)
 
 
 @router.post("/acknowledge")
 def acknowledge_alert_body(
     request: Request,
     body: dict[str, Any],
+    current: AuthenticatedUser = Depends(require_ack),
 ):
     """Register acknowledgement where alert_id is provided in request body."""
     raw_alert_id = body.get("alert_id")
@@ -435,8 +455,7 @@ def acknowledge_alert_body(
             detail="'alert_id' must be provided in request body.",
         )
     alert_uuid = _validate_uuid(str(raw_alert_id), "alert_id")
-    user_id = body.get("user_id")
-    return _perform_acknowledgement(request, alert_uuid, str(user_id) if user_id else None)
+    return _perform_acknowledgement(request, alert_uuid, current)
 
 
 @router.post("/{notification_id}/acknowledge")
@@ -444,6 +463,7 @@ def acknowledge_via_notification(
     request: Request,
     notification_id: str,
     body: Optional[AcknowledgeAlertRequest] = None,
+    current: AuthenticatedUser = Depends(require_ack),
 ):
     """Acknowledge the alert associated with a specific notification."""
     notif_uuid = _validate_uuid(notification_id, "notification_id")
@@ -462,7 +482,8 @@ def acknowledge_via_notification(
         )
 
     user_id = body.user_id if body else None
-    ack_result = _perform_acknowledgement(request, target_notif.alert_id, user_id)
+    _ = user_id  # ignored: actor comes from the token (TSK-055)
+    ack_result = _perform_acknowledgement(request, target_notif.alert_id, current)
     if target_notif.alert is not None:
         target_notif.alert.acknowledged = True
 
@@ -475,7 +496,11 @@ def acknowledge_via_notification(
 
 @router.get("/alerts/{alert_id}")
 @router.get("/alerts/{alert_id}/status")
-def get_alert_status(request: Request, alert_id: str):
+def get_alert_status(
+    request: Request,
+    alert_id: str,
+    _current: AuthenticatedUser = Depends(authenticated),
+):
     """Consult the status of an alert and associated notifications."""
     alert_uuid = _validate_uuid(alert_id, "alert_id")
     alert = _find_alert_by_id(request, alert_uuid)
@@ -512,8 +537,14 @@ def get_alert_status(request: Request, alert_id: str):
 def process_notification(
     request: Request,
     body: NotificationProcessRequest,
+    current: AuthenticatedUser = Depends(require_admin),
 ):
-    """Process an alert through NotificationService to generate and send a notification."""
+    """Process an alert through NotificationService to generate and send a notification.
+
+    Admin-only manual alert creation (TSK-055). The alert owner is
+    always the authenticated user; any client-provided user_id is
+    ignored.
+    """
     alert: Optional[Alert] = None
     if body.alert_id is not None:
         alert_uuid = _validate_uuid(body.alert_id, "alert_id")
@@ -522,9 +553,7 @@ def process_notification(
     if alert is None:
         if body.type is not None and body.device_id is not None:
             dev_uuid = _validate_uuid(body.device_id, "device_id")
-            usr_uuid = (
-                _validate_uuid(body.user_id, "user_id") if body.user_id else uuid4()
-            )
+            usr_uuid = current.id
             alt_uuid = (
                 _validate_uuid(body.alert_id, "alert_id")
                 if body.alert_id

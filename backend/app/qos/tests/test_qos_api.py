@@ -2,9 +2,12 @@ import sys
 import unittest
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+from app.auth.dependencies import AuthenticatedUser, get_current_user
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
@@ -18,6 +21,14 @@ class QoSApiTests(unittest.TestCase):
     def setUp(self):
         self.app = FastAPI()
         self.app.include_router(router)
+        # TSK-055: endpoints require auth (any role).
+        self.app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
+            id=uuid4(),
+            email="admin@example.com",
+            name="Admin",
+            role="admin",
+            is_active=True,
+        )
         self.app.state.qos_service = TrafficPlanningService()
         self.app.state.qos_metrics_service = QoSMetricsService()
         self.app.state.qos_records = []

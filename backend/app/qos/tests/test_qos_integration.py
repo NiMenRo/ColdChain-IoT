@@ -7,6 +7,8 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.auth.dependencies import AuthenticatedUser, get_current_user
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from app.classification.domain import TrafficClassification
@@ -23,6 +25,14 @@ class QoSIntegrationTests(unittest.TestCase):
 
         self.app = FastAPI()
         self.app.include_router(router)
+        # TSK-055: endpoints require auth (any role).
+        self.app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
+            id=uuid4(),
+            email="supervisor@example.com",
+            name="Supervisor",
+            role="supervisor",
+            is_active=True,
+        )
         self.app.state.qos_service = TrafficPlanningService()
         self.app.state.qos_metrics_service = QoSMetricsService()
         self.app.state.qos_records = []

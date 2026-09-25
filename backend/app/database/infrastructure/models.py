@@ -116,6 +116,7 @@ class UserORM(Base):
     email: Mapped[str] = mapped_column(String, nullable=False)
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
     role: Mapped[str] = mapped_column(String, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     alerts: Mapped[list[AlertORM]] = relationship(back_populates="user")

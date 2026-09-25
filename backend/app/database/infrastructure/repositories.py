@@ -323,6 +323,7 @@ class UserRepository:
         email: str,
         password_hash: str,
         role: str,
+        is_active: bool = True,
         created_at: datetime | None = None,
     ) -> UserORM:
         if not isinstance(name, str) or not name.strip():
@@ -335,6 +336,8 @@ class UserRepository:
             raise ValueError(
                 f"role must be one of {sorted(HUMAN_USER_ROLES)} for human users"
             )
+        if not isinstance(is_active, bool):
+            raise ValueError("is_active must be a boolean")
         # Lower/strip normalization also delegated to @validates in UserORM, but done here
         # so exists_email / UNIQUE are consistent before flush.
         email = email.strip().lower()
@@ -343,6 +346,7 @@ class UserRepository:
             email=email,
             password_hash=password_hash,
             role=role.strip().lower(),
+            is_active=is_active,
             created_at=created_at or datetime.now(timezone.utc),
         )
         db.add(obj)
@@ -350,7 +354,7 @@ class UserRepository:
         return obj
 
     def update(self, db: Session, user: UserORM, **fields) -> UserORM:
-        allowed = {"name", "email", "password_hash", "role"}
+        allowed = {"name", "email", "password_hash", "role", "is_active"}
         for key, value in fields.items():
             if key not in allowed:
                 raise ValueError(f"field '{key}' is not updatable")
@@ -376,5 +380,9 @@ class UserRepository:
                 if not isinstance(value, str) or not value:
                     raise ValueError("password_hash must be a non-empty string")
                 user.password_hash = value
+            elif key == "is_active":
+                if not isinstance(value, bool):
+                    raise ValueError("is_active must be a boolean")
+                user.is_active = value
         db.flush()
         return user

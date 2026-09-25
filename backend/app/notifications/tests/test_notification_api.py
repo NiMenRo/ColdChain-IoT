@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.auth.dependencies import AuthenticatedUser, get_current_user
 from app.events.domain import Alert
 from app.notifications.api import router
 from app.notifications.application import (
@@ -42,6 +43,14 @@ class NotificationAPITests(unittest.TestCase):
         self.app.state.alert_acknowledgement_service = self.ack_service
 
         self.app.include_router(router)
+        # TSK-055: endpoints require auth; act as admin in legacy suites.
+        self.app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
+            id=uuid4(),
+            email="admin@example.com",
+            name="Admin",
+            role="admin",
+            is_active=True,
+        )
         self.client = TestClient(self.app)
 
         self.user_id = uuid4()

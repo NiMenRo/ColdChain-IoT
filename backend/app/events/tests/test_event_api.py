@@ -7,6 +7,8 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.auth.dependencies import AuthenticatedUser, get_current_user
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from app.classification.domain import TrafficClassification
@@ -26,6 +28,14 @@ class EventProcessingAPITests(unittest.TestCase):
         self.app.state.events = []
         self.app.state.enriched_events = []
         self.app.include_router(router)
+        # TSK-055: endpoints require auth; act as auditor (read-only) here.
+        self.app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
+            id=uuid4(),
+            email="auditor@example.com",
+            name="Auditor",
+            role="auditor",
+            is_active=True,
+        )
         self.client = TestClient(self.app)
 
         self.alert = Alert(

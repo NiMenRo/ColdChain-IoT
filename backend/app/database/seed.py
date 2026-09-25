@@ -48,7 +48,7 @@ def seed_user(db: Session) -> int:
     uid = uuid.UUID(SYSTEM_USER_ID)
     if db.query(UserORM).filter_by(id=uid).first():
         return 0
-    db.add(UserORM(id=uid, name="system", email="system@coldchain.local", password_hash="!", role="system"))
+    db.add(UserORM(id=uid, name="system", email="system@coldchain.local", password_hash="!", role="system", is_active=True))
     db.commit()
     logger.info("Seeded system user %s", SYSTEM_USER_ID)
     return 1
