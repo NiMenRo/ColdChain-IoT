@@ -167,6 +167,13 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to register Notifications API router")
 
+    try:
+        from app.auth.api import router as auth_router
+
+        app.include_router(auth_router)
+    except Exception:
+        logger.exception("Failed to register Auth API router")
+
     yield
 
     # Shutdown pipeline and MQTT client
