@@ -4,10 +4,14 @@ from __future__ import annotations
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, validator
 
-router = APIRouter(prefix="/events", tags=["events"])
+from app.auth.authorization import authenticated
+
+router = APIRouter(
+    prefix="/events", tags=["events"], dependencies=[Depends(authenticated)]
+)
 
 __all__ = ["router"]
 

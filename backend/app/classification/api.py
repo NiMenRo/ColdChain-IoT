@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, validator
 from typing import Optional
 from datetime import datetime
 import logging
 
+from app.auth.authorization import authenticated
 from .application.classification_service import ClassificationService
 from .application.criticality_calculator import CriticalityCalculator
 from .application.priority_assigner import PriorityAssigner
@@ -14,7 +15,11 @@ from app.classification.domain import TrafficClassification
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/classification", tags=["classification"])
+router = APIRouter(
+    prefix="/classification",
+    tags=["classification"],
+    dependencies=[Depends(authenticated)],
+)
 
 
 class NormalizedReadingModel(BaseModel):

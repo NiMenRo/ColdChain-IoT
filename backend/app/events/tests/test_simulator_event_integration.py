@@ -3,9 +3,12 @@ import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+from app.auth.dependencies import AuthenticatedUser, get_current_user
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
@@ -132,6 +135,14 @@ class SimulatorEventIntegrationTests(unittest.TestCase):
         app.state.alerts = result["alerts"]
         app.state.enriched_events = []
         app.include_router(events_router)
+        # TSK-055: endpoints require auth (any role).
+        app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
+            id=uuid4(),
+            email="operador@example.com",
+            name="Operador",
+            role="operador",
+            is_active=True,
+        )
 
         client = TestClient(app)
 

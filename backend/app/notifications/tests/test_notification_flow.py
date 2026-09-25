@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.acquisition.normalizer import TelemetryNormalizer
+from app.auth.dependencies import AuthenticatedUser, get_current_user
 from app.classification.application.classification_service import ClassificationService
 from app.classification.application.criticality_calculator import CriticalityCalculator
 from app.classification.application.priority_assigner import PriorityAssigner
@@ -100,6 +101,14 @@ class NotificationModuleFlowTests(unittest.TestCase):
         self.app.state.notification_service = self.notification_service
         self.app.state.alert_acknowledgement_service = self.ack_service
         self.app.include_router(notifications_router)
+        # TSK-055: endpoints require auth; act as admin in legacy suites.
+        self.app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
+            id=uuid4(),
+            email="admin@example.com",
+            name="Admin",
+            role="admin",
+            is_active=True,
+        )
 
         self.client = TestClient(self.app)
 

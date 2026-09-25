@@ -1,8 +1,12 @@
 import sys
 import unittest
 from pathlib import Path
+from uuid import uuid4
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+from app.auth.dependencies import AuthenticatedUser, get_current_user
 
 # Ensure repo root is on sys.path when running tests
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -14,6 +18,14 @@ class ClassificationAPITests(unittest.TestCase):
     def setUp(self) -> None:
         self.app = FastAPI()
         self.app.include_router(router)
+        # TSK-055: endpoint requires auth (any role).
+        self.app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
+            id=uuid4(),
+            email="operador@example.com",
+            name="Operador",
+            role="operador",
+            is_active=True,
+        )
         self.client = TestClient(self.app)
 
     def test_classify_endpoint_accepts_valid_request(self):

@@ -4,14 +4,15 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, validator
 
+from app.auth.authorization import authenticated
 from app.classification.domain import TrafficClassification
 from app.qos.application.qos_metrics_service import MessageDeliveryRecord, QoSMetricsService
 from app.qos.application.traffic_planning_service import TrafficPlanningService
 
-router = APIRouter(prefix="/qos", tags=["qos"])
+router = APIRouter(prefix="/qos", tags=["qos"], dependencies=[Depends(authenticated)])
 
 __all__ = ["router"]
 

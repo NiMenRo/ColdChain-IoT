@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from app.auth.dependencies import AuthenticatedUser, get_current_user
 from app.database.infrastructure.base import Base
 from app.database.infrastructure.models import DeviceORM, UserORM
 from app.acquisition.normalizer import NormalizedReading
@@ -49,6 +50,14 @@ def override_get_db():
     finally:
         db.close()
 app.dependency_overrides[get_db] = override_get_db
+# TSK-055: history endpoints require auth (any role).
+app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
+    id=uuid.uuid4(),
+    email="auditor@example.com",
+    name="Auditor",
+    role="auditor",
+    is_active=True,
+)
 
 def test_pagination():
     with TestClient(app) as c:

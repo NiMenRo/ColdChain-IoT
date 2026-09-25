@@ -12,6 +12,9 @@ backend/demo_schedulers.py
 coldchain.ps1
 .coldchain/
 
+# Script temporal de validacion manual RBAC (local, no commitear)
+rbac_manual_check.py
+
 # MQTT broker runtime data
 docker/mqtt/data/*
 docker/mqtt/log/*

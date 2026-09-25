@@ -1,8 +1,9 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
+from app.auth.authorization import AuthenticatedUser, authenticated
 from app.config import BackendConfig
 from app.acquisition import MessageQueue
 from app.acquisition.infrastructure import MQTTClient, MQTTSubscriber
@@ -174,6 +175,13 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to register Auth API router")
 
+    try:
+        from app.users.api import router as users_router
+
+        app.include_router(users_router)
+    except Exception:
+        logger.exception("Failed to register Users API router")
+
     yield
 
     # Shutdown pipeline and MQTT client
@@ -190,7 +198,7 @@ app = FastAPI(title="ColdChain API", lifespan=lifespan)
 
 
 @app.get("/acquisition/messages")
-def get_messages():
+def get_messages(_current: AuthenticatedUser = Depends(authenticated)):
     # TODO: remove when the full acquisition pipeline exists (TSK-010+)
     return {
         "connected": app.state.mqtt_client.is_connected,
@@ -200,7 +208,9 @@ def get_messages():
 
 
 @app.get("/classification/results")
-def get_classification_results():
+def get_classification_results(
+    _current: AuthenticatedUser = Depends(authenticated),
+):
     """Return recent classification results produced by the acquisition->classification pipeline.
 
     This endpoint is intended for local testing and debugging: it exposes the in-memory
