@@ -32,7 +32,14 @@ async def lifespan(app: FastAPI):
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    mqtt_client = MQTTClient(config.mqtt_host, config.mqtt_port)
+    mqtt_username, mqtt_password, mqtt_ca_cert = config.mqtt_credentials()
+    mqtt_client = MQTTClient(
+        config.mqtt_host,
+        config.mqtt_port,
+        username=mqtt_username,
+        password=mqtt_password,
+        tls_ca_cert=mqtt_ca_cert,
+    )
     mqtt_client.start()
 
     message_queue = MessageQueue(config.max_queue_size)

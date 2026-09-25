@@ -15,8 +15,19 @@ coldchain.ps1
 # Script temporal de validacion manual RBAC (local, no commitear)
 rbac_manual_check.py
 
+# Script temporal de validacion manual MQTT/TLS TSK-056 (local, no commitear)
+tsk056_validate.py
+
 # MQTT broker runtime data
 docker/mqtt/data/*
 docker/mqtt/log/*
 !docker/mqtt/data/.gitkeep
 !docker/mqtt/log/.gitkeep
+
+# TSK-056: secretos y PKI locales (nunca versionar)
+.env
+*.crt
+*.key
+*.pem
+docker/mqtt/passwd
+docker/mqtt/certs/

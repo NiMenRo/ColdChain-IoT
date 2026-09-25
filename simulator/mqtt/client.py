@@ -9,13 +9,28 @@ logger = logging.getLogger(__name__)
 
 class MQTTClient:
 
-    def __init__(self, host: str, port: int, client_id: str | None = None):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        client_id: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        tls_ca_cert: str | None = None,
+    ):
         self._host = host
         self._port = port
         effective_client_id = client_id or f"coldchain-simulator-{uuid.uuid4().hex[:8]}"
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=effective_client_id)
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
+        if username:
+            # TSK-056: broker credentials (never logged).
+            self._client.username_pw_set(username, password or "")
+        if tls_ca_cert:
+            # TSK-056: strict server-certificate verification against
+            # the configured CA. Never disable verification.
+            self._client.tls_set(ca_certs=tls_ca_cert)
 
     def start(self):
         try:

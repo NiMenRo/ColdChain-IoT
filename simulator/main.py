@@ -33,7 +33,14 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    mqtt_client = MQTTClient(config.mqtt_host, config.mqtt_port)
+    mqtt_username, mqtt_password, mqtt_ca_cert = config.mqtt_credentials()
+    mqtt_client = MQTTClient(
+        config.mqtt_host,
+        config.mqtt_port,
+        username=mqtt_username,
+        password=mqtt_password,
+        tls_ca_cert=mqtt_ca_cert,
+    )
     mqtt_client.start()
 
     device_publisher = DevicePublisher(mqtt_client, config.topic_prefix, config.mqtt_qos)
