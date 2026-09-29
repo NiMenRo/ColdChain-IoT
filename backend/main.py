@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 
-from app.auth.authorization import AuthenticatedUser, authenticated
+from app.security import AuthenticatedUser, authenticated
 from app.config import BackendConfig
 from app.acquisition import MessageQueue
 from app.acquisition.infrastructure import MQTTClient, MQTTSubscriber

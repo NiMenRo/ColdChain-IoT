@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import AuthenticatedUser, get_current_user
+from app.security import AuthenticatedUser, get_current_user
 from app.auth.schemas import LoginRequest, TokenResponse, UserResponse
 from app.auth.service import AuthService, InvalidCredentialsError
 from app.database.infrastructure.repositories import UserRepository

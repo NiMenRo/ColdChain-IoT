@@ -1,16 +1,20 @@
 import uuid
 from datetime import datetime, timezone
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from app.auth.dependencies import AuthenticatedUser, get_current_user
+from app.security import AuthenticatedUser, get_current_user
 from app.database.infrastructure.base import Base
 from app.database.infrastructure.models import DeviceORM, UserORM
 from app.acquisition.normalizer import NormalizedReading
 from app.classification.domain import TrafficClassification
 from app.database.application.persistence_service import PersistenceService
 from app.database.infrastructure.session import get_db
-from main import app
+from app.history.api.router import router as history_router
+
+app = FastAPI()
+app.include_router(history_router)
 
 from sqlalchemy.pool import StaticPool
 engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool, future=True)
