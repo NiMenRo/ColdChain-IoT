@@ -4,7 +4,7 @@ from typing import Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from app.security import authenticated
+from app.auth.authorization import authenticated
 from app.database.infrastructure.session import get_db
 from app.history.application.history_service import HistoryService
 

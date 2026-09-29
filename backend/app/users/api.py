@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.security import AuthenticatedUser, require_admin
+from app.auth.authorization import AuthenticatedUser, require_admin
 from app.auth.schemas import UserResponse
 from app.auth.service import AuthService
 from app.database.infrastructure.models import TECHNICAL_USER_ROLE

@@ -6,7 +6,7 @@ from typing import Optional
 from datetime import datetime
 import logging
 
-from app.security import authenticated
+from app.auth.authorization import authenticated
 from .application.classification_service import ClassificationService
 from .application.criticality_calculator import CriticalityCalculator
 from .application.priority_assigner import PriorityAssigner

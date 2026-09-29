@@ -8,13 +8,13 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
-from app.security import (
-    AuthenticatedUser,
+from app.auth.authorization import (
     authenticated,
     require_ack,
     require_admin,
     require_notification_write,
 )
+from app.auth.dependencies import AuthenticatedUser
 from app.events.domain import Alert
 from app.notifications.application import (
     AlertAcknowledgementService,

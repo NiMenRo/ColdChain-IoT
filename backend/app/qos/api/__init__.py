@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, validator
 
-from app.security import authenticated
+from app.auth.authorization import authenticated
 from app.classification.domain import TrafficClassification
 from app.qos.application.qos_metrics_service import MessageDeliveryRecord, QoSMetricsService
 from app.qos.application.traffic_planning_service import TrafficPlanningService
