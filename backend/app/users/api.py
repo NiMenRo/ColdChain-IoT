@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.audit.service import AuditService
 from app.auth.schemas import UserResponse
 from app.auth.service import AuthService
 from app.database.infrastructure.models import TECHNICAL_USER_ROLE
@@ -28,6 +29,7 @@ __all__ = ["router"]
 
 _users = UserRepository()
 _auth = AuthService()
+_audit = AuditService()
 
 
 def _to_response(user) -> UserResponse:
@@ -122,6 +124,12 @@ def create_user(
             role=body.role,
             is_active=body.is_active,
         )
+        _audit.record(
+            db,
+            actor_user_id=_current.id,
+            action="user.create",
+            resource=f"users/{user.id}",
+        )
         db.commit()
         db.refresh(user)
     except ValueError as exc:
@@ -164,6 +172,12 @@ def update_user(
         )
     try:
         updated = _auth.update_user(db, user, **fields)
+        _audit.record(
+            db,
+            actor_user_id=current.id,
+            action="user.update",
+            resource=f"users/{updated.id}",
+        )
         db.commit()
         db.refresh(updated)
     except ValueError as exc:
@@ -195,6 +209,12 @@ def reset_password(
     _forbid_system(user)
     try:
         _auth.change_password(db, user, body.new_password)
+        _audit.record(
+            db,
+            actor_user_id=_current.id,
+            action="user.password_reset",
+            resource=f"users/{user.id}",
+        )
         db.commit()
     except ValueError as exc:
         db.rollback()

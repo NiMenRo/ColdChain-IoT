@@ -193,9 +193,11 @@ app = FastAPI(title="ColdChain API", lifespan=lifespan)
 # when the application is built so they are consistently present in OpenAPI,
 # including deployments where an unrelated integration component fails later.
 from app.auth.api import router as auth_router
+from app.audit.api import router as audit_router
 from app.users.api import router as users_router
 
 app.include_router(auth_router)
+app.include_router(audit_router)
 app.include_router(users_router)
 
 

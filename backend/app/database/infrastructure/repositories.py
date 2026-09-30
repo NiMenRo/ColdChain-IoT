@@ -9,6 +9,7 @@ from app.acquisition.normalizer import NormalizedReading
 from app.classification.domain import TrafficClassification
 from app.database.infrastructure.models import (
     AlertORM,
+    AuditLogORM,
     DeviceORM,
     PredictionORM,
     QoSMetricORM,
@@ -386,3 +387,40 @@ class UserRepository:
                 user.is_active = value
         db.flush()
         return user
+
+
+class AuditLogRepository:
+    """Persistence for immutable audit entries; intentionally no update/delete."""
+
+    def create(
+        self,
+        db: Session,
+        *,
+        actor_user_id: uuid.UUID,
+        action: str,
+        resource: str,
+        outcome: str = "success",
+    ) -> AuditLogORM:
+        if not isinstance(action, str) or not action.strip():
+            raise ValueError("action must be a non-empty string")
+        if not isinstance(resource, str) or not resource.strip():
+            raise ValueError("resource must be a non-empty string")
+        if not isinstance(outcome, str) or not outcome.strip():
+            raise ValueError("outcome must be a non-empty string")
+        entry = AuditLogORM(
+            actor_user_id=actor_user_id,
+            action=action.strip(),
+            resource=resource.strip(),
+            outcome=outcome.strip(),
+        )
+        db.add(entry)
+        db.flush()
+        return entry
+
+    def list(
+        self, db: Session, *, page: int = 1, per_page: int = 20
+    ) -> tuple[int, list[AuditLogORM]]:
+        query = db.query(AuditLogORM).order_by(AuditLogORM.created_at.desc())
+        total = query.count()
+        items = query.offset((page - 1) * per_page).limit(per_page).all()
+        return total, items
