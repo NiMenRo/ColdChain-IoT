@@ -175,20 +175,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to register Notifications API router")
 
-    try:
-        from app.auth.api import router as auth_router
-
-        app.include_router(auth_router)
-    except Exception:
-        logger.exception("Failed to register Auth API router")
-
-    try:
-        from app.users.api import router as users_router
-
-        app.include_router(users_router)
-    except Exception:
-        logger.exception("Failed to register Users API router")
-
     yield
 
     # Shutdown pipeline and MQTT client
@@ -202,6 +188,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ColdChain API", lifespan=lifespan)
+
+# Security routes do not depend on MQTT or background workers.  Register them
+# when the application is built so they are consistently present in OpenAPI,
+# including deployments where an unrelated integration component fails later.
+from app.auth.api import router as auth_router
+from app.audit.api import router as audit_router
+from app.users.api import router as users_router
+
+app.include_router(auth_router)
+app.include_router(audit_router)
+app.include_router(users_router)
 
 
 @app.get("/acquisition/messages")

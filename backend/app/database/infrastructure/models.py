@@ -139,6 +139,28 @@ class UserORM(Base):
         return normalized
 
 
+class AuditLogORM(Base):
+    """Immutable record of an action performed by a human user.
+
+    The application never exposes write endpoints for this entity.  Rows are
+    created only by application services in the transaction of the audited
+    operation, preserving a reliable actor/action/result relationship.
+    """
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id"), nullable=False, index=True
+    )
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    resource: Mapped[str] = mapped_column(String, nullable=False)
+    outcome: Mapped[str] = mapped_column(String, nullable=False, default="success")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, index=True
+    )
+
+
 class AlertORM(Base):
     __tablename__ = "alerts"
 

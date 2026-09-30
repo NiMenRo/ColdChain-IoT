@@ -10,18 +10,23 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import AuthenticatedUser, get_current_user
 from app.auth.schemas import LoginRequest, TokenResponse, UserResponse
 from app.auth.service import AuthService, InvalidCredentialsError
 from app.database.infrastructure.repositories import UserRepository
 from app.database.infrastructure.session import get_db
+from app.security.dependencies import AuthenticatedUser, get_current_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 __all__ = ["router"]
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    summary="Authenticate a human user",
+    responses={401: {"description": "Invalid credentials or inactive user"}},
+)
 def login(body: LoginRequest, db: Session = Depends(get_db)):
     """Authenticate with email + password and issue a JWT."""
     try:
@@ -37,7 +42,12 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     return TokenResponse(access_token=token, expires_in=expires_in)
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get(
+    "/me",
+    response_model=UserResponse,
+    summary="Get the authenticated user's identity",
+    responses={401: {"description": "Missing, invalid, expired, or inactive token"}},
+)
 def get_me(
     db: Session = Depends(get_db),
     current: AuthenticatedUser = Depends(get_current_user),
