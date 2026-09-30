@@ -14,12 +14,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.auth.authorization import AuthenticatedUser, require_admin
 from app.auth.schemas import UserResponse
 from app.auth.service import AuthService
 from app.database.infrastructure.models import TECHNICAL_USER_ROLE
 from app.database.infrastructure.repositories import UserRepository
 from app.database.infrastructure.session import get_db
+from app.security.dependencies import AuthenticatedUser, require_admin
 from app.users.schemas import PasswordReset, UserCreate, UserUpdate
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -58,7 +58,12 @@ def _forbid_system(user) -> None:
         )
 
 
-@router.get("", response_model=dict)
+@router.get(
+    "",
+    response_model=dict,
+    summary="List human users",
+    responses={401: {"description": "Not authenticated"}, 403: {"description": "Admin role required"}},
+)
 def list_users(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
@@ -77,7 +82,12 @@ def list_users(
     }
 
 
-@router.get("/{user_id}", response_model=UserResponse)
+@router.get(
+    "/{user_id}",
+    response_model=UserResponse,
+    summary="Get a user",
+    responses={401: {"description": "Not authenticated"}, 403: {"description": "Admin role required"}, 404: {"description": "User not found"}},
+)
 def get_user(
     user_id: UUID,
     db: Session = Depends(get_db),
@@ -86,7 +96,13 @@ def get_user(
     return _to_response(_get_or_404(db, user_id))
 
 
-@router.post("", status_code=status.HTTP_201_CREATED, response_model=UserResponse)
+@router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    response_model=UserResponse,
+    summary="Create a human user",
+    responses={401: {"description": "Not authenticated"}, 403: {"description": "Admin role required"}, 409: {"description": "Email already exists"}},
+)
 def create_user(
     body: UserCreate,
     db: Session = Depends(get_db),
@@ -120,7 +136,12 @@ def create_user(
     return _to_response(user)
 
 
-@router.patch("/{user_id}", response_model=UserResponse)
+@router.patch(
+    "/{user_id}",
+    response_model=UserResponse,
+    summary="Update a human user",
+    responses={401: {"description": "Not authenticated"}, 403: {"description": "Admin role required or protected update"}, 404: {"description": "User not found"}, 409: {"description": "Email already exists"}},
+)
 def update_user(
     user_id: UUID,
     body: UserUpdate,
@@ -157,7 +178,12 @@ def update_user(
     return _to_response(updated)
 
 
-@router.post("/{user_id}/password", response_model=dict)
+@router.post(
+    "/{user_id}/password",
+    response_model=dict,
+    summary="Reset a human user's password",
+    responses={401: {"description": "Not authenticated"}, 403: {"description": "Admin role required"}, 404: {"description": "User not found"}},
+)
 def reset_password(
     user_id: UUID,
     body: PasswordReset,
