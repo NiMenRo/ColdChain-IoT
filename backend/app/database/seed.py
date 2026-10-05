@@ -4,7 +4,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.database.infrastructure.models import DeviceORM, SystemConfigORM, UserORM
+from app.database.infrastructure.models import DeviceORM, DeviceSensorORM, SystemConfigORM, UserORM
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,32 @@ def seed_devices(db: Session) -> int:
     return inserted
 
 
+SENSOR_TYPES = ("temperature", "humidity", "energy")
+
+
+def seed_device_sensors(db: Session) -> int:
+    """TSK-059.2 — every seeded device keeps its three current sensors."""
+    inserted = 0
+    for d in DEVICE_SEED:
+        device = db.query(DeviceORM).filter_by(code=d["code"]).first()
+        if device is None:
+            continue
+        for sensor_type in SENSOR_TYPES:
+            exists = (
+                db.query(DeviceSensorORM)
+                .filter_by(device_id=device.id, sensor_type=sensor_type)
+                .first()
+            )
+            if exists:
+                continue
+            db.add(DeviceSensorORM(device_id=device.id, sensor_type=sensor_type))
+            inserted += 1
+    if inserted:
+        db.commit()
+        logger.info("Seeded %d device sensors", inserted)
+    return inserted
+
+
 def seed_user(db: Session) -> int:
     import uuid
 
@@ -70,4 +96,4 @@ def seed_system_config(db: Session) -> int:
 
 
 def seed_all(db: Session) -> int:
-    return seed_devices(db) + seed_user(db) + seed_system_config(db)
+    return seed_devices(db) + seed_device_sensors(db) + seed_user(db) + seed_system_config(db)

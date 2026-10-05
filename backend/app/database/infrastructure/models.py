@@ -48,6 +48,29 @@ class DeviceORM(Base):
 
     sensor_readings: Mapped[list[SensorReadingORM]] = relationship(back_populates="device")
     alerts: Mapped[list[AlertORM]] = relationship(back_populates="device")
+    device_sensors: Mapped[list[DeviceSensorORM]] = relationship(back_populates="device")
+
+
+class DeviceSensorORM(Base):
+    """TSK-059.2 — persistent per-device sensor configuration.
+
+    One row per enabled sensor; SensorReading stays aggregated (TSK-059.3).
+    """
+
+    __tablename__ = "device_sensors"
+    __table_args__ = (
+        UniqueConstraint("device_id", "sensor_type", name="uq_device_sensors_device_sensor"),
+        CheckConstraint(
+            "sensor_type IN ('temperature','humidity','energy')",
+            name="ck_device_sensors_type",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    device_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("devices.id"), nullable=False)
+    sensor_type: Mapped[str] = mapped_column(String, nullable=False)
+
+    device: Mapped[DeviceORM] = relationship(back_populates="device_sensors")
 
 
 class SensorReadingORM(Base):

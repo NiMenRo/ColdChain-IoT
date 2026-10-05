@@ -11,6 +11,7 @@ from app.database.infrastructure.models import (
     AlertORM,
     AuditLogORM,
     DeviceORM,
+    DeviceSensorORM,
     PredictionORM,
     QoSMetricORM,
     SensorReadingORM,
@@ -164,6 +165,7 @@ class SystemConfigRepository:
 
 _ALLOWED_STATUSES = frozenset({"active", "inactive", "maintenance", "error"})
 _ALLOWED_DEVICE_TYPES = frozenset({"cold_room", "refrigerated_showcase"})
+_ALLOWED_SENSOR_TYPES = frozenset({"temperature", "humidity", "energy"})
 
 
 class DeviceRepository:
@@ -272,6 +274,59 @@ class DeviceRepository:
         device.status = status
         db.flush()
         return device
+
+
+class DeviceSensorRepository:
+    """TSK-059.2 — persistent Device -> DeviceSensor configuration.
+
+    Repositories use flush only; commit is caller's responsibility.
+    Deleting a sensor never touches sensor_readings history.
+    """
+
+    def list_by_device(self, db: Session, device_id: uuid.UUID) -> list[DeviceSensorORM]:
+        return (
+            db.query(DeviceSensorORM)
+            .filter_by(device_id=device_id)
+            .order_by(DeviceSensorORM.sensor_type.asc())
+            .all()
+        )
+
+    def get(self, db: Session, device_id: uuid.UUID, sensor_type: str) -> DeviceSensorORM | None:
+        if not isinstance(sensor_type, str):
+            return None
+        sensor_type = sensor_type.strip().lower()
+        if not sensor_type:
+            return None
+        return (
+            db.query(DeviceSensorORM)
+            .filter_by(device_id=device_id, sensor_type=sensor_type)
+            .first()
+        )
+
+    def create(self, db: Session, *, device_id: uuid.UUID, sensor_type: str) -> DeviceSensorORM:
+        if not isinstance(sensor_type, str) or not sensor_type.strip():
+            raise ValueError("sensor_type must be a non-empty string")
+        normalized = sensor_type.strip().lower()
+        if normalized not in _ALLOWED_SENSOR_TYPES:
+            raise ValueError(f"sensor_type must be one of {sorted(_ALLOWED_SENSOR_TYPES)}")
+        device = db.query(DeviceORM).filter_by(id=device_id).first()
+        if device is None:
+            raise ValueError(f"device_id {device_id} is not registered")
+        obj = DeviceSensorORM(device_id=device_id, sensor_type=normalized)
+        db.add(obj)
+        db.flush()
+        return obj
+
+    def delete(self, db: Session, sensor: DeviceSensorORM) -> None:
+        remaining = (
+            db.query(DeviceSensorORM)
+            .filter_by(device_id=sensor.device_id)
+            .count()
+        )
+        if remaining <= 1:
+            raise ValueError("device must keep at least one sensor configured")
+        db.delete(sensor)
+        db.flush()
 
 
 class UserRepository:
