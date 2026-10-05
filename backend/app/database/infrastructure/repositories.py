@@ -13,6 +13,8 @@ from app.database.infrastructure.models import (
     AuditLogORM,
     DeviceORM,
     DeviceSensorORM,
+    ExperimentMetricORM,
+    ExperimentRunORM,
     PredictionORM,
     QoSMetricORM,
     SensorReadingORM,
@@ -20,7 +22,11 @@ from app.database.infrastructure.models import (
     TrafficClassificationORM,
     UserORM,
 )
-from app.database.infrastructure.models import HUMAN_USER_ROLES
+from app.database.infrastructure.models import (
+    EXPERIMENT_METRIC_TYPES,
+    EXPERIMENT_SCENARIOS,
+    HUMAN_USER_ROLES,
+)
 from app.database.seed import SYSTEM_USER_ID
 from app.events.domain import Alert
 from app.qos.domain import QoSMetric
@@ -572,4 +578,136 @@ class AuditLogRepository:
         query = db.query(AuditLogORM).order_by(AuditLogORM.created_at.desc())
         total = query.count()
         items = query.offset((page - 1) * per_page).limit(per_page).all()
+        return total, items
+
+
+class ExperimentRunRepository:
+    """TSK-059.6 — experiment runs. Flush only; commit is caller's responsibility."""
+
+    def create(
+        self,
+        db: Session,
+        *,
+        scenario: str,
+        config_snapshot: str | dict | None = None,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+    ) -> ExperimentRunORM:
+        if not isinstance(scenario, str) or scenario.strip() not in EXPERIMENT_SCENARIOS:
+            raise ValueError(
+                f"scenario must be one of {sorted(EXPERIMENT_SCENARIOS)}"
+            )
+        snapshot = self._serialize_snapshot(config_snapshot)
+        obj = ExperimentRunORM(
+            scenario=scenario.strip(),
+            config_snapshot=snapshot,
+            started_at=started_at or datetime.now(timezone.utc),
+            finished_at=finished_at,
+        )
+        db.add(obj)
+        db.flush()
+        return obj
+
+    def get_by_id(self, db: Session, id: uuid.UUID) -> ExperimentRunORM | None:
+        return db.query(ExperimentRunORM).filter_by(id=id).first()
+
+    def list(
+        self,
+        db: Session,
+        *,
+        scenario: str | None = None,
+        page: int = 1,
+        per_page: int = 20,
+    ) -> tuple[int, list[ExperimentRunORM]]:
+        q = db.query(ExperimentRunORM)
+        if scenario is not None:
+            if scenario not in EXPERIMENT_SCENARIOS:
+                raise ValueError(
+                    f"scenario must be one of {sorted(EXPERIMENT_SCENARIOS)}"
+                )
+            q = q.filter(ExperimentRunORM.scenario == scenario)
+        q = q.order_by(ExperimentRunORM.started_at.desc())
+        total = q.count()
+        items = q.offset((page - 1) * per_page).limit(per_page).all()
+        return total, items
+
+    @staticmethod
+    def _serialize_snapshot(value: str | dict | None) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            parsed = json.loads(value)  # must be valid JSON
+            return json.dumps(parsed, sort_keys=True, default=str)
+        if isinstance(value, dict):
+            return json.dumps(value, sort_keys=True, default=str)
+        raise ValueError("config_snapshot must be a JSON str, dict or None")
+
+
+class ExperimentMetricRepository:
+    """TSK-059.6 — common comparable metrics. Flush only; no commit."""
+
+    def append(
+        self,
+        db: Session,
+        *,
+        run_id: uuid.UUID,
+        metric_type: str,
+        value: float,
+        timestamp: datetime | None = None,
+    ) -> ExperimentMetricORM:
+        if not isinstance(metric_type, str) or metric_type.strip() not in EXPERIMENT_METRIC_TYPES:
+            raise ValueError(
+                f"metric_type must be one of {sorted(EXPERIMENT_METRIC_TYPES)}"
+            )
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("value must be numeric")
+        obj = ExperimentMetricORM(
+            run_id=run_id,
+            metric_type=metric_type.strip(),
+            value=value,
+            timestamp=timestamp or datetime.now(timezone.utc),
+        )
+        db.add(obj)
+        db.flush()
+        return obj
+
+    def bulk(
+        self,
+        db: Session,
+        *,
+        run_id: uuid.UUID,
+        metrics: list[dict],
+    ) -> list[ExperimentMetricORM]:
+        result = []
+        for m in metrics:
+            result.append(
+                self.append(
+                    db,
+                    run_id=run_id,
+                    metric_type=m["metric_type"],
+                    value=m["value"],
+                    timestamp=m.get("timestamp"),
+                )
+            )
+        return result
+
+    def list(
+        self,
+        db: Session,
+        *,
+        run_id: uuid.UUID,
+        metric_type: str | None = None,
+        page: int = 1,
+        per_page: int = 20,
+    ) -> tuple[int, list[ExperimentMetricORM]]:
+        q = db.query(ExperimentMetricORM).filter_by(run_id=run_id)
+        if metric_type is not None:
+            if metric_type not in EXPERIMENT_METRIC_TYPES:
+                raise ValueError(
+                    f"metric_type must be one of {sorted(EXPERIMENT_METRIC_TYPES)}"
+                )
+            q = q.filter(ExperimentMetricORM.metric_type == metric_type)
+        q = q.order_by(ExperimentMetricORM.timestamp.asc())
+        total = q.count()
+        items = q.offset((page - 1) * per_page).limit(per_page).all()
         return total, items

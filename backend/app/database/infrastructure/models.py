@@ -10,6 +10,18 @@ from app.database.infrastructure.base import Base
 
 HUMAN_USER_ROLES = frozenset({"admin", "supervisor", "operador", "auditor"})
 TECHNICAL_USER_ROLE = "system"
+EXPERIMENT_SCENARIOS = frozenset({"WITH_QOS", "WITHOUT_QOS"})
+EXPERIMENT_METRIC_TYPES = frozenset(
+    {
+        "messages_received",
+        "messages_invalid",
+        "readings_persisted",
+        "alerts_generated",
+        "backlog",
+        "ingest_to_persist_ms",
+        "ingest_to_alert_ms",
+    }
+)
 VALID_USER_ROLES = HUMAN_USER_ROLES | {TECHNICAL_USER_ROLE}
 USER_ROLE_RESPONSIBILITIES = {
     "admin": "Administracion general del sistema",
@@ -91,12 +103,17 @@ class SensorReadingORM(Base):
     humidity: Mapped[float | None] = mapped_column(Float, nullable=True)
     energy: Mapped[str | None] = mapped_column(String, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    # TSK-059.6 — NULL means legacy reading outside any experiment run.
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("experiment_runs.id"), nullable=True, index=True
+    )
 
     device: Mapped[DeviceORM] = relationship(back_populates="sensor_readings")
     traffic_classification: Mapped[TrafficClassificationORM | None] = relationship(
         back_populates="sensor_reading", uselist=False
     )
     predictions: Mapped[list[PredictionORM]] = relationship(back_populates="sensor_reading")
+    experiment_run: Mapped[ExperimentRunORM | None] = relationship(back_populates="sensor_readings")
 
 
 class TrafficClassificationORM(Base):
@@ -232,9 +249,14 @@ class AlertORM(Base):
     criticality: Mapped[float] = mapped_column(Float, nullable=False)
     acknowledged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    # TSK-059.6 — NULL means legacy alert outside any experiment run.
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("experiment_runs.id"), nullable=True, index=True
+    )
 
     device: Mapped[DeviceORM] = relationship(back_populates="alerts")
     user: Mapped[UserORM] = relationship(back_populates="alerts")
+    experiment_run: Mapped[ExperimentRunORM | None] = relationship(back_populates="alerts")
 
 
 class SystemConfigORM(Base):
@@ -274,3 +296,78 @@ class PredictionORM(Base):
     prediction_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     sensor_reading: Mapped[SensorReadingORM] = relationship(back_populates="predictions")
+
+
+class ExperimentRunORM(Base):
+    """TSK-059.6 — one comparable experiment execution (WITH_QOS/WITHOUT_QOS).
+
+    Common metrics live in ExperimentMetric; QoS-specific data stays in
+    TrafficClassification/QoSMetric (WITH_QOS only).
+    """
+
+    __tablename__ = "experiment_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "scenario IN ('WITH_QOS','WITHOUT_QOS')",
+            name="ck_experiment_runs_scenario",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    scenario: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    config_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    metrics: Mapped[list[ExperimentMetricORM]] = relationship(back_populates="run")
+    sensor_readings: Mapped[list[SensorReadingORM]] = relationship(back_populates="experiment_run")
+    alerts: Mapped[list[AlertORM]] = relationship(back_populates="experiment_run")
+
+    @validates("scenario")
+    def _validate_scenario(self, key: str, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("scenario must be a string")
+        normalized = value.strip()
+        if normalized not in EXPERIMENT_SCENARIOS:
+            raise ValueError("scenario must be one of WITH_QOS, WITHOUT_QOS")
+        return normalized
+
+
+class ExperimentMetricORM(Base):
+    """TSK-059.6 — one comparable measurement of an experiment run."""
+
+    __tablename__ = "experiment_metrics"
+    __table_args__ = (
+        CheckConstraint(
+            "metric_type IN ('messages_received','messages_invalid','readings_persisted',"
+            "'alerts_generated','backlog','ingest_to_persist_ms','ingest_to_alert_ms')",
+            name="ck_experiment_metrics_type",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("experiment_runs.id"), nullable=False, index=True
+    )
+    metric_type: Mapped[str] = mapped_column(String, nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, index=True
+    )
+
+    run: Mapped[ExperimentRunORM] = relationship(back_populates="metrics")
+
+    @validates("metric_type")
+    def _validate_metric_type(self, key: str, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("metric_type must be a string")
+        normalized = value.strip()
+        if normalized not in EXPERIMENT_METRIC_TYPES:
+            raise ValueError(
+                "metric_type must be one of messages_received, messages_invalid, "
+                "readings_persisted, alerts_generated, backlog, ingest_to_persist_ms, "
+                "ingest_to_alert_ms"
+            )
+        return normalized

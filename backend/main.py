@@ -196,11 +196,13 @@ from app.auth.api import router as auth_router
 from app.audit.api import router as audit_router
 from app.users.api import router as users_router
 from app.system_config.api import router as system_config_router
+from app.experiments.api import router as experiments_router
 
 app.include_router(auth_router)
 app.include_router(audit_router)
 app.include_router(users_router)
 app.include_router(system_config_router)
+app.include_router(experiments_router)
 
 
 @app.get("/acquisition/messages")
