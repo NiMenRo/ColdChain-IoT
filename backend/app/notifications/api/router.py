@@ -1,13 +1,17 @@
 """REST API endpoints for the notification module."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
+from app.audit.service import AuditService
 from app.auth.authorization import (
     authenticated,
     require_ack,
@@ -15,6 +19,8 @@ from app.auth.authorization import (
     require_notification_write,
 )
 from app.auth.dependencies import AuthenticatedUser
+from app.database.infrastructure.repositories import AlertRepository
+from app.database.infrastructure.session import get_db
 from app.events.domain import Alert
 from app.notifications.application import (
     AlertAcknowledgementService,
@@ -25,6 +31,10 @@ from app.notifications.domain import (
     NotificationChannel,
     NotificationStatus,
 )
+
+logger = logging.getLogger(__name__)
+_audit = AuditService()
+_alert_repo = AlertRepository()
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
@@ -360,6 +370,7 @@ def update_notification_status(
     notification_id: str,
     body: UpdateNotificationStatusRequest,
     _current: AuthenticatedUser = Depends(require_notification_write),
+    db: Session = Depends(get_db),
 ):
     """Update delivery status of a notification."""
     notif_uuid = _validate_uuid(notification_id, "notification_id")
@@ -376,7 +387,21 @@ def update_notification_status(
 
     for notif in notifications_list:
         if notif.id == notif_uuid:
+            old_status = (
+                notif.status.value
+                if hasattr(notif.status, "value")
+                else str(notif.status)
+            )
             notif.status = NotificationStatus(raw_status)
+            # TSK-059.5 — audit validated transition with old/new values.
+            _audit_best_effort(
+                db,
+                actor_id=_current.id,
+                action="notification.status",
+                resource=f"notifications/{notif.id}",
+                old_value={"status": old_status},
+                new_value={"status": raw_status},
+            )
             serialized = _serialize_notification(notif, alerts_list)
             return {
                 "message": "Notification status updated successfully",
@@ -394,10 +419,72 @@ def update_notification_status(
 # Endpoints: Alert Acknowledgement & Alert Status
 # ---------------------------------------------------------------------------
 
+def _audit_best_effort(
+    db: Session | None,
+    *,
+    actor_id: UUID,
+    action: str,
+    resource: str,
+    old_value: dict | None = None,
+    new_value: dict | None = None,
+) -> None:
+    """Record audit in the caller's session when a DB is reachable.
+
+    TSK-059.5 — notifications/alerts live primarily in app.state (runtime).
+    When no database is reachable (isolated test apps), audit is skipped so
+    runtime behavior is preserved; in production the DB is always present.
+    """
+    if db is None:
+        return
+    try:
+        _audit.record(
+            db,
+            actor_user_id=actor_id,
+            action=action,
+            resource=resource,
+            old_value=old_value,
+            new_value=new_value,
+        )
+        db.commit()
+    except Exception:
+        logger.warning("audit record for %s skipped (no reachable DB)", action)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+def _persist_acknowledgement(db: Session | None, alert_uuid: UUID) -> bool | None:
+    """Persist acknowledged=True for a stored alert row.
+
+    Returns previous acknowledged flag, or None when no DB row exists or no
+    DB is reachable. TSK-059.5 — AlertORM is the persistent source; app.state
+    stays the runtime/cache source and is synced by the caller.
+    """
+    if db is None:
+        return None
+    try:
+        row = _alert_repo.get_by_id(db, alert_uuid)
+        if row is None:
+            return None
+        was_acknowledged = bool(row.acknowledged)
+        row.acknowledged = True
+        db.flush()
+        return was_acknowledged
+    except Exception:
+        logger.warning("alert ack persistence skipped (no reachable DB)")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return None
+
+
 def _perform_acknowledgement(
     request: Request,
     alert_uuid: UUID,
     actor: AuthenticatedUser,
+    db: Session | None = None,
 ) -> dict[str, Any]:
     alert = _find_alert_by_id(request, alert_uuid)
     if alert is None:
@@ -417,6 +504,33 @@ def _perform_acknowledgement(
         if notif.alert_id == alert_uuid and notif.alert is not None:
             notif.alert.acknowledged = True
 
+    # TSK-059.5 — persist when the alert row exists; audit in the same session.
+    # First execution: old=false/new=true; idempotent repeat: NULLs.
+    if db is not None:
+        try:
+            was_acknowledged = _persist_acknowledgement(db, alert_uuid)
+            if was_acknowledged is not None:
+                old_new = (
+                    (None, None)
+                    if was_acknowledged
+                    else ({"acknowledged": False}, {"acknowledged": True})
+                )
+                _audit.record(
+                    db,
+                    actor_user_id=actor.id,
+                    action="alert.acknowledge",
+                    resource=f"alerts/{alert_uuid}",
+                    old_value=old_new[0],
+                    new_value=old_new[1],
+                )
+            db.commit()
+        except Exception:
+            logger.warning("alert ack persistence/audit skipped (no reachable DB)")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
     serialized_alert = _serialize_alert(updated_alert)
     return {
         "message": "Alert acknowledged successfully",
@@ -435,10 +549,11 @@ def acknowledge_alert(
     alert_id: str,
     body: Optional[AcknowledgeAlertRequest] = None,
     current: AuthenticatedUser = Depends(require_ack),
+    db: Session = Depends(get_db),
 ):
     """Register acknowledgement of an Alert by the authenticated user."""
     alert_uuid = _validate_uuid(alert_id, "alert_id")
-    return _perform_acknowledgement(request, alert_uuid, current)
+    return _perform_acknowledgement(request, alert_uuid, current, db)
 
 
 @router.post("/acknowledge")
@@ -446,6 +561,7 @@ def acknowledge_alert_body(
     request: Request,
     body: dict[str, Any],
     current: AuthenticatedUser = Depends(require_ack),
+    db: Session = Depends(get_db),
 ):
     """Register acknowledgement where alert_id is provided in request body."""
     raw_alert_id = body.get("alert_id")
@@ -455,7 +571,7 @@ def acknowledge_alert_body(
             detail="'alert_id' must be provided in request body.",
         )
     alert_uuid = _validate_uuid(str(raw_alert_id), "alert_id")
-    return _perform_acknowledgement(request, alert_uuid, current)
+    return _perform_acknowledgement(request, alert_uuid, current, db)
 
 
 @router.post("/{notification_id}/acknowledge")
@@ -464,6 +580,7 @@ def acknowledge_via_notification(
     notification_id: str,
     body: Optional[AcknowledgeAlertRequest] = None,
     current: AuthenticatedUser = Depends(require_ack),
+    db: Session = Depends(get_db),
 ):
     """Acknowledge the alert associated with a specific notification."""
     notif_uuid = _validate_uuid(notification_id, "notification_id")
@@ -483,7 +600,7 @@ def acknowledge_via_notification(
 
     user_id = body.user_id if body else None
     _ = user_id  # ignored: actor comes from the token (TSK-055)
-    ack_result = _perform_acknowledgement(request, target_notif.alert_id, current)
+    ack_result = _perform_acknowledgement(request, target_notif.alert_id, current, db)
     if target_notif.alert is not None:
         target_notif.alert.acknowledged = True
 
@@ -538,6 +655,7 @@ def process_notification(
     request: Request,
     body: NotificationProcessRequest,
     current: AuthenticatedUser = Depends(require_admin),
+    db: Session = Depends(get_db),
 ):
     """Process an alert through NotificationService to generate and send a notification.
 
@@ -597,6 +715,13 @@ def process_notification(
     notifications_list = _get_notifications_list(request)
     if result.notification is not None:
         notifications_list.append(result.notification)
+        # TSK-059.5 — audit creation (no previous state exists).
+        _audit_best_effort(
+            db,
+            actor_id=current.id,
+            action="notification.process",
+            resource=f"notifications/{result.notification.id}",
+        )
 
     serialized_notif = (
         _serialize_notification(result.notification, _get_alerts_list(request))

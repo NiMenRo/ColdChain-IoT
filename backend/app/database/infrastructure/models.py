@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, String, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.database.infrastructure.base import Base
@@ -212,6 +212,10 @@ class AuditLogORM(Base):
     action: Mapped[str] = mapped_column(String, nullable=False)
     resource: Mapped[str] = mapped_column(String, nullable=False)
     outcome: Mapped[str] = mapped_column(String, nullable=False, default="success")
+    # TSK-059.5 — JSON-serialized old/new values (NULL when not applicable).
+    # Never passwords, hashes, tokens or secrets.
+    old_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    new_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, index=True
     )

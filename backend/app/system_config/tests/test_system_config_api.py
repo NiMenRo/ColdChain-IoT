@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from app.auth.dependencies import AuthenticatedUser, get_current_user
+from app.auth.service import AuthService
 from app.database.infrastructure.base import Base
 from app.database.infrastructure.models import SystemConfigORM
 from app.database.infrastructure.session import get_db
@@ -40,8 +41,15 @@ def _engine():
 def _client(role="admin", seed=True):
     engine = _engine()
     Session = sessionmaker(bind=engine, future=True)
+    user_id = None
     if seed:
         s = Session()
+        # TSK-059.5 — audit FK requires a real actor row.
+        user = AuthService().create_user(
+            s, name=role.title(), email=f"{role}@example.com",
+            password="pass-1234", role=role,
+        )
+        user_id = user.id
         s.add(
             SystemConfigORM(
                 min_temperature=0.0,
@@ -67,7 +75,7 @@ def _client(role="admin", seed=True):
 
     app.dependency_overrides[get_db] = _db
     app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
-        id=uuid.uuid4(),
+        id=user_id or uuid.uuid4(),
         email=f"{role}@example.com",
         name=role.title(),
         role=role,

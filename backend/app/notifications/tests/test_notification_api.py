@@ -4,8 +4,13 @@ from uuid import UUID, uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.auth.dependencies import AuthenticatedUser, get_current_user
+from app.database.infrastructure.base import Base
+from app.database.infrastructure.session import get_db
 from app.events.domain import Alert
 from app.notifications.api import router
 from app.notifications.application import (
@@ -51,6 +56,25 @@ class NotificationAPITests(unittest.TestCase):
             role="admin",
             is_active=True,
         )
+        # TSK-059.5: ack/process/status endpoints take a DB session; use an
+        # isolated sqlite DB so tests never touch the network.
+        engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+            future=True,
+        )
+        Base.metadata.create_all(engine)
+        session_factory = sessionmaker(bind=engine, future=True)
+
+        def _override_get_db():
+            db = session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        self.app.dependency_overrides[get_db] = _override_get_db
         self.client = TestClient(self.app)
 
         self.user_id = uuid4()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -154,6 +155,18 @@ class AlertRepository:
         for a in alerts:
             result.append(self.save(db, a))
         return result
+
+    def get_by_id(self, db: Session, id: uuid.UUID) -> AlertORM | None:
+        return db.query(AlertORM).filter_by(id=id).first()
+
+    def acknowledge(self, db: Session, id: uuid.UUID) -> AlertORM | None:
+        """TSK-059.5 — persist acknowledged=True. Idempotent; flush, no commit."""
+        row = self.get_by_id(db, id)
+        if row is None:
+            return None
+        row.acknowledged = True
+        db.flush()
+        return row
 
 
 class PredictionRepository:
@@ -498,6 +511,11 @@ class UserRepository:
 class AuditLogRepository:
     """Persistence for immutable audit entries; intentionally no update/delete."""
 
+    # TSK-059.5 — keys that must never reach audit_logs, even nested.
+    _FORBIDDEN_VALUE_KEYS = frozenset(
+        {"password", "new_password", "password_hash", "hash", "token", "secret"}
+    )
+
     def create(
         self,
         db: Session,
@@ -506,6 +524,8 @@ class AuditLogRepository:
         action: str,
         resource: str,
         outcome: str = "success",
+        old_value: str | dict | None = None,
+        new_value: str | dict | None = None,
     ) -> AuditLogORM:
         if not isinstance(action, str) or not action.strip():
             raise ValueError("action must be a non-empty string")
@@ -518,10 +538,33 @@ class AuditLogRepository:
             action=action.strip(),
             resource=resource.strip(),
             outcome=outcome.strip(),
+            old_value=self._serialize_value(old_value, "old_value"),
+            new_value=self._serialize_value(new_value, "new_value"),
         )
         db.add(entry)
         db.flush()
         return entry
+
+    @classmethod
+    def _serialize_value(cls, value: str | dict | None, field: str) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            cls._reject_forbidden_keys(value)
+            return json.dumps(value, sort_keys=True, default=str)
+        raise ValueError(f"{field} must be a str, dict or None")
+
+    @classmethod
+    def _reject_forbidden_keys(cls, payload: dict) -> None:
+        for key, nested in payload.items():
+            if str(key).strip().lower() in cls._FORBIDDEN_VALUE_KEYS:
+                raise ValueError(
+                    f"audit value key '{key}' is forbidden (secret material)"
+                )
+            if isinstance(nested, dict):
+                cls._reject_forbidden_keys(nested)
 
     def list(
         self, db: Session, *, page: int = 1, per_page: int = 20
