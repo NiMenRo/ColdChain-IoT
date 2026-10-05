@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict
 from uuid import uuid4
 
@@ -85,6 +85,7 @@ class ClassificationService:
             criticality=criticality,
             priority=priority.value,
             queue=queue,
-            classification_time=datetime.now(),
+            # TSK-059.7 — aware UTC so QoS latency math never mixes naive/aware.
+            classification_time=datetime.now(timezone.utc),
             timestamp=reading_timestamp,
         )

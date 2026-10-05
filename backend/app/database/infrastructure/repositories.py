@@ -40,7 +40,13 @@ def _parse_timestamp(value: str) -> datetime:
 
 
 class SensorReadingRepository:
-    def save(self, db: Session, readings: list[NormalizedReading], device_id: uuid.UUID) -> SensorReadingORM:
+    def save(
+        self,
+        db: Session,
+        readings: list[NormalizedReading],
+        device_id: uuid.UUID,
+        run_id: uuid.UUID | None = None,
+    ) -> SensorReadingORM:
         """TSK-059.3 — persist 1 SensorReading per bundle honoring DeviceSensor.
 
         Absent sensors persist as NULL (not enabled, not a failure). Any
@@ -98,6 +104,7 @@ class SensorReadingRepository:
             humidity=values.get("humidity"),
             energy=values.get("energy"),
             timestamp=ts,
+            run_id=run_id,
         )
         db.add(obj)
         db.flush()
@@ -141,7 +148,9 @@ class QoSMetricRepository:
 
 
 class AlertRepository:
-    def save(self, db: Session, alert: Alert) -> AlertORM:
+    def save(
+        self, db: Session, alert: Alert, run_id: uuid.UUID | None = None
+    ) -> AlertORM:
         obj = AlertORM(
             id=alert.id,
             device_id=alert.device_id,
@@ -151,6 +160,7 @@ class AlertRepository:
             criticality=alert.criticality,
             acknowledged=alert.acknowledged,
             created_at=alert.created_at,
+            run_id=run_id,
         )
         db.add(obj)
         db.flush()

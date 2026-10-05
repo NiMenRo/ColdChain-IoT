@@ -25,7 +25,13 @@ else:  # pragma: no cover - package-style execution from repo root
     from simulator.sensors import TemperatureSensor, HumiditySensor, EnergyStatusSensor, EnergyState
 
 
-def main() -> None:
+def main(cycles: int = 1) -> None:
+    """Run the scenario loop ``cycles`` times (TSK-059.7: experiment runs).
+
+    One cycle publishes every scenario once for every device.
+    """
+    if cycles < 1:
+        raise ValueError("'cycles' must be >= 1")
     config = SimulatorConfig()
 
     logging.basicConfig(
@@ -157,46 +163,49 @@ def main() -> None:
     print("=" * 60)
 
     try:
-        for cycle_index, scenario in enumerate(scenarios, start=1):
-            critical_manager.deactivate_all()
-            critical_manager.activate(scenario)
-            print(f"\n  --- Ciclo {cycle_index}: {scenario.name} ---")
+        for run_cycle in range(1, cycles + 1):
+            if cycles > 1:
+                print(f"\n=== Vuelta {run_cycle}/{cycles} ===")
+            for cycle_index, scenario in enumerate(scenarios, start=1):
+                critical_manager.deactivate_all()
+                critical_manager.activate(scenario)
+                print(f"\n  --- Ciclo {cycle_index}: {scenario.name} ---")
 
-            critical_manager.update()
+                critical_manager.update()
 
-            for device in devices:
-                print()
-                print(f"  {device.code}")
-                print(f"  {'-' * 30}")
+                for device in devices:
+                    print()
+                    print(f"  {device.code}")
+                    print(f"  {'-' * 30}")
 
-                measurements = {}
-                for sensor in device.get_sensors():
-                    measurement = sensor.read()
-                    measurements[sensor] = measurement
+                    measurements = {}
+                    for sensor in device.get_sensors():
+                        measurement = sensor.read()
+                        measurements[sensor] = measurement
 
-                    if hasattr(sensor, "min_temperature"):
-                        label = "Temperatura"
-                        state = sensor.current_temperature
-                    elif hasattr(sensor, "min_humidity"):
-                        label = "Humedad"
-                        state = sensor.current_humidity
-                    elif hasattr(sensor, "current_state"):
-                        label = "Estado energético"
-                        state = sensor.current_state.value
-                    else:
-                        continue
+                        if hasattr(sensor, "min_temperature"):
+                            label = "Temperatura"
+                            state = sensor.current_temperature
+                        elif hasattr(sensor, "min_humidity"):
+                            label = "Humedad"
+                            state = sensor.current_humidity
+                        elif hasattr(sensor, "current_state"):
+                            label = "Estado energético"
+                            state = sensor.current_state.value
+                        else:
+                            continue
 
-                    print(f"  {label}:")
-                    print(f"  {measurement.value} {measurement.unit}")
-                    print(f"  Hora:")
-                    print(f"  {measurement.timestamp.strftime('%H:%M:%S')}")
-                    print(f"  (estado interno: {state} {measurement.unit})")
+                        print(f"  {label}:")
+                        print(f"  {measurement.value} {measurement.unit}")
+                        print(f"  Hora:")
+                        print(f"  {measurement.timestamp.strftime('%H:%M:%S')}")
+                        print(f"  (estado interno: {state} {measurement.unit})")
 
-                device_publisher.publish_telemetry(device, measurements)
+                    device_publisher.publish_telemetry(device, measurements)
 
-                print(f"  {'-' * 30}")
+                    print(f"  {'-' * 30}")
 
-            time.sleep(config.sampling_interval)
+                time.sleep(config.sampling_interval)
 
         print("=" * 60)
     finally:
@@ -204,4 +213,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="ColdChain-IoT device simulator")
+    parser.add_argument("--cycles", type=int, default=1, help="scenario loop repetitions")
+    main(cycles=parser.parse_args().cycles)

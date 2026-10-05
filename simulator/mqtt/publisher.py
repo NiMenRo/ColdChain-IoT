@@ -1,4 +1,5 @@
 import logging
+from datetime import timezone
 
 from .client import MQTTClient
 
@@ -54,7 +55,11 @@ class DevicePublisher:
                     timestamp = measurement.timestamp
         readings["device_code"] = device.code
         readings["device_type"] = device.device_type.value
-        readings["timestamp"] = timestamp.isoformat(timespec="seconds") if timestamp else ""
+        # TSK-059.7 — sensor timestamp as aware UTC with millisecond precision.
+        # This is generation time, never a substitute for ingestion time.
+        if timestamp is not None and timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        readings["timestamp"] = timestamp.isoformat(timespec="milliseconds") if timestamp else ""
         return readings
 
     def _sensor_key(self, sensor):

@@ -69,8 +69,13 @@ def test_publish_uses_the_same_measurements_that_were_displayed():
     assert payload["device_code"] == device.code
     assert payload["device_type"] == device.device_type.value
 
+    from datetime import timezone
+
     first_timestamp = measurements[sensors[0]].timestamp
-    assert payload["timestamp"] == first_timestamp.isoformat(timespec="seconds")
+    if first_timestamp.tzinfo is None:
+        first_timestamp = first_timestamp.replace(tzinfo=timezone.utc)
+    # TSK-059.7 — aware UTC with millisecond precision.
+    assert payload["timestamp"] == first_timestamp.isoformat(timespec="milliseconds")
 
     for sensor in sensors:
         key = _SENSOR_KEYS[type(sensor)]
