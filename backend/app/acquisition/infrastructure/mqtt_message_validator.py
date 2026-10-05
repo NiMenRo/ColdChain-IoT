@@ -51,12 +51,14 @@ class MQTTMessageValidator:
                 raise MessageValidationError(f"Field '{field}' must be numeric")
 
         if "energy" in payload:
+            # TSK-059.4 — canonical energy representation is on/off (lowercase).
+            # Numeric payloads are rejected: no producer or test sends them.
             energy_val = payload["energy"]
             if isinstance(energy_val, str):
-                if energy_val.lower() not in self.ENERGY_VALID_STATES:
+                if energy_val.strip().lower() not in self.ENERGY_VALID_STATES:
                     raise MessageValidationError("Field 'energy' must be 'on' or 'off'")
-            elif not isinstance(energy_val, (int, float)) or isinstance(energy_val, bool):
-                raise MessageValidationError("Field 'energy' must be numeric or 'on'/'off'")
+            else:
+                raise MessageValidationError("Field 'energy' must be 'on' or 'off'")
 
         return payload
 

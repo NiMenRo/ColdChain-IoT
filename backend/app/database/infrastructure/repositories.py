@@ -74,7 +74,14 @@ class SensorReadingRepository:
             elif r.sensor_name == "humidity":
                 values["humidity"] = float(r.value)
             elif r.sensor_name == "energy":
-                values["energy"] = str(r.raw_value).strip().lower()
+                # TSK-059.4 — canonical energy is on/off; numeric raw values
+                # are rejected (no producer sends them).
+                normalized_energy = str(r.raw_value).strip().lower()
+                if normalized_energy not in ("on", "off"):
+                    raise ValueError(
+                        f"energy must be 'on' or 'off', got {r.raw_value!r}"
+                    )
+                values["energy"] = normalized_energy
         if not values:
             raise ValueError("readings group has no valid sensor measurements")
         ts = _parse_timestamp(group[0].timestamp)
@@ -166,12 +173,41 @@ class PredictionRepository:
 class SystemConfigRepository:
     """Reads the persisted system configuration used by application services."""
 
+    _UPDATABLE_FIELDS = frozenset(
+        {"min_temperature", "max_temperature", "min_humidity", "max_humidity"}
+    )
+
     def get_current(self, db: Session) -> SystemConfigORM | None:
         return (
             db.query(SystemConfigORM)
             .order_by(SystemConfigORM.id.asc())
             .first()
         )
+
+    def update(self, db: Session, config: SystemConfigORM, **fields) -> SystemConfigORM:
+        """TSK-059.4 — admin-only threshold update (qos_* are read-only)."""
+        for key, value in fields.items():
+            if key not in self._UPDATABLE_FIELDS:
+                raise ValueError(f"field '{key}' is not updatable")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{key} must be numeric")
+        # Validate prospective values before setattr: reading expired
+        # attributes would trigger autoflush and surface IntegrityError first.
+        with db.no_autoflush:
+            prospective = {
+                "min_temperature": fields.get("min_temperature", config.min_temperature),
+                "max_temperature": fields.get("max_temperature", config.max_temperature),
+                "min_humidity": fields.get("min_humidity", config.min_humidity),
+                "max_humidity": fields.get("max_humidity", config.max_humidity),
+            }
+        if prospective["min_temperature"] > prospective["max_temperature"]:
+            raise ValueError("min_temperature must be <= max_temperature")
+        if prospective["min_humidity"] > prospective["max_humidity"]:
+            raise ValueError("min_humidity must be <= max_humidity")
+        for key, value in fields.items():
+            setattr(config, key, value)
+        db.flush()
+        return config
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ __all__ = ["router"]
 class TrafficClassificationRequest(BaseModel):
     id: str
     reading_id: str
-    criticality: float = Field(..., gt=0)
+    criticality: float = Field(..., ge=3, le=9)
     priority: str
     queue: str
     classification_time: str
@@ -40,6 +40,12 @@ class TrafficClassificationRequest(BaseModel):
         if normalized not in {"low", "medium", "high"}:
             raise ValueError("priority must be low, medium, or high")
         return normalized
+
+    @validator("queue")
+    def validate_queue(cls, value: str) -> str:
+        if value.strip() not in {"FIFO", "Round Robin", "WFQ"}:
+            raise ValueError("queue must be one of FIFO, Round Robin, WFQ")
+        return value.strip()
 
     @validator("classification_time", "timestamp")
     def validate_datetime(cls, value: str) -> str:

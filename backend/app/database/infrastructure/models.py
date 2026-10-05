@@ -76,6 +76,13 @@ class DeviceSensorORM(Base):
 class SensorReadingORM(Base):
     __tablename__ = "sensor_readings"
 
+    __table_args__ = (
+        CheckConstraint(
+            "energy IS NULL OR energy IN ('on','off')",
+            name="ck_readings_energy",
+        ),
+    )
+
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     device_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("devices.id"), nullable=False)
     # TSK-059.3 — NULL means the sensor is not enabled for the device
@@ -94,6 +101,20 @@ class SensorReadingORM(Base):
 
 class TrafficClassificationORM(Base):
     __tablename__ = "traffic_classifications"
+    __table_args__ = (
+        CheckConstraint(
+            "criticality >= 3 AND criticality <= 9",
+            name="ck_tc_criticality",
+        ),
+        CheckConstraint(
+            "priority IN ('low','medium','high')",
+            name="ck_tc_priority",
+        ),
+        CheckConstraint(
+            "queue IN ('FIFO','Round Robin','WFQ')",
+            name="ck_tc_queue",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     reading_id: Mapped[uuid.UUID] = mapped_column(
@@ -111,6 +132,16 @@ class TrafficClassificationORM(Base):
 
 class QoSMetricORM(Base):
     __tablename__ = "qos_metrics"
+    __table_args__ = (
+        CheckConstraint("latency >= 0", name="ck_qos_latency"),
+        CheckConstraint(
+            "packet_loss >= 0 AND packet_loss <= 100",
+            name="ck_qos_packet_loss",
+        ),
+        CheckConstraint("throughput >= 0", name="ck_qos_throughput"),
+        CheckConstraint("pdr >= 0 AND pdr <= 100", name="ck_qos_pdr"),
+        CheckConstraint("jitter >= 0", name="ck_qos_jitter"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     classification_id: Mapped[uuid.UUID] = mapped_column(
@@ -204,6 +235,16 @@ class AlertORM(Base):
 
 class SystemConfigORM(Base):
     __tablename__ = "system_configs"
+    __table_args__ = (
+        CheckConstraint(
+            "min_temperature <= max_temperature",
+            name="ck_system_config_temp_range",
+        ),
+        CheckConstraint(
+            "min_humidity <= max_humidity",
+            name="ck_system_config_hum_range",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     max_temperature: Mapped[float] = mapped_column(Float, nullable=False)
