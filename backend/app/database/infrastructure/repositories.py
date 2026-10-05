@@ -34,6 +34,11 @@ def _parse_timestamp(value: str) -> datetime:
 
 class SensorReadingRepository:
     def save(self, db: Session, readings: list[NormalizedReading], device_id: uuid.UUID) -> SensorReadingORM:
+        """TSK-059.3 — persist 1 SensorReading per bundle honoring DeviceSensor.
+
+        Absent sensors persist as NULL (not enabled, not a failure). Any
+        received sensor that is not configured rejects the whole bundle.
+        """
         if not readings:
             raise ValueError("readings must not be empty")
         device = db.query(DeviceORM).filter_by(id=device_id).first()
@@ -44,12 +49,22 @@ class SensorReadingRepository:
             raise ValueError(
                 "reading device_code does not match the registered device_id"
             )
+        enabled = {
+            row.sensor_type
+            for row in db.query(DeviceSensorORM).filter_by(device_id=device_id).all()
+        }
+        for r in readings:
+            if r.sensor_name not in enabled:
+                raise ValueError(
+                    f"sensor '{r.sensor_name}' is not configured for device '{device.code}'"
+                )
         # Group by same device_code + timestamp (documented grouping, no generic mapper)
         # Assume readings belong to the same bundle (same MQTT message)
         by_key: dict[tuple[str, str], list[NormalizedReading]] = {}
         for r in readings:
             by_key.setdefault((r.device_code, r.timestamp), []).append(r)
         # For TSK-042, persist 1 SensorReading per bundle; if multiple keys, use the first
+        # (normalizer guarantees a single timestamp per MQTT message)
         first_key = next(iter(by_key))
         group = by_key[first_key]
         values: dict[str, object] = {}
@@ -60,14 +75,14 @@ class SensorReadingRepository:
                 values["humidity"] = float(r.value)
             elif r.sensor_name == "energy":
                 values["energy"] = str(r.raw_value).strip().lower()
-        if "temperature" not in values or "humidity" not in values or "energy" not in values:
-            raise ValueError("Missing temperature/humidity/energy in readings group")
+        if not values:
+            raise ValueError("readings group has no valid sensor measurements")
         ts = _parse_timestamp(group[0].timestamp)
         obj = SensorReadingORM(
             device_id=device_id,
-            temperature=values["temperature"],
-            humidity=values["humidity"],
-            energy=values["energy"],
+            temperature=values.get("temperature"),
+            humidity=values.get("humidity"),
+            energy=values.get("energy"),
             timestamp=ts,
         )
         db.add(obj)

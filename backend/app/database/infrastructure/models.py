@@ -78,9 +78,11 @@ class SensorReadingORM(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     device_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("devices.id"), nullable=False)
-    temperature: Mapped[float] = mapped_column(Float, nullable=False)
-    humidity: Mapped[float] = mapped_column(Float, nullable=False)
-    energy: Mapped[str] = mapped_column(String, nullable=False)
+    # TSK-059.3 — NULL means the sensor is not enabled for the device
+    # (DeviceSensor configuration), not a sensor failure.
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    humidity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    energy: Mapped[str | None] = mapped_column(String, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     device: Mapped[DeviceORM] = relationship(back_populates="sensor_readings")

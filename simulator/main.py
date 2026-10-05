@@ -49,6 +49,7 @@ def main() -> None:
     from simulator.database.session import SessionLocal
 
     orm_devices = None
+    sensor_by_device = []
     for attempt in range(15):
         try:
             with SessionLocal() as db:
@@ -58,7 +59,11 @@ def main() -> None:
                 # Use DeviceRepository logic via direct query to avoid backend import cycle
                 # Ordered by code to keep deterministic display
                 rows = db.execute(_sa_text("SELECT id, code, name, location, device_type, status, registration_date FROM devices ORDER BY code ASC")).fetchall()
+                # TSK-059.3 — DeviceSensor is the single source of truth for
+                # enabled sensors; no parallel sensor configuration exists.
+                sensor_rows = db.execute(_sa_text("SELECT device_id, sensor_type FROM device_sensors")).fetchall()
                 if rows:
+                    sensor_by_device = sensor_rows
                     # Map rows to ORM-like objects for factory
                     class _Row:
                         pass
@@ -82,16 +87,30 @@ def main() -> None:
 
     devices = [orm_to_device(o) for o in orm_devices]
 
-    # --- Sensors (by device_type, no code-specific logic) ---
+    # --- Sensors (DeviceSensor is the single source of truth, TSK-059.3) ---
+    enabled_by_device: dict[str, set[str]] = {}
+    for device_id, sensor_type in sensor_by_device:
+        enabled_by_device.setdefault(str(device_id), set()).add(str(sensor_type).strip().lower())
     for device in devices:
+        enabled = enabled_by_device.get(str(device.id), set())
+        if not enabled:
+            logging.getLogger(__name__).error(
+                "Device %s has no configured sensors in device_sensors — aborting simulator (no hardcoded fallback)",
+                device.code,
+            )
+            mqtt_client.stop()
+            sys.exit(1)
         if device.device_type == DeviceType.COLD_ROOM:
             temp_range = (0.0, 4.0)
         else:  # REFRIGERATED_SHOWCASE
             temp_range = (3.0, 8.0)
-        device.add_sensor(TemperatureSensor(device=device, min_temperature=temp_range[0], max_temperature=temp_range[1]))
-        device.add_sensor(HumiditySensor(device=device))
-        initial = EnergyState.POWERED if device.status == DeviceStatus.MAINTENANCE else EnergyState.ON
-        device.add_sensor(EnergyStatusSensor(device=device, initial_state=initial))
+        if "temperature" in enabled:
+            device.add_sensor(TemperatureSensor(device=device, min_temperature=temp_range[0], max_temperature=temp_range[1]))
+        if "humidity" in enabled:
+            device.add_sensor(HumiditySensor(device=device))
+        if "energy" in enabled:
+            initial = EnergyState.POWERED if device.status == DeviceStatus.MAINTENANCE else EnergyState.ON
+            device.add_sensor(EnergyStatusSensor(device=device, initial_state=initial))
 
     # --- Critical scenarios (resolved by device_type, no hardcoded VITRINA-001) ---
     by_type: dict[DeviceType, list] = {}

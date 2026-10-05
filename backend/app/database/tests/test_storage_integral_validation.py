@@ -19,6 +19,7 @@ from app.database.infrastructure.base import Base
 from app.database.infrastructure.models import (
     AlertORM,
     DeviceORM,
+    DeviceSensorORM,
     QoSMetricORM,
     SensorReadingORM,
     SystemConfigORM,
@@ -125,6 +126,10 @@ def test_registered_device_sensor_flow_is_traceable_and_recoverable(db):
         role="system",
     )
     db.add(system_user)
+    # TSK-059.3 — persist_bundle requires configured DeviceSensor rows
+    db.add_all(
+        [DeviceSensorORM(device_id=persisted_device.id, sensor_type=t) for t in ("temperature", "humidity", "energy")]
+    )
     db.add(
         SystemConfigORM(
             id=uuid.uuid4(),

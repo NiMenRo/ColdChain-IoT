@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.auth.dependencies import AuthenticatedUser, get_current_user
 from app.database.infrastructure.base import Base
-from app.database.infrastructure.models import DeviceORM, UserORM
+from app.database.infrastructure.models import DeviceORM, DeviceSensorORM, UserORM
 from app.acquisition.normalizer import NormalizedReading
 from app.classification.domain import TrafficClassification
 from app.database.application.persistence_service import PersistenceService
@@ -25,6 +25,9 @@ def _seed():
     d2 = DeviceORM(code="CAVA-002", name="Cava2", location="Lab", device_type="cold_room", status="active")
     u = UserORM(id=uuid.UUID("00000000-0000-0000-0000-000000000000"), name="system", email="system@coldchain.local", password_hash="!", role="system")
     s.add_all([d1, d2, u]); s.commit()
+    # TSK-059.3 — persist_bundle requires configured DeviceSensor rows
+    s.add_all([DeviceSensorORM(device_id=d1.id, sensor_type=t) for t in ("temperature", "humidity", "energy")])
+    s.commit()
     s.close()
     # bundle
     ps = PersistenceService()

@@ -47,7 +47,10 @@ def _serialize(obj):
 def reading_trends(device_code: Optional[str]=None, from_ts: Optional[str]=None, to_ts: Optional[str]=None, interval: str=Query("hour", pattern="^(minute|hour|day)$"), db: Session=Depends(get_db)):
     f = _parse_dt(from_ts); t = _parse_dt(to_ts)
     rows = service.readings.trends(db, device_code=device_code, from_ts=f, to_ts=t, interval=interval)
-    return [{"bucket": r.bucket.isoformat() if hasattr(r.bucket, 'isoformat') else str(r.bucket), "avg_temp": float(r.avg_temp or 0), "min_temp": float(r.min_temp or 0), "max_temp": float(r.max_temp or 0), "avg_hum": float(r.avg_hum or 0), "min_hum": float(r.min_hum or 0), "max_hum": float(r.max_hum or 0)} for r in rows]
+    def _num(v):
+        # TSK-059.3 — NULL means sensor not enabled; never coerce to 0.
+        return float(v) if v is not None else None
+    return [{"bucket": r.bucket.isoformat() if hasattr(r.bucket, 'isoformat') else str(r.bucket), "avg_temp": _num(r.avg_temp), "min_temp": _num(r.min_temp), "max_temp": _num(r.max_temp), "avg_hum": _num(r.avg_hum), "min_hum": _num(r.min_hum), "max_hum": _num(r.max_hum)} for r in rows]
 
 @router.get("/readings")
 def list_readings(device_code: Optional[str]=None, from_ts: Optional[str]=None, to_ts: Optional[str]=None, sort: str="timestamp.desc", page: int=Query(1, ge=1), per_page: int=Query(20, ge=1, le=100), db: Session=Depends(get_db)):

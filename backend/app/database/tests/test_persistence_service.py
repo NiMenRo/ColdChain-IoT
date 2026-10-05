@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.database.infrastructure.base import Base
-from app.database.infrastructure.models import DeviceORM, UserORM
+from app.database.infrastructure.models import DeviceORM, DeviceSensorORM, UserORM
 from app.acquisition.normalizer import NormalizedReading
 from app.classification.domain import TrafficClassification
 from app.database.application.persistence_service import PersistenceService
@@ -23,6 +23,8 @@ def test_atomic_and_fk():
     d = DeviceORM(code="CAVA-001", name="Cava", location="Lab", device_type="cold_room", status="active")
     u = UserORM(id=uuid.UUID("00000000-0000-0000-0000-000000000000"), name="system", email="system@coldchain.local", password_hash="!", role="system")
     s.add_all([d, u]); s.commit()
+    # TSK-059.3 — persist_bundle requires configured DeviceSensor rows
+    s.add_all([DeviceSensorORM(device_id=d.id, sensor_type=t) for t in ("temperature", "humidity", "energy")]); s.commit()
     ps = PersistenceService()
     readings = [NormalizedReading(device_code="CAVA-001", device_type="cold_room", sensor_name="temperature", value=5.0, timestamp="2026-09-02T00:00:00+00:00", raw_value=5.0), NormalizedReading(device_code="CAVA-001", device_type="cold_room", sensor_name="humidity", value=80.0, timestamp="2026-09-02T00:00:00+00:00", raw_value=80.0), NormalizedReading(device_code="CAVA-001", device_type="cold_room", sensor_name="energy", value=1.0, timestamp="2026-09-02T00:00:00+00:00", raw_value="on")]
     tc = TrafficClassification(id=uuid.uuid4(), reading_id=uuid.uuid4(), criticality=5.0, priority="HIGH", queue="WFQ", classification_time=datetime.now(timezone.utc), timestamp=datetime.now(timezone.utc))
