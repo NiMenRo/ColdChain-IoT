@@ -10,6 +10,7 @@ import {
   useAlertsData,
   type AlertFilter,
 } from '../../hooks/useAlertsData';
+import { useHistoricalAnalytics } from '../../hooks/useHistoricalAnalytics';
 
 // ─── Notification channel/status visuals (backend enums; fallback neutro) ────
 const CHANNEL_ICON: Record<string, React.ElementType> = {
@@ -40,6 +41,10 @@ export function AlertsView() {
   const canAcknowledge = hasActionPermission(role, 'acknowledgeAlert');
   const [tab, setTab] = useState<ActiveTab>('alerts');
   const data = useAlertsData();
+  // Análisis histórico mínimo (TSK-052): acumulado por tipo desde /history/summary.
+  const hist = useHistoricalAnalytics();
+  const typeEntries = Object.entries(hist.summary?.alerts_by_type ?? {});
+  const typeEntriesTotal = typeEntries.reduce((s, [, v]) => s + v, 0);
   const {
     alerts, pendingCount, criticalCount, acknowledgedCount,
     eventsSummary, criticalSessionAlerts, sessionEvents,
@@ -113,6 +118,28 @@ export function AlertsView() {
       {/* ── ALERTS TAB (GET /history/alerts, persistido) ── */}
       {tab === 'alerts' && (
         <>
+          {/* Acumulado por tipo (GET /history/summary.alerts_by_type) */}
+          <div className="cc-card px-4 py-3 mb-4">
+            <div className="small fw-semibold text-muted mb-2">Alertas por tipo (acumulado backend)</div>
+            {hist.summaryStatus === 'loading' ? (
+              <div className="small text-muted">Cargando…</div>
+            ) : hist.summaryStatus === 'error' ? (
+              <div className="small" style={{ color: '#B22F2F' }}>
+                No se pudo cargar. <button onClick={hist.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+              </div>
+            ) : typeEntries.length === 0 ? (
+              <div className="small text-muted">Sin alertas registradas.</div>
+            ) : (
+              <div className="d-flex flex-wrap gap-2">
+                {typeEntries.map(([type, count]) => (
+                  <span key={type} className="rounded-pill px-3 py-1" style={{ fontSize: 12, background: '#EFF4F7', color: '#123B5D', border: '1px solid #D9E2E8' }}>
+                    {alertLabel(type)} · <strong>{count}</strong>
+                    <span className="text-muted"> ({typeEntriesTotal > 0 ? Math.round((count / typeEntriesTotal) * 100) : 0}%)</span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
           {/* Type filter (server-side vía query `type`) */}
           <div className="d-flex flex-wrap gap-2 mb-4">
             {(['all', ...ALERT_TYPES] as AlertFilter[]).map(f => (

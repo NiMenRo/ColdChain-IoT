@@ -1,8 +1,9 @@
-import { Cell, Tooltip, ResponsiveContainer, PieChart, Pie } from 'recharts';
+import { Cell, Tooltip, ResponsiveContainer, PieChart, Pie, LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { Info } from 'lucide-react';
 import { Card, Row, Col } from '../../lib/bootstrap';
 import { formatTs } from '../../hooks/useAlertsData';
 import { useTrafficData } from '../../hooks/useTrafficData';
+import { useHistoricalAnalytics } from '../../hooks/useHistoricalAnalytics';
 
 const TICK_STYLE   = { fill: '#52616B', fontSize: 11 };
 const TOOLTIP_STYLE = { border: '1px solid #D9E2E8', borderRadius: '4px', fontSize: '12px' };
@@ -10,6 +11,18 @@ const TOOLTIP_STYLE = { border: '1px solid #D9E2E8', borderRadius: '4px', fontSi
 export function TrafficView() {
   const data = useTrafficData();
   const { rows, total, recent } = data;
+  // Análisis histórico (TSK-052): evolución y distribución de criticidad sobre
+  // muestra paginada acotada; los agregados globales vienen de /history/summary.
+  const hist = useHistoricalAnalytics();
+  const critEvolution = [...hist.classSample]
+    .sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1))
+    .map(c => {
+      const d = new Date(c.timestamp);
+      const t = Number.isNaN(d.getTime())
+        ? c.timestamp
+        : `${d.toLocaleDateString('es-CO', { day: '2-digit', month: '2-digit' })} ${d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`;
+      return { t, criticality: c.criticality };
+    });
 
   return (
     <div>
@@ -184,6 +197,68 @@ export function TrafficView() {
                     <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [`${v} lecturas`]} />
                   </PieChart>
                 </ResponsiveContainer>
+              )}
+            </Card.Body>
+          </Card>
+        </Col>
+      </Row>
+
+      {/* Análisis histórico de criticidad (TSK-052, muestra acotada) */}
+      <Row className="g-4 mt-1">
+        <Col xs={12} lg={7}>
+          <Card className="cc-card">
+            <div className="cc-card-header">Evolución de criticidad (muestra)</div>
+            <Card.Body>
+              {hist.classStatus === 'loading' ? (
+                <div className="small text-muted">Cargando…</div>
+              ) : hist.classStatus === 'error' ? (
+                <div className="small" style={{ color: '#B22F2F' }}>
+                  No se pudo cargar. <button onClick={hist.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+                </div>
+              ) : critEvolution.length === 0 ? (
+                <div className="small text-muted">Sin clasificaciones en el periodo.</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={240}>
+                  <LineChart data={critEvolution} margin={{ top: 8, right: 12, left: 8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" />
+                    <XAxis dataKey="t" tick={TICK_STYLE} interval="preserveStartEnd" minTickGap={48} />
+                    <YAxis tick={TICK_STYLE} domain={[3, 9]} />
+                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => `${Number(v).toFixed(1)}`} />
+                    <Line type="monotone" dataKey="criticality" name="Criticidad" stroke="#C83B3B" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+              <p className="text-muted mt-2 mb-0" style={{ fontSize: 11 }}>
+                Muestra de {hist.classSampleCount} clasificaciones recientes, no el total global.
+              </p>
+            </Card.Body>
+          </Card>
+        </Col>
+        <Col xs={12} lg={5}>
+          <Card className="cc-card h-100">
+            <div className="cc-card-header">Distribución de criticidad (muestra)</div>
+            <Card.Body>
+              {hist.classStatus === 'loading' ? (
+                <div className="small text-muted">Cargando…</div>
+              ) : hist.classStatus === 'error' ? (
+                <div className="small" style={{ color: '#B22F2F' }}>No se pudo cargar.</div>
+              ) : (
+                <>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <BarChart data={hist.criticalityBuckets} margin={{ top: 4, right: 8, left: 0, bottom: 4 }} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" horizontal={false} />
+                      <XAxis type="number" tick={TICK_STYLE} allowDecimals={false} />
+                      <YAxis type="category" dataKey="range" tick={TICK_STYLE} width={90} />
+                      <Tooltip contentStyle={TOOLTIP_STYLE} />
+                      <Bar dataKey="count" name="Clasificaciones" radius={[0, 3, 3, 0]} isAnimationActive={false}>
+                        {hist.criticalityBuckets.map((e, i) => <Cell key={`tcb-cell-${i}`} fill={e.color} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <p className="text-muted mt-2 mb-0" style={{ fontSize: 11 }}>
+                    Muestra de {hist.classSampleCount} clasificaciones recientes, no el total global.
+                  </p>
+                </>
               )}
             </Card.Body>
           </Card>

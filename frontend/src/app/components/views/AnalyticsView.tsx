@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import { LineChart, Line, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie } from 'recharts';
-import { Activity, TrendingDown, TrendingUp, Wifi } from 'lucide-react';
 import { Card, Row, Col } from '../../lib/bootstrap';
 import { useExperiments } from '../../contexts/ExperimentContext';
 import {
@@ -20,7 +19,9 @@ import {
   mergeLineSeries,
 } from '../../lib/experimentAggregations';
 import { useQosSnapshot } from '../../hooks/useQosSnapshot';
-import { formatTs } from '../../hooks/useAlertsData';
+import type { HistorySummary, QosTrendPoint } from '../../../services/api/history';
+import { RANGE_OPTIONS, useHistoricalAnalytics, type HistoryRange } from '../../hooks/useHistoricalAnalytics';
+import { alertLabel, formatTs } from '../../hooks/useAlertsData';
 import {
   ScenarioBadge,
   MetricComparisonCard,
@@ -28,34 +29,6 @@ import {
   BacklogChart,
   CountMetricsBarChart,
 } from '../experiments/ExperimentCharts';
-
-// ─── Mock histórico complementario (NO asociado a run_id) ───
-const HOURS = ['00:00','01:00','02:00','03:00','04:00','05:00','06:00','07:00','08:00','09:00','10:00','11:00','12:00','13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00','21:00','22:00','23:00'];
-
-const latencyData = [42,44,41,40,38,37,39,43,47,52,55,51,48,46,50,53,49,47,46,44,43,45,44,42].map((v, i) => ({ hour: HOURS[i], latency: v }));
-const jitterData  = [2.1,2.3,2.0,1.9,1.8,1.7,1.9,2.2,2.8,3.4,3.7,3.2,2.9,2.7,3.1,3.5,3.0,2.8,2.7,2.5,2.4,2.6,2.5,2.2].map((v, i) => ({ hour: HOURS[i], jitter: v }));
-const lossData    = [0.6,0.7,0.6,0.5,0.5,0.4,0.5,0.7,0.8,1.0,1.1,0.9,0.8,0.8,0.9,1.1,0.9,0.8,0.8,0.7,0.7,0.8,0.7,0.6].map((v, i) => ({ hour: HOURS[i], loss: v }));
-const pdrData     = [99.4,99.3,99.4,99.5,99.5,99.6,99.5,99.3,99.2,99.0,98.9,99.1,99.2,99.2,99.1,98.9,99.1,99.2,99.2,99.3,99.3,99.2,99.3,99.4].map((v, i) => ({ hour: HOURS[i], pdr: v }));
-
-const alertsByType = [
-  { name: 'Temp. Excedida',    value: 12, color: '#C83B3B' },
-  { name: 'Temp. Bajo Mín.',   value: 4,  color: '#1F6F8B' },
-  { name: 'Humedad > Máx.',    value: 7,  color: '#965D00' },
-  { name: 'Humedad < Mín.',    value: 3,  color: '#27B3C2' },
-  { name: 'Anomalía Energía',  value: 5,  color: '#52616B' },
-];
-
-const priorityDist = [
-  { name: 'HIGH',   value: 38,  color: '#C83B3B' },
-  { name: 'MEDIUM', value: 127, color: '#C47A00' },
-  { name: 'LOW',    value: 241, color: '#16835B' },
-];
-
-const queueDist = [
-  { name: 'WFQ',         value: 38,  color: '#C83B3B' },
-  { name: 'Round Robin', value: 127, color: '#C47A00' },
-  { name: 'FIFO',        value: 241, color: '#16835B' },
-];
 
 const CHART_MARGIN = { top: 4, right: 8, left: 0, bottom: 4 };
 const TICK_STYLE   = { fill: '#52616B', fontSize: 11 };
@@ -69,6 +42,113 @@ function runNumber(runs: ExperimentRun[], run: ExperimentRun): number {
 
 function runLabel(runs: ExperimentRun[], run: ExperimentRun, condition: SensorCondition): string {
   return `${SENSOR_CONDITION_LABELS[condition]} — ${run.scenario === 'WITH_QOS' ? 'Con priorización' : 'Sin priorización'} — Ejecución #${runNumber(runs, run)}`;
+}
+
+// ─── Helpers de presentación histórica (TSK-052; solo formato, sin agregación) ─
+
+function bucketLabel(bucket: string, range: string): string {
+  const d = new Date(bucket);
+  if (Number.isNaN(d.getTime())) return bucket;
+  const hhmm = d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+  if (range === '30d') {
+    return d.toLocaleDateString('es-CO', { day: '2-digit', month: '2-digit' });
+  }
+  return `${d.toLocaleDateString('es-CO', { day: '2-digit', month: '2-digit' })} ${hhmm}`;
+}
+
+type QosMetricKey = 'latency' | 'jitter' | 'packet_loss' | 'throughput' | 'pdr';
+
+const QOS_METRIC_OPTIONS: Array<{ key: QosMetricKey; label: string; unit: string }> = [
+  { key: 'latency', label: 'Latencia', unit: 'ms' },
+  { key: 'jitter', label: 'Jitter', unit: 'ms' },
+  { key: 'packet_loss', label: 'Pérdida', unit: '%' },
+  { key: 'throughput', label: 'Throughput', unit: '' },
+  { key: 'pdr', label: 'PDR', unit: '%' },
+];
+
+function qosLabel(key: QosMetricKey): string {
+  return QOS_METRIC_OPTIONS.find(o => o.key === key)?.label ?? key;
+}
+
+function qosValue(p: QosTrendPoint, key: QosMetricKey): number {
+  if (key === 'latency') return p.avg_latency;
+  if (key === 'jitter') return p.avg_jitter;
+  if (key === 'packet_loss') return p.avg_packet_loss;
+  if (key === 'throughput') return p.avg_throughput;
+  return p.avg_pdr;
+}
+
+function qosFormat(key: QosMetricKey, v: number): string {
+  const unit = QOS_METRIC_OPTIONS.find(o => o.key === key)?.unit ?? '';
+  return `${v.toFixed(1)}${unit ? ` ${unit}` : ''}`;
+}
+
+const ALERT_TYPE_COLORS: Record<string, string> = {
+  TEMPERATURE_EXCEEDED: '#C83B3B',
+  TEMPERATURE_BELOW_MIN: '#1F6F8B',
+  HUMIDITY_ABOVE_MAX: '#965D00',
+  HUMIDITY_BELOW_MIN: '#27B3C2',
+  ENERGY_STATE_ANOMALY: '#52616B',
+};
+
+function alertTypeEntries(summary: HistorySummary | null): Array<{ name: string; value: number; color: string }> {
+  if (!summary) return [];
+  return Object.entries(summary.alerts_by_type ?? {}).map(([type, value]) => ({
+    name: alertLabel(type),
+    value,
+    color: ALERT_TYPE_COLORS[type] ?? '#8A9BA8',
+  }));
+}
+
+const PRIORITY_META: Array<{ key: string; name: string; color: string }> = [
+  { key: 'high', name: 'HIGH', color: '#C83B3B' },
+  { key: 'medium', name: 'MEDIUM', color: '#C47A00' },
+  { key: 'low', name: 'LOW', color: '#16835B' },
+];
+
+const QUEUE_COLORS: Record<string, string> = {
+  WFQ: '#C83B3B',
+  'Round Robin': '#C47A00',
+  FIFO: '#16835B',
+};
+
+function priorityEntries(summary: HistorySummary | null): Array<{ name: string; value: number; pct: number; color: string }> {
+  const t = summary?.traffic_by_priority ?? {};
+  const rows = PRIORITY_META.map(m => ({
+    name: m.name,
+    value: typeof t[m.key] === 'number' ? t[m.key] : 0,
+    pct: 0,
+    color: m.color,
+  }));
+  const total = rows.reduce((s, r) => s + r.value, 0);
+  return rows.map(r => ({ ...r, pct: total > 0 ? Math.round((r.value / total) * 100) : 0 }));
+}
+
+function queueEntries(summary: HistorySummary | null): Array<{ name: string; value: number; color: string }> {
+  const q = summary?.qos_by_queue ?? {};
+  return Object.entries(q).map(([name, value]) => ({
+    name,
+    value,
+    color: QUEUE_COLORS[name] ?? '#8A9BA8',
+  }));
+}
+
+function summaryIndicators(summary: HistorySummary): Array<{ label: string; value: string; sub: string }> {
+  const byType = Object.entries(summary.alerts_by_type ?? {});
+  const topType = byType.length > 0 ? byType.reduce((a, b) => (b[1] > a[1] ? b : a)) : null;
+  const byPrio = summary.traffic_by_priority ?? {};
+  const prioTotal = ['high', 'medium', 'low'].reduce((s, k) => s + (typeof byPrio[k] === 'number' ? byPrio[k] : 0), 0);
+  const highPct = prioTotal > 0 && typeof byPrio.high === 'number' ? Math.round((byPrio.high / prioTotal) * 100) : 0;
+  return [
+    { label: 'Lecturas registradas', value: String(summary.total_readings), sub: 'Acumulado backend' },
+    { label: 'Clasificaciones', value: String(summary.total_classifications), sub: 'Acumulado backend' },
+    { label: 'Métricas QoS', value: String(summary.total_qos_metrics), sub: 'Acumulado backend' },
+    {
+      label: 'Tipo de alerta predominante',
+      value: topType ? alertLabel(topType[0]) : '—',
+      sub: topType ? `${topType[1]} alertas · ${highPct}% del tráfico es HIGH` : 'Sin alertas registradas',
+    },
+  ];
 }
 
 export function AnalyticsView() {
@@ -94,6 +174,8 @@ export function AnalyticsView() {
   const withQosMetrics = withQosRun ? metrics.filter(m => m.run_id === withQosRun.id) : [];
   const withoutQosMetrics = withoutQosRun ? metrics.filter(m => m.run_id === withoutQosRun.id) : [];
   const qosLive = useQosSnapshot();
+  const hist = useHistoricalAnalytics();
+  const [qosMetric, setQosMetric] = useState<QosMetricKey>('latency');
 
   const persistData = mergeLineSeries(
     withQosRun ? seriesByElapsed(metrics, 'ingest_to_persist_ms', withQosRun.started_at) : [],
@@ -103,18 +185,6 @@ export function AnalyticsView() {
     withQosRun ? seriesByElapsed(metrics, 'ingest_to_alert_ms', withQosRun.started_at) : [],
     withoutQosRun ? seriesByElapsed(metrics, 'ingest_to_alert_ms', withoutQosRun.started_at) : [],
   );
-
-  const totalPriority = priorityDist.reduce((s, d) => s + d.value, 0);
-  const totalQueue    = queueDist.reduce((s, d) => s + d.value, 0);
-
-  const kpis = [
-    { label: 'Latencia media',     value: '47 ms',   sub: 'Últimas 24 h',    good: true,  Icon: TrendingDown },
-    { label: 'Jitter',             value: '3.2 ms',  sub: 'Últimas 24 h',    good: true,  Icon: Activity     },
-    { label: 'Pérdida de paquetes',value: '0.8 %',   sub: 'Últimas 24 h',    good: true,  Icon: TrendingDown },
-    { label: 'PDR',                value: '99.2 %',  sub: 'Tasa de entrega', good: true,  Icon: TrendingUp   },
-    { label: 'Throughput',         value: '95 Mbps', sub: 'Promedio',        good: true,  Icon: TrendingUp   },
-    { label: 'Alertas generadas',  value: '31',      sub: 'Últimos 7 días',  good: false, Icon: Wifi         },
-  ];
 
   return (
     <div>
@@ -340,166 +410,332 @@ export function AnalyticsView() {
         </div>
       )}
 
-      {/* ─── Analítica QoS complementaria (histórica, con priorización) ─── */}
+      {/* ─── Análisis histórico — datos reales (TSK-052) ─── */}
       <hr className="my-5" style={{ borderColor: '#D9E2E8' }} />
-      <h2 className="mb-1" style={{ fontSize: 16, fontWeight: 600 }}>
-        Analítica QoS complementaria
-      </h2>
+      <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-1">
+        <h2 className="mb-0" style={{ fontSize: 16, fontWeight: 600 }}>
+          Análisis histórico
+        </h2>
+        <div className="d-flex align-items-center gap-2 flex-wrap">
+          <span className="small fw-semibold text-muted">Periodo:</span>
+          {RANGE_OPTIONS.map(o => (
+            <button key={o.value} type="button" onClick={() => hist.setRange(o.value)}
+              className="rounded-2 border px-3 py-1"
+              style={{ fontSize: 12, cursor: 'pointer', fontWeight: hist.range === o.value ? 600 : 400,
+                background: hist.range === o.value ? '#123B5D' : '#fff',
+                color: hist.range === o.value ? '#fff' : '#52616B',
+                borderColor: hist.range === o.value ? '#123B5D' : '#D9E2E8' }}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <p className="text-muted small mb-4">
-        Histórica · Solo disponible para ejecuciones con priorización.
+        Agregados del backend (`/history/*`) para {hist.rangeLabel.toLowerCase()}. Las distribuciones por
+        criticidad y por día usan una muestra paginada acotada (máx. 100 registros), no el total global.
       </p>
 
-      <Row className="g-3 mb-4">
-        {kpis.map(m => {
-          const Icon = m.Icon;
-          const col  = m.good ? '#52616B' : '#C83B3B';
-          return (
-            <Col key={m.label} xs={12} sm={6} xl={4}>
-              <div className="cc-card p-3">
-                <div className="d-flex justify-content-between align-items-start mb-1">
-                  <div className="small text-muted">{m.label}</div>
-                  <Icon size={16} color={col} />
+      {(hist.isAuthBlocked || hist.isConfigMissing) && !hist.isLoading && (
+        <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 rounded-3 px-4 py-3 mb-4"
+          style={{ background: '#FFF5E3', border: '1px solid #ffda6a', borderLeft: '4px solid #C47A00' }}>
+          <p className="mb-0 small">
+            <strong>Datos históricos no disponibles.</strong>{' '}
+            {hist.isConfigMissing
+              ? 'Falta configurar VITE_API_BASE_URL en el frontend.'
+              : 'La API requiere autenticación Bearer y el login actual es mock (integración de autenticación pendiente).'}
+          </p>
+          <button
+            onClick={hist.retry}
+            className="border-0 bg-transparent fw-semibold"
+            style={{ fontSize: 13, color: '#965D00', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
+
+      {/* Tendencias de temperatura y humedad (GET /history/readings/trends) */}
+      <Row className="g-4 mb-4">
+        <Col xs={12} lg={6}>
+          <Card className="cc-card">
+            <div className="cc-card-header">Temperatura promedio (°C) — {hist.rangeLabel.toLowerCase()}</div>
+            <Card.Body>
+              {hist.readingStatus === 'loading' ? (
+                <div className="small text-muted">Cargando tendencias…</div>
+              ) : hist.readingStatus === 'error' ? (
+                <div className="small" style={{ color: '#B22F2F' }}>
+                  No se pudieron cargar las tendencias. <button onClick={hist.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
                 </div>
+              ) : hist.readingTrends.length === 0 ? (
+                <div className="small text-muted">Sin lecturas en el periodo.</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={240}>
+                  <LineChart data={hist.readingTrends.map(p => ({
+                    t: bucketLabel(p.bucket, hist.range),
+                    avg: p.avg_temp, min: p.min_temp, max: p.max_temp,
+                  }))} margin={{ top: 8, right: 12, left: 8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" />
+                    <XAxis dataKey="t" tick={TICK_STYLE} interval="preserveStartEnd" minTickGap={48} />
+                    <YAxis tick={TICK_STYLE} />
+                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => v === null || v === undefined ? '—' : `${Number(v).toFixed(1)} °C`} />
+                    <Legend {...LEGEND_STYLE} />
+                    <Line type="monotone" dataKey="max" name="Máx" stroke="#C83B3B" strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls isAnimationActive={false} />
+                    <Line type="monotone" dataKey="avg" name="Promedio" stroke="#123B5D" strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
+                    <Line type="monotone" dataKey="min" name="Mín" stroke="#1F6F8B" strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </Card.Body>
+          </Card>
+        </Col>
+        <Col xs={12} lg={6}>
+          <Card className="cc-card">
+            <div className="cc-card-header">Humedad promedio (%) — {hist.rangeLabel.toLowerCase()}</div>
+            <Card.Body>
+              {hist.readingStatus === 'loading' ? (
+                <div className="small text-muted">Cargando tendencias…</div>
+              ) : hist.readingStatus === 'error' ? (
+                <div className="small" style={{ color: '#B22F2F' }}>
+                  No se pudieron cargar las tendencias. <button onClick={hist.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+                </div>
+              ) : hist.readingTrends.length === 0 ? (
+                <div className="small text-muted">Sin lecturas en el periodo.</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={240}>
+                  <LineChart data={hist.readingTrends.map(p => ({
+                    t: bucketLabel(p.bucket, hist.range),
+                    avg: p.avg_hum, min: p.min_hum, max: p.max_hum,
+                  }))} margin={{ top: 8, right: 12, left: 8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" />
+                    <XAxis dataKey="t" tick={TICK_STYLE} interval="preserveStartEnd" minTickGap={48} />
+                    <YAxis tick={TICK_STYLE} />
+                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => v === null || v === undefined ? '—' : `${Number(v).toFixed(0)} %`} />
+                    <Legend {...LEGEND_STYLE} />
+                    <Line type="monotone" dataKey="max" name="Máx" stroke="#C47A00" strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls isAnimationActive={false} />
+                    <Line type="monotone" dataKey="avg" name="Promedio" stroke="#1F6F8B" strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
+                    <Line type="monotone" dataKey="min" name="Mín" stroke="#27B3C2" strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </Card.Body>
+          </Card>
+        </Col>
+      </Row>
+
+      {/* Evolución QoS (GET /history/qos/trends) */}
+      <Card className="cc-card mb-4">
+        <div className="cc-card-header">Evolución QoS — {hist.rangeLabel.toLowerCase()}</div>
+        <Card.Body>
+          <div className="d-flex flex-wrap gap-2 mb-3">
+            {QOS_METRIC_OPTIONS.map(o => (
+              <button key={o.key} type="button" onClick={() => setQosMetric(o.key)}
+                className="rounded-2 border px-3 py-1"
+                style={{ fontSize: 12, cursor: 'pointer', fontWeight: qosMetric === o.key ? 600 : 400,
+                  background: qosMetric === o.key ? '#1F6F8B' : '#fff',
+                  color: qosMetric === o.key ? '#fff' : '#52616B',
+                  borderColor: qosMetric === o.key ? '#1F6F8B' : '#D9E2E8' }}>
+                {o.label}
+              </button>
+            ))}
+          </div>
+          {hist.qosStatus === 'loading' ? (
+            <div className="small text-muted">Cargando evolución QoS…</div>
+          ) : hist.qosStatus === 'error' ? (
+            <div className="small" style={{ color: '#B22F2F' }}>
+              No se pudo cargar la evolución QoS. <button onClick={hist.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+            </div>
+          ) : hist.qosTrends.length === 0 ? (
+            <div className="small text-muted">Sin métricas QoS en el periodo.</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={240}>
+              <LineChart data={hist.qosTrends.map(p => ({
+                t: bucketLabel(p.bucket, hist.range),
+                v: qosValue(p, qosMetric),
+              }))} margin={{ top: 8, right: 12, left: 8, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" />
+                <XAxis dataKey="t" tick={TICK_STYLE} interval="preserveStartEnd" minTickGap={48} />
+                <YAxis tick={TICK_STYLE} />
+                <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => v === null || v === undefined ? '—' : qosFormat(qosMetric, Number(v))} />
+                <Line type="monotone" dataKey="v" name={qosLabel(qosMetric)} stroke="#123B5D" strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </Card.Body>
+      </Card>
+
+      {/* Distribuciones: criticidad (muestra), alertas/día (muestra), tipos y prioridades (summary) */}
+      <Row className="g-4">
+        <Col xs={12} lg={6}>
+          <Card className="cc-card h-100">
+            <div className="cc-card-header">Distribución de criticidad (muestra)</div>
+            <Card.Body>
+              {hist.classStatus === 'loading' ? (
+                <div className="small text-muted">Cargando…</div>
+              ) : hist.classStatus === 'error' ? (
+                <div className="small" style={{ color: '#B22F2F' }}>
+                  No se pudo cargar. <button onClick={hist.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+                </div>
+              ) : (
+                <>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <BarChart data={hist.criticalityBuckets} margin={CHART_MARGIN} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" horizontal={false} />
+                      <XAxis type="number" tick={TICK_STYLE} allowDecimals={false} />
+                      <YAxis type="category" dataKey="range" tick={TICK_STYLE} width={90} />
+                      <Tooltip contentStyle={TOOLTIP_STYLE} />
+                      <Bar dataKey="count" name="Clasificaciones" radius={[0, 3, 3, 0]} isAnimationActive={false}>
+                        {hist.criticalityBuckets.map((e, i) => <Cell key={`cb-cell-${i}`} fill={e.color} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <p className="text-muted mt-2 mb-0" style={{ fontSize: 11 }}>
+                    Muestra de {hist.classSampleCount} clasificaciones recientes, no el total global.
+                  </p>
+                </>
+              )}
+            </Card.Body>
+          </Card>
+        </Col>
+        <Col xs={12} lg={6}>
+          <Card className="cc-card h-100">
+            <div className="cc-card-header">Alertas por día (muestra)</div>
+            <Card.Body>
+              {hist.alertsStatus === 'loading' ? (
+                <div className="small text-muted">Cargando…</div>
+              ) : hist.alertsStatus === 'error' ? (
+                <div className="small" style={{ color: '#B22F2F' }}>
+                  No se pudo cargar. <button onClick={hist.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+                </div>
+              ) : hist.alertsPerDay.length === 0 ? (
+                <div className="small text-muted">Sin alertas en el periodo.</div>
+              ) : (
+                <>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <BarChart data={hist.alertsPerDay} margin={CHART_MARGIN}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" />
+                      <XAxis dataKey="day" tick={TICK_STYLE} interval="preserveStartEnd" minTickGap={24} />
+                      <YAxis tick={TICK_STYLE} allowDecimals={false} />
+                      <Tooltip contentStyle={TOOLTIP_STYLE} />
+                      <Bar dataKey="count" name="Alertas" fill="#C83B3B" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <p className="text-muted mt-2 mb-0" style={{ fontSize: 11 }}>
+                    Muestra de {hist.alertsSampleCount} alertas recientes, no el total global.
+                  </p>
+                </>
+              )}
+            </Card.Body>
+          </Card>
+        </Col>
+      </Row>
+
+      <Row className="g-4 mt-1">
+        <Col xs={12} lg={4}>
+          <Card className="cc-card h-100">
+            <div className="cc-card-header">Alertas por tipo (acumulado backend)</div>
+            <Card.Body>
+              {hist.summaryStatus === 'loading' ? (
+                <div className="small text-muted">Cargando…</div>
+              ) : hist.summaryStatus === 'error' ? (
+                <div className="small" style={{ color: '#B22F2F' }}>
+                  No se pudo cargar. <button onClick={hist.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+                </div>
+              ) : alertTypeEntries(hist.summary).length === 0 ? (
+                <div className="small text-muted">Sin alertas registradas.</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={220}>
+                  <PieChart>
+                    <Pie data={alertTypeEntries(hist.summary)} cx="50%" cy="50%" outerRadius={75} dataKey="value" isAnimationActive={false}>
+                      {alertTypeEntries(hist.summary).map((e, i) => <Cell key={`at-cell-${i}`} fill={e.color} />)}
+                    </Pie>
+                    <Tooltip contentStyle={TOOLTIP_STYLE} />
+                    <Legend {...LEGEND_STYLE} />
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
+            </Card.Body>
+          </Card>
+        </Col>
+
+        <Col xs={12} lg={4}>
+          <Card className="cc-card h-100">
+            <div className="cc-card-header">Distribución por prioridad (acumulado backend)</div>
+            <Card.Body>
+              {hist.summaryStatus === 'loading' ? (
+                <div className="small text-muted">Cargando…</div>
+              ) : hist.summaryStatus === 'error' ? (
+                <div className="small" style={{ color: '#B22F2F' }}>No se pudo cargar.</div>
+              ) : (
+                <>
+                  <div className="d-flex flex-column gap-3 pt-2">
+                    {priorityEntries(hist.summary).map(p => (
+                      <div key={p.name}>
+                        <div className="d-flex justify-content-between mb-1">
+                          <span className="fw-semibold" style={{ fontSize: 13 }}>{p.name}</span>
+                          <span className="text-muted small">{p.value} ({p.pct}%)</span>
+                        </div>
+                        <div style={{ height: 10, background: '#EFF4F7', borderRadius: 5 }}>
+                          <div style={{ height: '100%', width: `${p.pct}%`, background: p.color, borderRadius: 5 }} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-muted mt-4 mb-0" style={{ fontSize: 11 }}>
+                    Total: {priorityEntries(hist.summary).reduce((s, p) => s + p.value, 0)} lecturas clasificadas
+                  </p>
+                </>
+              )}
+            </Card.Body>
+          </Card>
+        </Col>
+
+        <Col xs={12} lg={4}>
+          <Card className="cc-card h-100">
+            <div className="cc-card-header">Distribución por cola (acumulado backend)</div>
+            <Card.Body>
+              {hist.summaryStatus === 'loading' ? (
+                <div className="small text-muted">Cargando…</div>
+              ) : hist.summaryStatus === 'error' ? (
+                <div className="small" style={{ color: '#B22F2F' }}>No se pudo cargar.</div>
+              ) : queueEntries(hist.summary).length === 0 ? (
+                <div className="small text-muted">Sin datos de colas.</div>
+              ) : (
+                <>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <BarChart data={queueEntries(hist.summary)} margin={CHART_MARGIN} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" horizontal={false} />
+                      <XAxis type="number" tick={TICK_STYLE} />
+                      <YAxis type="category" dataKey="name" tick={TICK_STYLE} width={90} />
+                      <Tooltip contentStyle={TOOLTIP_STYLE} />
+                      <Bar dataKey="value" name="Lecturas" radius={[0, 3, 3, 0]} isAnimationActive={false}>
+                        {queueEntries(hist.summary).map((e, i) => <Cell key={`qd-cell-${i}`} fill={e.color} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <p className="text-muted mt-2 mb-0" style={{ fontSize: 11 }}>
+                    Total: {queueEntries(hist.summary).reduce((s, p) => s + p.value, 0)} lecturas clasificadas
+                  </p>
+                </>
+              )}
+            </Card.Body>
+          </Card>
+        </Col>
+      </Row>
+
+      {/* Indicadores derivados de /history/summary */}
+      {hist.summary && (
+        <Row className="g-3 mt-1">
+          {summaryIndicators(hist.summary).map(m => (
+            <Col key={m.label} xs={12} sm={6} xl={3}>
+              <div className="cc-card p-3">
+                <div className="small text-muted">{m.label}</div>
                 <div style={{ fontSize: 22, fontWeight: 700, margin: '6px 0 4px' }}>{m.value}</div>
                 <div className="small text-muted">{m.sub}</div>
               </div>
             </Col>
-          );
-        })}
-      </Row>
-
-      <Card className="cc-card mb-4">
-        <div className="cc-card-header">Latencia (ms) — últimas 24 h</div>
-        <Card.Body>
-          <ResponsiveContainer width="100%" height={240}>
-            <LineChart data={latencyData} margin={{ top: 8, right: 12, left: 8, bottom: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" />
-              <XAxis dataKey="hour" tick={TICK_STYLE} interval={3} />
-              <YAxis tick={TICK_STYLE} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} />
-              <Line type="monotone" dataKey="latency" name="Latencia" stroke="#123B5D" strokeWidth={2} dot={false} isAnimationActive={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </Card.Body>
-      </Card>
-
-      <Row className="g-4 mb-4">
-        <Col xs={12} lg={6}>
-          <Card className="cc-card">
-            <div className="cc-card-header">Jitter (ms) — últimas 24 h</div>
-            <Card.Body>
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={jitterData} margin={CHART_MARGIN}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" />
-                  <XAxis dataKey="hour" tick={TICK_STYLE} interval={5} />
-                  <YAxis tick={TICK_STYLE} />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
-                  <Line type="monotone" dataKey="jitter" name="Jitter" stroke="#1F6F8B" strokeWidth={2} dot={false} isAnimationActive={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col xs={12} lg={6}>
-          <Card className="cc-card">
-            <div className="cc-card-header">Pérdida de paquetes (%) — últimas 24 h</div>
-            <Card.Body>
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={lossData} margin={CHART_MARGIN}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" />
-                  <XAxis dataKey="hour" tick={TICK_STYLE} interval={5} />
-                  <YAxis tick={TICK_STYLE} />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
-                  <Line type="monotone" dataKey="loss" name="Pérdida %" stroke="#C83B3B" strokeWidth={2} dot={false} isAnimationActive={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </Card.Body>
-          </Card>
-        </Col>
-      </Row>
-
-      <Card className="cc-card mb-4">
-        <div className="cc-card-header">PDR — Tasa de entrega de paquetes (%) — últimas 24 h</div>
-        <Card.Body>
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={pdrData} margin={CHART_MARGIN}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" />
-              <XAxis dataKey="hour" tick={TICK_STYLE} interval={3} />
-              <YAxis tick={TICK_STYLE} domain={[98, 100]} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => `${v.toFixed(1)}%`} />
-              <Line type="monotone" dataKey="pdr" name="PDR" stroke="#16835B" strokeWidth={2} dot={false} isAnimationActive={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </Card.Body>
-      </Card>
-
-      <Row className="g-4">
-        <Col xs={12} lg={4}>
-          <Card className="cc-card h-100">
-            <div className="cc-card-header">Alertas por tipo (últimos 7 días)</div>
-            <Card.Body>
-              <ResponsiveContainer width="100%" height={220}>
-                <PieChart>
-                  <Pie data={alertsByType} cx="50%" cy="50%" outerRadius={75} dataKey="value" isAnimationActive={false}>
-                    {alertsByType.map((e, i) => <Cell key={`at-cell-${i}`} fill={e.color} />)}
-                  </Pie>
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
-                  <Legend {...LEGEND_STYLE} />
-                </PieChart>
-              </ResponsiveContainer>
-            </Card.Body>
-          </Card>
-        </Col>
-
-        <Col xs={12} lg={4}>
-          <Card className="cc-card h-100">
-            <div className="cc-card-header">Distribución por prioridad</div>
-            <Card.Body>
-              <div className="d-flex flex-column gap-3 pt-2">
-                {priorityDist.map(p => {
-                  const pct = Math.round((p.value / totalPriority) * 100);
-                  return (
-                    <div key={p.name}>
-                      <div className="d-flex justify-content-between mb-1">
-                        <span className="fw-semibold" style={{ fontSize: 13 }}>{p.name}</span>
-                        <span className="text-muted small">{p.value} ({pct}%)</span>
-                      </div>
-                      <div style={{ height: 10, background: '#EFF4F7', borderRadius: 5 }}>
-                        <div style={{ height: '100%', width: `${pct}%`, background: p.color, borderRadius: 5 }} />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              <p className="text-muted mt-4 mb-0" style={{ fontSize: 11 }}>
-                Total: {totalPriority} lecturas clasificadas
-              </p>
-            </Card.Body>
-          </Card>
-        </Col>
-
-        <Col xs={12} lg={4}>
-          <Card className="cc-card h-100">
-            <div className="cc-card-header">Distribución por cola</div>
-            <Card.Body>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={queueDist} margin={CHART_MARGIN} layout="vertical">
-                  <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" horizontal={false} />
-                  <XAxis type="number" tick={TICK_STYLE} />
-                  <YAxis type="category" dataKey="name" tick={TICK_STYLE} width={90} />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
-                  <Bar dataKey="value" name="Lecturas" radius={[0, 3, 3, 0]} isAnimationActive={false}>
-                    {queueDist.map((e, i) => <Cell key={`qd-cell-${i}`} fill={e.color} />)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-              <p className="text-muted mt-2 mb-0" style={{ fontSize: 11 }}>
-                Total: {totalQueue} lecturas clasificadas
-              </p>
-            </Card.Body>
-          </Card>
-        </Col>
-      </Row>
+          ))}
+        </Row>
+      )}
     </div>
   );
 }
