@@ -5,3 +5,6 @@ export * from './experiments';
 export * from './alerts';
 export * from './audit';
 export * from './history';
+export * from './events';
+export * from './notifications';
+export * from './qos';

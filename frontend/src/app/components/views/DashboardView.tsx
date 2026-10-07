@@ -379,7 +379,7 @@ export function DashboardView() {
         </Row>
       </Card>
 
-      {/* ── Dispositivos (fuente local mock; propiedad de TSK-049, sin cambios) ── */}
+      {/* ── Dispositivos (fuente: DeviceContext → GET /devices, TSK-049) ── */}
       <Card className="cc-card">
         <div className="d-flex justify-content-between align-items-center border-bottom px-4 py-3">
           <h2 className="mb-0 fw-semibold" style={{ fontSize: 15 }}>Estado de dispositivos</h2>

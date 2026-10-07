@@ -175,6 +175,39 @@ export async function apiGetQosTrends(interval: HistoryInterval = 'hour'): Promi
   return apiFetch<QosTrendPoint[]>(`/history/qos/trends?interval=${interval}`);
 }
 
+// ─── Métricas QoS persistidas (listado crudo; agregados → TSK-052) ──────────
+
+export interface QosRecord {
+  id: string;
+  classification_id: string;
+  latency: number;
+  packet_loss: number;
+  throughput: number;
+  pdr: number;
+  jitter: number;
+  timestamp: string;
+}
+
+export interface QosRecordListResponse {
+  total: number;
+  page: number;
+  per_page: number;
+  count: number;
+  results: QosRecord[];
+}
+
+export async function apiGetQosRecords(params?: {
+  sort?: string;
+  page?: number;
+  per_page?: number;
+}): Promise<QosRecordListResponse> {
+  const qs = new URLSearchParams();
+  qs.set('sort', params?.sort ?? 'timestamp.desc');
+  qs.set('page', String(params?.page ?? 1));
+  qs.set('per_page', String(params?.per_page ?? 5));
+  return apiFetch<QosRecordListResponse>(`/history/qos?${qs.toString()}`);
+}
+
 // ─── Clasificaciones persistidas ─────────────────────────────────────────────
 
 export interface HistoryClassification {

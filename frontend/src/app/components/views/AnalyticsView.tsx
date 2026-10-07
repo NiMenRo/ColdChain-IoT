@@ -19,6 +19,8 @@ import {
   seriesByElapsed,
   mergeLineSeries,
 } from '../../lib/experimentAggregations';
+import { useQosSnapshot } from '../../hooks/useQosSnapshot';
+import { formatTs } from '../../hooks/useAlertsData';
 import {
   ScenarioBadge,
   MetricComparisonCard,
@@ -91,6 +93,7 @@ export function AnalyticsView() {
 
   const withQosMetrics = withQosRun ? metrics.filter(m => m.run_id === withQosRun.id) : [];
   const withoutQosMetrics = withoutQosRun ? metrics.filter(m => m.run_id === withoutQosRun.id) : [];
+  const qosLive = useQosSnapshot();
 
   const persistData = mergeLineSeries(
     withQosRun ? seriesByElapsed(metrics, 'ingest_to_persist_ms', withQosRun.started_at) : [],
@@ -119,6 +122,92 @@ export function AnalyticsView() {
       <p className="text-muted small mb-4">
         Análisis de las ejecuciones registradas (ExperimentRun) y analítica QoS complementaria histórica.
       </p>
+
+      {/* ─── Estado actual QoS — datos en vivo (TSK-050; análisis histórico → TSK-052) ─── */}
+      <h2 className="small fw-semibold text-muted text-uppercase mb-3" style={{ letterSpacing: '0.06em' }}>
+        Estado actual QoS
+      </h2>
+
+      {(qosLive.isAuthBlocked || qosLive.isConfigMissing) && !qosLive.isLoading && (
+        <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 rounded-3 px-4 py-3 mb-4"
+          style={{ background: '#FFF5E3', border: '1px solid #ffda6a', borderLeft: '4px solid #C47A00' }}>
+          <p className="mb-0 small">
+            <strong>Datos en vivo no disponibles.</strong>{' '}
+            {qosLive.isConfigMissing
+              ? 'Falta configurar VITE_API_BASE_URL en el frontend.'
+              : 'La API requiere autenticación Bearer y el login actual es mock (integración de autenticación pendiente).'}
+          </p>
+          <button
+            onClick={qosLive.retry}
+            className="border-0 bg-transparent fw-semibold"
+            style={{ fontSize: 13, color: '#965D00', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
+
+      <Row className="g-3 mb-4">
+        {qosLive.status === 'loading' ? (
+          <div className="text-muted small px-3 py-4">Cargando métricas QoS…</div>
+        ) : qosLive.status === 'error' ? (
+          <div className="px-3 py-4 small" style={{ color: '#B22F2F' }}>
+            No se pudieron cargar las métricas QoS. <button onClick={qosLive.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+          </div>
+        ) : qosLive.cells.length === 0 ? (
+          <div className="text-muted small px-3 py-4">Sin métricas QoS disponibles en la sesión actual.</div>
+        ) : (
+          qosLive.cells.map(m => (
+            <Col key={m.label} xs={12} sm={6} xl={4}>
+              <div className="cc-card p-3">
+                <div className="small text-muted">{m.label}</div>
+                <div style={{ fontSize: 22, fontWeight: 700, margin: '6px 0 4px' }}>{m.value}</div>
+                <div className="small text-muted">{m.sub}</div>
+              </div>
+            </Col>
+          ))
+        )}
+      </Row>
+
+      <Card className="cc-card mb-4">
+        <div className="cc-card-header">Registros QoS recientes</div>
+        {qosLive.recentStatus === 'loading' ? (
+          <div className="p-4 small text-muted">Cargando registros…</div>
+        ) : qosLive.recentStatus === 'error' ? (
+          <div className="p-4 small" style={{ color: '#B22F2F' }}>
+            No se pudieron cargar los registros. <button onClick={qosLive.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+          </div>
+        ) : qosLive.recent.length === 0 ? (
+          <div className="p-4 small text-muted">Sin registros QoS persistidos.</div>
+        ) : (
+          <div className="overflow-hidden">
+            <table className="w-100" style={{ borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: '#F5F8FA' }}>
+                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Latencia (ms)</th>
+                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Jitter (ms)</th>
+                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Pérdida (%)</th>
+                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>PDR (%)</th>
+                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Throughput</th>
+                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Fecha</th>
+                </tr>
+              </thead>
+              <tbody>
+                {qosLive.recent.map((r, i) => (
+                  <tr key={r.id} style={{ borderTop: '1px solid #EFF4F7', background: i % 2 === 1 ? '#FAFBFC' : '#fff' }}>
+                    <td className="px-4 py-3">{r.latency.toFixed(0)}</td>
+                    <td className="px-4 py-3">{r.jitter.toFixed(1)}</td>
+                    <td className="px-4 py-3">{r.packet_loss.toFixed(1)}</td>
+                    <td className="px-4 py-3">{r.pdr.toFixed(1)}</td>
+                    <td className="px-4 py-3">{r.throughput.toFixed(1)}</td>
+                    <td className="px-4 py-3 text-muted font-monospace" style={{ fontSize: 12 }}>{formatTs(r.timestamp)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
 
       {/* ─── Comparación experimental ─── */}
       <h2 className="small fw-semibold text-muted text-uppercase mb-3" style={{ letterSpacing: '0.06em' }}>
