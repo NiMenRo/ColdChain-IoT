@@ -7,9 +7,8 @@ import {
 import { Button, Form, Row, Col } from '../../lib/bootstrap';
 import {
   useDevices, Device, DeviceStatus, DeviceType, SensorType,
-  DEVICE_TYPE_LABEL, SENSOR_LABEL, DeviceFormData,
+  DEVICE_TYPE_LABEL, SENSOR_LABEL, DeviceFormData, DeviceReadingSnapshot,
 } from '../../contexts/DeviceContext';
-import type { DeviceReadingSnapshot, DeviceSensor } from '../../types/devices';
 import { useAuth } from '../../hooks/useAuth';
 import { hasActionPermission } from '../../config/rbac';
 
@@ -22,38 +21,6 @@ const STATUS_CONFIG: Record<DeviceStatus, { label: string; bg: string; color: st
 };
 
 const ALL_SENSORS: SensorType[] = ['temperature', 'humidity', 'energy'];
-
-// ─── History mock ──────────────────────────────────────────────────────────────
-const HISTORY_MOCK: Record<string, { ts: string; temperature: number | null; humidity: number | null; energy: 'on' | 'off' }[]> = {
-  'DEV-001': [
-    { ts: '10:41', temperature: 2.1, humidity: 86, energy: 'on' },
-    { ts: '10:31', temperature: 2.3, humidity: 85, energy: 'on' },
-    { ts: '10:21', temperature: 2.0, humidity: 87, energy: 'on' },
-    { ts: '10:11', temperature: 1.9, humidity: 86, energy: 'on' },
-    { ts: '10:01', temperature: 2.2, humidity: 85, energy: 'on' },
-  ],
-  'DEV-002': [
-    { ts: '10:40', temperature: 3.4, humidity: 88, energy: 'on' },
-    { ts: '10:30', temperature: 3.6, humidity: 89, energy: 'on' },
-    { ts: '10:20', temperature: 3.8, humidity: 88, energy: 'on' },
-    { ts: '10:10', temperature: 4.1, humidity: 90, energy: 'on' },
-    { ts: '10:00', temperature: 3.9, humidity: 88, energy: 'on' },
-  ],
-  'DEV-003': [
-    { ts: '10:38', temperature: 6.8, humidity: 92, energy: 'on' },
-    { ts: '10:28', temperature: 6.2, humidity: 91, energy: 'on' },
-    { ts: '10:18', temperature: 5.9, humidity: 90, energy: 'on' },
-    { ts: '10:08', temperature: 5.4, humidity: 89, energy: 'on' },
-    { ts: '09:58', temperature: 4.9, humidity: 88, energy: 'on' },
-  ],
-  'DEV-005': [
-    { ts: '10:41', temperature: 1.9, humidity: 87, energy: 'on' },
-    { ts: '10:31', temperature: 2.1, humidity: 87, energy: 'on' },
-    { ts: '10:21', temperature: 2.0, humidity: 86, energy: 'on' },
-    { ts: '10:11', temperature: 1.8, humidity: 87, energy: 'on' },
-    { ts: '10:01', temperature: 1.9, humidity: 86, energy: 'on' },
-  ],
-};
 
 // ─── Overlay Modal ─────────────────────────────────────────────────────────────
 function Modal({ show, onHide, title, children }: {
@@ -257,17 +224,32 @@ function DeviceForm({ initial, onSave, onCancel }: {
   );
 }
 
-// ─── Reading history detail ────────────────────────────────────────────────────
+// ─── Reading history detail (fuente: /history/devices/{code}/history + trends) ──
 function ReadingRow({ device }: { device: Device }) {
-  const history = HISTORY_MOCK[device.id] ?? [];
-  const temps = history.filter(h => h.temperature !== null).map(h => h.temperature as number);
-  const hums  = history.filter(h => h.humidity    !== null).map(h => h.humidity    as number);
-  const stats = temps.length > 0 ? {
-    tempAvg: (temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1),
-    tempMin: Math.min(...temps).toFixed(1), tempMax: Math.max(...temps).toFixed(1),
-    humAvg:  (hums.reduce((a, b) => a + b, 0)  / hums.length).toFixed(0),
-    humMin:  Math.min(...hums).toFixed(0),  humMax: Math.max(...hums).toFixed(0),
-  } : null;
+  const { getHistory, getTrends, fetchTrends, readingsStatus, retry } = useDevices();
+  const [trendsState, setTrendsState] = useState<'loading' | 'ready' | 'error'>('loading');
+
+  const history = getHistory(device.id);
+
+  useEffect(() => {
+    let cancelled = false;
+    setTrendsState('loading');
+    fetchTrends(device.id).then(
+      () => { if (!cancelled) setTrendsState('ready'); },
+      () => { if (!cancelled) setTrendsState('error'); },
+    );
+    return () => { cancelled = true; };
+  }, [device.id]);
+
+  // Tira prom/min/máx calculada por el backend (último bucket con datos).
+  const trends = getTrends(device.id);
+  const lastBucket = [...trends].reverse().find(p => p.avg_temp !== null || p.avg_hum !== null) ?? null;
+
+  function clock(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
+    return d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+  }
 
   return (
     <div className="mt-3">
@@ -284,11 +266,17 @@ function ReadingRow({ device }: { device: Device }) {
             </tr>
           </thead>
           <tbody>
-            {history.length === 0
+            {readingsStatus === 'loading'
+              ? <tr><td colSpan={4} className="py-2 text-muted">Cargando lecturas…</td></tr>
+              : readingsStatus === 'error' && history.length === 0
+                ? <tr><td colSpan={4} className="py-2" style={{ color: '#B22F2F' }}>
+                    No se pudieron cargar las lecturas. <button onClick={retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+                  </td></tr>
+              : history.length === 0
               ? <tr><td colSpan={4} className="py-2 text-muted">Sin lecturas disponibles.</td></tr>
-              : history.map((h, i) => (
-                <tr key={i} style={{ borderTop: '1px solid #EFF4F7' }}>
-                  <td className="py-1 pe-4 font-monospace text-muted">{h.ts}</td>
+              : history.map((h) => (
+                <tr key={h.id} style={{ borderTop: '1px solid #EFF4F7' }}>
+                  <td className="py-1 pe-4 font-monospace text-muted">{clock(h.timestamp)}</td>
                   <td className="py-1 pe-4 fw-medium">
                     {h.temperature !== null
                       ? <span style={{ color: h.temperature > 4 ? '#C83B3B' : '#123B5D' }}>{h.temperature} °C</span>
@@ -300,26 +288,32 @@ function ReadingRow({ device }: { device: Device }) {
                       : '—'}
                   </td>
                   <td className="py-1">
-                    <span className="fw-semibold" style={{ color: h.energy === 'on' ? '#16835B' : '#C83B3B' }}>
-                      {h.energy === 'on' ? 'ON' : 'OFF'}
-                    </span>
+                    {h.energy === 'on'
+                      ? <span className="fw-semibold" style={{ color: '#16835B' }}>ON</span>
+                      : h.energy === 'off'
+                        ? <span className="fw-semibold" style={{ color: '#C83B3B' }}>OFF</span>
+                        : <span className="text-muted">—</span>}
                   </td>
                 </tr>
               ))}
           </tbody>
         </table>
       </div>
-      {stats && (
+      {trendsState === 'loading' ? (
+        <div className="small text-muted mt-3 pt-3" style={{ borderTop: '1px dashed #D9E2E8' }}>
+          Cargando tendencias…
+        </div>
+      ) : lastBucket && (
         <div className="d-flex flex-wrap gap-4 mt-3 pt-3" style={{ borderTop: '1px dashed #D9E2E8' }}>
           <div>
             <div className="small text-muted mb-1">Temperatura (prom / mín / máx)</div>
-            <span className="fw-semibold small">{stats.tempAvg} °C</span>
-            <span className="text-muted small"> / {stats.tempMin} / {stats.tempMax} °C</span>
+            <span className="fw-semibold small">{lastBucket.avg_temp !== null ? `${lastBucket.avg_temp.toFixed(1)} °C` : '—'}</span>
+            <span className="text-muted small"> / {lastBucket.min_temp !== null ? lastBucket.min_temp.toFixed(1) : '—'} / {lastBucket.max_temp !== null ? lastBucket.max_temp.toFixed(1) : '—'} °C</span>
           </div>
           <div>
             <div className="small text-muted mb-1">Humedad (prom / mín / máx)</div>
-            <span className="fw-semibold small">{stats.humAvg} %</span>
-            <span className="text-muted small"> / {stats.humMin} / {stats.humMax} %</span>
+            <span className="fw-semibold small">{lastBucket.avg_hum !== null ? `${lastBucket.avg_hum.toFixed(0)} %` : '—'}</span>
+            <span className="text-muted small"> / {lastBucket.min_hum !== null ? lastBucket.min_hum.toFixed(0) : '—'} / {lastBucket.max_hum !== null ? lastBucket.max_hum.toFixed(0) : '—'} %</span>
           </div>
         </div>
       )}
@@ -328,10 +322,11 @@ function ReadingRow({ device }: { device: Device }) {
 }
 
 // ─── Device Card ───────────────────────────────────────────────────────────────
+// Sensores: lista de tipos desde GET /devices/{id} (sin entidad Sensor ni sensor_id).
 function DeviceCard({ device, reading, sensors: deviceSensors, canManage, onConfigure }: {
   device: Device;
   reading: DeviceReadingSnapshot | undefined;
-  sensors: DeviceSensor[];
+  sensors: SensorType[];
   canManage: boolean;
   onConfigure: () => void;
 }) {
@@ -375,9 +370,9 @@ function DeviceCard({ device, reading, sensors: deviceSensors, canManage, onConf
             {DEVICE_TYPE_LABEL[device.device_type]}
           </span>
           {deviceSensors.map(sensor => (
-            <span key={sensor.sensor_type} className="rounded-pill px-2 py-0"
+            <span key={sensor} className="rounded-pill px-2 py-0"
               style={{ fontSize: 11, background: '#EAF1F5', color: '#123B5D', border: '1px solid #c5d9e6' }}>
-              {SENSOR_LABEL[sensor.sensor_type]}
+              {SENSOR_LABEL[sensor]}
             </span>
           ))}
         </div>
@@ -386,7 +381,7 @@ function DeviceCard({ device, reading, sensors: deviceSensors, canManage, onConf
       <div className="p-3" style={{ background: '#fff' }}>
         {device.status === 'active' && reading && reading.temperature !== null ? (
           <div className="d-flex flex-wrap gap-3">
-            {deviceSensors.some(s => s.sensor_type === 'temperature') && (
+            {deviceSensors.includes('temperature') && (
               <div className="d-flex align-items-center gap-2">
                 <Thermometer size={15} style={{ color: tempCritical ? '#C83B3B' : '#1F6F8B', flexShrink: 0 }} />
                 <div>
@@ -395,7 +390,7 @@ function DeviceCard({ device, reading, sensors: deviceSensors, canManage, onConf
                 </div>
               </div>
             )}
-            {deviceSensors.some(s => s.sensor_type === 'humidity') && reading.humidity !== null && (
+            {deviceSensors.includes('humidity') && reading.humidity !== null && (
               <div className="d-flex align-items-center gap-2">
                 <Droplets size={15} style={{ color: humCritical ? '#C83B3B' : '#1F6F8B', flexShrink: 0 }} />
                 <div>
@@ -404,13 +399,13 @@ function DeviceCard({ device, reading, sensors: deviceSensors, canManage, onConf
                 </div>
               </div>
             )}
-            {deviceSensors.some(s => s.sensor_type === 'energy') && (
+            {deviceSensors.includes('energy') && (
               <div className="d-flex align-items-center gap-2">
-                <Zap size={15} style={{ color: reading.energy === 'on' ? '#16835B' : '#C83B3B', flexShrink: 0 }} />
+                <Zap size={15} style={{ color: reading.energy === 'on' ? '#16835B' : reading.energy === 'off' ? '#C83B3B' : '#52616B', flexShrink: 0 }} />
                 <div>
                   <div className="text-muted" style={{ fontSize: 11 }}>Energía</div>
-                  <div className="fw-bold" style={{ color: reading.energy === 'on' ? '#16835B' : '#C83B3B' }}>
-                    {reading.energy === 'on' ? 'ON' : 'OFF'}
+                  <div className="fw-bold" style={{ color: reading.energy === 'on' ? '#16835B' : reading.energy === 'off' ? '#C83B3B' : '#52616B' }}>
+                    {reading.energy === 'on' ? 'ON' : reading.energy === 'off' ? 'OFF' : '—'}
                   </div>
                 </div>
               </div>
@@ -450,7 +445,11 @@ type FilterStatus = 'all' | DeviceStatus;
 type FilterType   = 'all' | DeviceType;
 
 export function DevicesView() {
-  const { devices, sensors, addDevice, replaceSensors, getSensors, getReading } = useDevices();
+  const {
+    devices, devicesStatus,
+    isAuthBlocked, isConfigMissing, errorMessage, retry,
+    addDevice, replaceSensors, getSensors, getReading,
+  } = useDevices();
   const { role } = useAuth();
   const canManage = hasActionPermission(role, 'manageDevices');
 
@@ -458,7 +457,9 @@ export function DevicesView() {
   const [filterType,   setFilterType]   = useState<FilterType>('all');
 
   const [createModal, setCreateModal] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [sensorConfigDevice, setSensorConfigDevice] = useState<Device | null>(null);
+  const [sensorError, setSensorError] = useState<string | null>(null);
 
   const counts = {
     active:      devices.filter(d => d.status === 'active').length,
@@ -472,24 +473,26 @@ export function DevicesView() {
     (filterType   === 'all' || d.device_type === filterType)
   );
 
-  function openCreate() { setCreateModal(true); }
-  function closeCreate() { setCreateModal(false); }
+  function openCreate() { setCreateError(null); setCreateModal(true); }
+  function closeCreate() { setCreateModal(false); setCreateError(null); }
 
-  function handleSaveNew(data: DeviceFormData) {
-    const result = addDevice(data);
+  async function handleSaveNew(data: DeviceFormData) {
+    setCreateError(null);
+    const result = await addDevice(data);
     if (result.ok) {
       closeCreate();
     } else {
-      alert(result.error ?? 'Error al crear el dispositivo.');
+      setCreateError(result.error ?? 'Error al crear el dispositivo.');
     }
   }
 
-  function handleSaveSensors(deviceId: string, sensorTypes: SensorType[]) {
-    const result = replaceSensors(deviceId, sensorTypes);
+  async function handleSaveSensors(deviceId: string, sensorTypes: SensorType[]) {
+    setSensorError(null);
+    const result = await replaceSensors(deviceId, sensorTypes);
     if (result.ok) {
       setSensorConfigDevice(null);
     } else {
-      alert(result.error ?? 'Error al actualizar sensores.');
+      setSensorError(result.error ?? 'Error al actualizar sensores.');
     }
   }
 
@@ -520,6 +523,28 @@ export function DevicesView() {
         </div>
       )}
       {!canManage && <div className="mb-4" />}
+
+      {/* Estado global de la fuente API (sin mocks como fallback) */}
+      {devicesStatus === 'error' && (
+        <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 rounded-3 px-4 py-3 mb-4"
+          style={{ background: '#FFF5E3', border: '1px solid #ffda6a', borderLeft: '4px solid #C47A00' }}>
+          <p className="mb-0 small">
+            <strong>No se pudieron cargar los dispositivos.</strong>{' '}
+            {isConfigMissing
+              ? 'Falta configurar VITE_API_BASE_URL en el frontend.'
+              : isAuthBlocked
+                ? 'La API requiere autenticación Bearer y el login actual es mock (integración de autenticación pendiente).'
+                : errorMessage}
+          </p>
+          <button
+            onClick={retry}
+            className="d-flex align-items-center gap-2 border-0 bg-transparent fw-semibold"
+            style={{ fontSize: 13, color: '#965D00', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
 
       {/* Summary strip */}
       <div className="d-flex flex-wrap gap-3 mb-4">
@@ -565,8 +590,22 @@ export function DevicesView() {
         </div>
       </div>
 
-      {/* Device cards */}
-      {filtered.length === 0 ? (
+      {/* Device cards (fuente: GET /devices + historiales reales) */}
+      {devicesStatus === 'loading' ? (
+        <div className="cc-card p-5 text-center">
+          <p className="text-muted mb-0">Cargando dispositivos…</p>
+        </div>
+      ) : devicesStatus === 'error' ? (
+        <div className="cc-card p-5 text-center">
+          <p className="mb-0" style={{ color: '#B22F2F', fontSize: 13 }}>
+            No se pudieron cargar los dispositivos. <button onClick={retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 13, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+          </p>
+        </div>
+      ) : devices.length === 0 ? (
+        <div className="cc-card p-5 text-center">
+          <p className="text-muted mb-0">No hay dispositivos registrados.</p>
+        </div>
+      ) : filtered.length === 0 ? (
         <div className="cc-card p-5 text-center">
           <p className="text-muted mb-0">No hay dispositivos que coincidan con los filtros seleccionados.</p>
         </div>
@@ -574,7 +613,7 @@ export function DevicesView() {
         <div className="row g-3">
           {filtered.map(d => {
             const reading = getReading(d.id);
-            const deviceSensors = sensors.filter(s => s.device_id === d.id);
+            const deviceSensors = getSensors(d.id);
             return (
               <div key={d.id} className="col-12 col-lg-6">
                 <DeviceCard
@@ -582,7 +621,7 @@ export function DevicesView() {
                   reading={reading}
                   sensors={deviceSensors}
                   canManage={canManage}
-                  onConfigure={() => setSensorConfigDevice(d)}
+                  onConfigure={() => { setSensorError(null); setSensorConfigDevice(d); }}
                 />
               </div>
             );
@@ -594,21 +633,33 @@ export function DevicesView() {
         {filtered.length} de {devices.length} dispositivo{devices.length !== 1 ? 's' : ''} mostrado{filtered.length !== 1 ? 's' : ''}.
       </p>
 
-      {/* Create modal */}
+      {/* Create modal (POST /devices, solo admin) */}
       <Modal show={createModal} onHide={closeCreate} title="Nuevo dispositivo">
+        {createError && (
+          <div className="rounded-3 px-3 py-2 mb-3 small" style={{ background: '#FCEEEE', border: '1px solid #f1aeb5', color: '#B22F2F' }}>
+            {createError}
+          </div>
+        )}
         <DeviceForm initial={createModalInitial} onSave={handleSaveNew} onCancel={closeCreate} />
       </Modal>
 
-      {/* Sensor config modal */}
+      {/* Sensor config modal (PUT /devices/{id}/sensors, solo admin) */}
       <Modal show={!!sensorConfigDevice} onHide={() => setSensorConfigDevice(null)}
         title={sensorConfigDevice ? `Configurar sensores — ${sensorConfigDevice.name}` : ''}>
         {sensorConfigDevice && (
-          <SensorConfigForm
-            device={sensorConfigDevice}
-            currentSensors={getSensors(sensorConfigDevice.id) as SensorType[]}
-            onSave={(sensors) => handleSaveSensors(sensorConfigDevice.id, sensors)}
-            onCancel={() => setSensorConfigDevice(null)}
-          />
+          <>
+            {sensorError && (
+              <div className="rounded-3 px-3 py-2 mb-3 small" style={{ background: '#FCEEEE', border: '1px solid #f1aeb5', color: '#B22F2F' }}>
+                {sensorError}
+              </div>
+            )}
+            <SensorConfigForm
+              device={sensorConfigDevice}
+              currentSensors={getSensors(sensorConfigDevice.id)}
+              onSave={(sensors) => handleSaveSensors(sensorConfigDevice.id, sensors)}
+              onCancel={() => setSensorConfigDevice(null)}
+            />
+          </>
         )}
       </Modal>
     </div>

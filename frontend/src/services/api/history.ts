@@ -1,11 +1,13 @@
-// Servicio de dominio: histórico persistido del backend (TSK-048).
+// Servicio de dominio: histórico persistido del backend (TSK-048/TSK-049).
 //
-// Fuente principal del Dashboard. Contratos tomados de los routers reales:
+// Fuente principal del Dashboard y de dispositivos/lecturas. Contratos reales:
 // - GET /history/summary            (HistoryService.summary)
 // - GET /history/alerts             (AlertHistoryRepository.list)
+// - GET /history/readings           (ReadingHistoryRepository.list)
 // - GET /history/readings/trends    (ReadingHistoryRepository.trends)
 // - GET /history/qos/trends         (QoSHistoryRepository.trends)
 // - GET /history/classifications    (ClassificationHistoryRepository.list)
+// - GET /history/devices/{code}/history (DeviceHistoryRepository.history)
 // Todos exigen autenticación Bearer en el backend.
 
 import { apiFetch } from './client';
@@ -82,8 +84,78 @@ export interface ReadingTrendPoint {
   max_hum: number | null;
 }
 
-export async function apiGetReadingTrends(interval: HistoryInterval = 'hour'): Promise<ReadingTrendPoint[]> {
-  return apiFetch<ReadingTrendPoint[]>(`/history/readings/trends?interval=${interval}`);
+export async function apiGetReadingTrends(
+  interval: HistoryInterval = 'hour',
+  params?: { device_code?: string },
+): Promise<ReadingTrendPoint[]> {
+  const qs = new URLSearchParams();
+  if (params?.device_code) qs.set('device_code', params.device_code);
+  qs.set('interval', interval);
+  return apiFetch<ReadingTrendPoint[]>(`/history/readings/trends?${qs.toString()}`);
+}
+
+// ─── Lecturas crudas (ordenadas por el backend; sin agregación en frontend) ──
+
+export interface HistoryReading {
+  id: string;
+  device_id: string;
+  temperature: number | null;
+  humidity: number | null;
+  /** 'on' | 'off' | null (NULL = sensor no habilitado). Nunca se deriva de status. */
+  energy: 'on' | 'off' | null;
+  timestamp: string;
+  run_id: string | null;
+}
+
+export interface HistoryReadingListResponse {
+  total: number;
+  page: number;
+  per_page: number;
+  count: number;
+  results: HistoryReading[];
+}
+
+export async function apiGetReadings(params?: {
+  device_code?: string;
+  sort?: string;
+  page?: number;
+  per_page?: number;
+}): Promise<HistoryReadingListResponse> {
+  const qs = new URLSearchParams();
+  if (params?.device_code) qs.set('device_code', params.device_code);
+  qs.set('sort', params?.sort ?? 'timestamp.desc');
+  qs.set('page', String(params?.page ?? 1));
+  qs.set('per_page', String(params?.per_page ?? 20));
+  return apiFetch<HistoryReadingListResponse>(`/history/readings?${qs.toString()}`);
+}
+
+// ─── Historial por dispositivo (device + lecturas en una llamada) ────────────
+
+export interface DeviceHistoryResponse {
+  device: {
+    id: string;
+    code: string;
+    name: string;
+    location: string;
+    device_type: string;
+    status: string;
+    registration_date: string;
+  };
+  total: number;
+  page: number;
+  per_page: number;
+  count: number;
+  results: HistoryReading[];
+}
+
+export async function apiGetDeviceHistory(
+  deviceCode: string,
+  params?: { page?: number; per_page?: number },
+): Promise<DeviceHistoryResponse> {
+  const qs = new URLSearchParams();
+  qs.set('page', String(params?.page ?? 1));
+  qs.set('per_page', String(params?.per_page ?? 5));
+  return apiFetch<DeviceHistoryResponse>(`/history/devices/${encodeURIComponent(deviceCode)}/history?${qs.toString()}`);
 }
 
 // ─── Tendencias QoS (promedios calculados por el backend) ────────────────────

@@ -41,13 +41,16 @@ export const SENSOR_LABEL: Record<SensorType, string> = {
 export const ALL_SENSORS: SensorType[] = ['temperature', 'humidity', 'energy'];
 
 /**
- * Overlay local del prototipo para el monitoreo visual.
- * No forma parte del contrato Device / DeviceSensor del backend.
+ * Lectura de un dispositivo tal como la expone el backend
+ * (SensorReadingORM vía /history/readings o /history/devices/{code}/history).
+ * `energy` es 'on' | 'off' | null (NULL = sensor no habilitado); nunca se
+ * deriva de `device.status`.
  */
 export interface DeviceReadingSnapshot {
+  id: string;
   device_id: string;
   temperature: number | null;
   humidity: number | null;
-  energy: 'on' | 'off';
+  energy: 'on' | 'off' | null;
   timestamp: string;
 }
