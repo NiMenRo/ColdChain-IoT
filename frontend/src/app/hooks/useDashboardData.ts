@@ -68,7 +68,7 @@ function statusOf<T>(status: SectionStatus, data: T | null, isEmpty: (d: T) => b
 
 export interface DashboardDataState {
   isLoading: boolean;
-  /** Alguna sección falló por falta de autenticación (auth mock pendiente). */
+  /** Alguna sección falló por falta de autenticación (401: token ausente/inválido). */
   isAuthBlocked: boolean;
   /** Falta VITE_API_BASE_URL. */
   isConfigMissing: boolean;

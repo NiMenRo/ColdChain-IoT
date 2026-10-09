@@ -533,7 +533,7 @@ export function DevicesView() {
             {isConfigMissing
               ? 'Falta configurar VITE_API_BASE_URL en el frontend.'
               : isAuthBlocked
-                ? 'La API requiere autenticación Bearer y el login actual es mock (integración de autenticación pendiente).'
+                ? 'La API requiere autenticación Bearer. Inicie sesión nuevamente si su sesión expiró.'
                 : errorMessage}
           </p>
           <button

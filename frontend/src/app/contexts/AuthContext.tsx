@@ -3,6 +3,7 @@ import {
   login as serviceLogin,
   logout as serviceLogout,
   getCurrentUser,
+  validateSession,
   User,
 } from '../../services/authService';
 import { UserRole } from '../config/rbac';
@@ -22,10 +23,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Restore session from localStorage on mount
+  // Pintado inicial con sesión guardada + validación real contra GET /auth/me.
+  // Token ausente/inválido/expirado (401) → sesión limpia → /login vía ProtectedRoute.
   useEffect(() => {
+    let cancelled = false;
     setUser(getCurrentUser());
-    setIsLoading(false);
+    validateSession().then((valid) => {
+      if (!cancelled) {
+        setUser(valid);
+        setIsLoading(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const login = async (email: string, password: string) => {

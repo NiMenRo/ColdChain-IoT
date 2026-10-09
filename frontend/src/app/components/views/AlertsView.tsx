@@ -70,7 +70,7 @@ export function AlertsView() {
             <strong>Datos en vivo no disponibles.</strong>{' '}
             {data.isConfigMissing
               ? 'Falta configurar VITE_API_BASE_URL en el frontend.'
-              : 'La API requiere autenticación Bearer y el login actual es mock (integración de autenticación pendiente).'}
+              : 'La API requiere autenticación Bearer. Inicie sesión nuevamente si su sesión expiró.'}
           </p>
           <button
             onClick={data.retry}

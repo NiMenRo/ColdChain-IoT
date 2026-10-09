@@ -50,7 +50,7 @@ function joinUrl(base: string, path: string): string {
 }
 
 function httpMessage(status: number): string {
-  if (status === 401) return 'No autenticado: se requiere iniciar sesión contra el backend (integración de autenticación pendiente).';
+  if (status === 401) return 'No autenticado: inicie sesión para obtener un token válido.';
   if (status === 403) return 'Sin permiso para este recurso (verifique el rol del usuario).';
   if (status === 404) return 'Recurso no encontrado en la API.';
   if (status >= 500) return 'Error interno del backend.';

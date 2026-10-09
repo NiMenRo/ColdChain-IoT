@@ -79,7 +79,7 @@ export function DashboardView() {
             <strong>Datos en vivo no disponibles.</strong>{' '}
             {dash.isConfigMissing
               ? 'Falta configurar VITE_API_BASE_URL en el frontend.'
-              : 'La API requiere autenticación Bearer y el login actual es mock (integración de autenticación pendiente de otra tarea).'}
+              : 'La API requiere autenticación Bearer. Inicie sesión nuevamente si su sesión expiró.'}
             {' '}La capa de servicios ya consulta los endpoints reales; reintente cuando la API esté accesible.
           </p>
           <button

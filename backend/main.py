@@ -189,6 +189,22 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="ColdChain API", lifespan=lifespan)
 
+# TSK-053 (desviación autorizada por bloqueo real): CORS mínimo para que el
+# frontend servido por Vite (http://localhost:5173 / http://127.0.0.1:5173)
+# pueda consumir la API desde el navegador. Sin esto, el preflight OPTIONS
+# responde 405 sin cabeceras access-control-* y todo fetch falla a nivel de
+# red. Orígenes explícitos de desarrollo; sin comodines con credenciales.
+# No toca routers, schemas, modelos, auth ni RBAC.
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Security routes do not depend on MQTT or background workers.  Register them
 # when the application is built so they are consistently present in OpenAPI,
 # including deployments where an unrelated integration component fails later.

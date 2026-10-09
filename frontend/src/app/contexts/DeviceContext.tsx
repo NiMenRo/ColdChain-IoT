@@ -148,7 +148,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
         setReadingsStatus('error');
         setIsAuthBlocked(sawAuth);
         setErrorMessage(sawAuth
-          ? 'La API requiere autenticación Bearer y el login actual es mock (integración de autenticación pendiente).'
+          ? 'La API requiere autenticación Bearer. Inicie sesión nuevamente si su sesión expiró.'
           : 'No se pudieron cargar las lecturas de los dispositivos.');
       } else {
         setReadingsStatus('success');

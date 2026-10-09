@@ -205,7 +205,7 @@ export function AnalyticsView() {
             <strong>Datos en vivo no disponibles.</strong>{' '}
             {qosLive.isConfigMissing
               ? 'Falta configurar VITE_API_BASE_URL en el frontend.'
-              : 'La API requiere autenticación Bearer y el login actual es mock (integración de autenticación pendiente).'}
+              : 'La API requiere autenticación Bearer. Inicie sesión nuevamente si su sesión expiró.'}
           </p>
           <button
             onClick={qosLive.retry}
@@ -442,7 +442,7 @@ export function AnalyticsView() {
             <strong>Datos históricos no disponibles.</strong>{' '}
             {hist.isConfigMissing
               ? 'Falta configurar VITE_API_BASE_URL en el frontend.'
-              : 'La API requiere autenticación Bearer y el login actual es mock (integración de autenticación pendiente).'}
+              : 'La API requiere autenticación Bearer. Inicie sesión nuevamente si su sesión expiró.'}
           </p>
           <button
             onClick={hist.retry}
