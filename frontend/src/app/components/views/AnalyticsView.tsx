@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { LineChart, Line, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie } from 'recharts';
 import { Card, Row, Col } from '../../lib/bootstrap';
 import { useExperiments } from '../../contexts/ExperimentContext';
 import {
   ExperimentRun,
+  ExperimentRunMeta,
   COUNTER_METRICS,
   LATENCY_METRICS,
   METRIC_LABELS,
@@ -40,8 +41,10 @@ function runNumber(runs: ExperimentRun[], run: ExperimentRun): number {
   return sorted.findIndex(r => r.id === run.id) + 1;
 }
 
-function runLabel(runs: ExperimentRun[], run: ExperimentRun, condition: SensorCondition): string {
-  return `${SENSOR_CONDITION_LABELS[condition]} — ${run.scenario === 'WITH_QOS' ? 'Con priorización' : 'Sin priorización'} — Ejecución #${runNumber(runs, run)}`;
+function runLabel(runs: ExperimentRun[], run: ExperimentRun, meta: Record<string, ExperimentRunMeta>): string {
+  const cond = meta[run.id]?.sensorCondition;
+  const condLabel = cond ? SENSOR_CONDITION_LABELS[cond] : 'Condición no registrada';
+  return `${condLabel} — ${run.scenario === 'WITH_QOS' ? 'Con priorización' : 'Sin priorización'} — Ejecución #${runNumber(runs, run)} (${run.started_at.slice(0, 16).replace('T', ' ')})`;
 }
 
 // ─── Helpers de presentación histórica (TSK-052; solo formato, sin agregación) ─
@@ -152,13 +155,15 @@ function summaryIndicators(summary: HistorySummary): Array<{ label: string; valu
 }
 
 export function AnalyticsView() {
-  const { runs, metrics, runMeta } = useExperiments();
+  const { runs, metrics, runMeta, fetchMetrics, status: expStatus, retry: expRetry } = useExperiments();
   const [condition, setCondition] = useState<SensorCondition>('normal');
   const [withQosId, setWithQosId] = useState<string | null>(null);
   const [withoutQosId, setWithoutQosId] = useState<string | null>(null);
 
+  // Runs del backend sin meta local (condición no registrada) participan en
+  // cualquier filtro: desconocido no es inventado.
   const runsInCondition = useMemo(
-    () => runs.filter(r => runMeta[r.id]?.sensorCondition === condition),
+    () => runs.filter(r => (runMeta[r.id]?.sensorCondition ?? condition) === condition),
     [runs, runMeta, condition],
   );
   const withQosRuns = runsInCondition.filter(r => r.scenario === 'WITH_QOS');
@@ -173,6 +178,36 @@ export function AnalyticsView() {
 
   const withQosMetrics = withQosRun ? metrics.filter(m => m.run_id === withQosRun.id) : [];
   const withoutQosMetrics = withoutQosRun ? metrics.filter(m => m.run_id === withoutQosRun.id) : [];
+  const [metricsReady, setMetricsReady] = useState<Record<string, boolean>>({});
+  const showNoMetricsNote =
+    !!withQosRun &&
+    !!withoutQosRun &&
+    (metricsReady[withQosRun.id] || metricsReady[withoutQosRun.id]) &&
+    withQosMetrics.length === 0 &&
+    withoutQosMetrics.length === 0;
+
+  // Métricas reales por ejecución seleccionada (lectura bajo demanda, sin sondeo).
+  useEffect(() => {
+    const ids = [withQosRun?.id, withoutQosRun?.id].filter((id): id is string => !!id);
+    if (ids.length === 0) return;
+    let cancelled = false;
+    setMetricsReady(prev => {
+      const next = { ...prev };
+      for (const id of ids) if (!(id in next)) next[id] = false;
+      return next;
+    });
+    Promise.all(ids.map(id => fetchMetrics(id).catch(() => undefined))).then(() => {
+      if (cancelled) return;
+      setMetricsReady(prev => {
+        const next = { ...prev };
+        for (const id of ids) next[id] = true;
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [withQosRun?.id, withoutQosRun?.id, fetchMetrics]);
   const qosLive = useQosSnapshot();
   const hist = useHistoricalAnalytics();
   const [qosMetric, setQosMetric] = useState<QosMetricKey>('latency');
@@ -279,11 +314,22 @@ export function AnalyticsView() {
         )}
       </Card>
 
-      {/* ─── Comparación experimental ─── */}
+      {/* ─── Comparación experimental (ejecuciones reales del backend) ─── */}
       <h2 className="small fw-semibold text-muted text-uppercase mb-3" style={{ letterSpacing: '0.06em' }}>
         Comparación experimental
       </h2>
 
+      {expStatus === 'loading' && (
+        <div className="p-4 rounded-3 mb-4 text-center text-muted small" style={{ background: '#F5F8FA', border: '1px dashed #D9E2E8' }}>
+          Cargando ejecuciones…
+        </div>
+      )}
+      {expStatus === 'error' && (
+        <div className="p-4 rounded-3 mb-4 text-center small" style={{ background: '#FFF5E3', border: '1px solid #ffda6a', color: '#965D00' }}>
+          No se pudieron cargar las ejecuciones. <button onClick={expRetry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#965D00', cursor: 'pointer' }}>Reintentar</button>
+        </div>
+      )}
+      {(expStatus === 'success' || expStatus === 'empty') && <>
       <Card className="cc-card mb-4">
         <Card.Body>
           <div className="mb-4">
@@ -311,7 +357,7 @@ export function AnalyticsView() {
                 onChange={e => setWithQosId(e.target.value || null)}>
                 {withQosRuns.length === 0 && <option value="">Sin ejecuciones</option>}
                 {withQosRuns.map(r => (
-                  <option key={r.id} value={r.id}>{runLabel(runs, r, condition)}</option>
+                  <option key={r.id} value={r.id}>{runLabel(runs, r, runMeta)}</option>
                 ))}
               </select>
             </Col>
@@ -321,7 +367,7 @@ export function AnalyticsView() {
                 onChange={e => setWithoutQosId(e.target.value || null)}>
                 {withoutQosRuns.length === 0 && <option value="">Sin ejecuciones</option>}
                 {withoutQosRuns.map(r => (
-                  <option key={r.id} value={r.id}>{runLabel(runs, r, condition)}</option>
+                  <option key={r.id} value={r.id}>{runLabel(runs, r, runMeta)}</option>
                 ))}
               </select>
             </Col>
@@ -333,6 +379,12 @@ export function AnalyticsView() {
           </p>
         </Card.Body>
       </Card>
+
+      {showNoMetricsNote && (
+        <div className="p-3 rounded-3 mb-4 text-center text-muted small" style={{ background: '#F5F8FA', border: '1px dashed #D9E2E8' }}>
+          Las ejecuciones seleccionadas no tienen métricas registradas en el backend.
+        </div>
+      )}
 
       {withQosRun && withoutQosRun ? (
         <>
@@ -409,6 +461,7 @@ export function AnalyticsView() {
           Ejecuta simulaciones desde la pantalla de Simulación.
         </div>
       )}
+      </>}
 
       {/* ─── Análisis histórico — datos reales (TSK-052) ─── */}
       <hr className="my-5" style={{ borderColor: '#D9E2E8' }} />

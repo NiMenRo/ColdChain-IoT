@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { CheckCircle, XCircle, Calendar, ChevronLeft, ChevronRight, X, Eye } from 'lucide-react';
 import { Card, Button, Form, Row, Col } from '../../lib/bootstrap';
 import { AuditLog, AuditAction, AuditResult, AUDIT_ACTIONS } from '../../types/audit';
-import { MOCK_AUDIT_LOGS } from '../../data/auditMocks';
+import { useAuditLogs } from '../../hooks/useAuditLogs';
 
 function ResultBadge({ result }: { result: AuditResult }) {
   const ok = result === 'success';
@@ -306,8 +306,11 @@ export function AuditView() {
     resource: '', fechaDesde: '', fechaHasta: '',
   });
   const [page, setPage] = useState(1);
-  const [perPage] = useState(10);
+  const [perPage, setPerPage] = useState(10);
   const [detailLog, setDetailLog] = useState<AuditLog | null>(null);
+  // Fuente real: GET /audit-logs (paginado server-side). Los filtros aplican
+  // sobre la página traída porque el endpoint no expone filtros.
+  const audit = useAuditLogs(page, perPage);
 
   const PER_PAGE_OPTIONS = [10, 25, 50];
 
@@ -322,7 +325,7 @@ export function AuditView() {
     setPage(1);
   }
 
-  const filteredLogs = useMemo(() => MOCK_AUDIT_LOGS.filter(log => {
+  const filteredLogs = useMemo(() => audit.logs.filter(log => {
     if (applied.actor  && !log.actor.toLowerCase().includes(applied.actor.toLowerCase())) return false;
     if (applied.action !== 'all' && log.action !== applied.action) return false;
     if (applied.result !== 'all' && log.result !== applied.result) return false;
@@ -330,18 +333,14 @@ export function AuditView() {
     if (applied.fechaDesde && log.timestamp < applied.fechaDesde) return false;
     if (applied.fechaHasta && log.timestamp > applied.fechaHasta + 'T23:59:59') return false;
     return true;
-  }), [applied]);
+  }), [applied, audit.logs]);
 
-  const totalLogs = filteredLogs.length;
+  const totalLogs = audit.total;
   const totalPages = Math.max(1, Math.ceil(totalLogs / perPage));
-  const paginatedLogs = useMemo(() => {
-    const start = (page - 1) * perPage;
-    return filteredLogs.slice(start, start + perPage);
-  }, [filteredLogs, page, perPage]);
 
   const totalSuccess = filteredLogs.filter(l => l.result === 'success').length;
   const totalFailure = filteredLogs.filter(l => l.result === 'failure').length;
-  const actors       = new Set(filteredLogs.map(l => l.actor)).size;
+  const actors       = new Set(audit.logs.map(l => l.actor)).size;
 
   return (
     <div>
@@ -349,6 +348,27 @@ export function AuditView() {
       <p className="text-muted small mb-3">
         Registro de acciones realizadas por usuarios y el sistema. Backend real: GET /audit-logs?page&per_page
       </p>
+
+      {(audit.isAuthBlocked || audit.isForbidden || audit.isConfigMissing) && !audit.isLoading && (
+        <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 rounded-3 px-4 py-3 mb-4"
+          style={{ background: '#FFF5E3', border: '1px solid #ffda6a', borderLeft: '4px solid #C47A00' }}>
+          <p className="mb-0 small">
+            <strong>No se pudo cargar la auditoría.</strong>{' '}
+            {audit.isConfigMissing
+              ? 'Falta configurar VITE_API_BASE_URL en el frontend.'
+              : audit.isForbidden
+                ? 'Acceso denegado: la auditoría requiere rol administrador o auditor.'
+                : 'La API requiere autenticación Bearer. Inicie sesión nuevamente si su sesión expiró.'}
+          </p>
+          <button
+            onClick={audit.retry}
+            className="border-0 bg-transparent fw-semibold"
+            style={{ fontSize: 13, color: '#965D00', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
 
       {/* KPIs */}
       <div className="d-flex flex-wrap gap-3 mb-4">
@@ -371,8 +391,8 @@ export function AuditView() {
           <div className="small fw-semibold text-muted text-uppercase mb-3" style={{ letterSpacing: '0.05em' }}>Filtros</div>
           <Row className="g-3 mb-3">
             <Col xs={12} sm={6} xl={3}>
-              <Form.Label className="small fw-semibold text-muted">Actor (email)</Form.Label>
-              <Form.Control size="sm" value={actor} onChange={e => setActor(e.target.value)} placeholder="usuario@..." />
+              <Form.Label className="small fw-semibold text-muted">Actor (uuid)</Form.Label>
+              <Form.Control size="sm" value={actor} onChange={e => setActor(e.target.value)} placeholder="uuid del actor…" />
             </Col>
             <Col xs={12} sm={6} xl={3}>
               <Form.Label className="small fw-semibold text-muted">Acción</Form.Label>
@@ -430,13 +450,25 @@ export function AuditView() {
             </tr>
           </thead>
           <tbody>
-            {paginatedLogs.length === 0 ? (
+            {audit.isLoading ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-5 text-center text-muted">
+                  Cargando registros…
+                </td>
+              </tr>
+            ) : audit.status === 'error' ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-5 text-center" style={{ color: '#B22F2F' }}>
+                  No se pudieron cargar los registros. <button onClick={audit.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+                </td>
+              </tr>
+            ) : filteredLogs.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-4 py-5 text-center text-muted">
                   No se encontraron registros con los filtros aplicados.
                 </td>
               </tr>
-            ) : paginatedLogs.map((log, i) => (
+            ) : filteredLogs.map((log, i) => (
               <tr key={log.id} style={{ borderTop: '1px solid #EFF4F7', background: i % 2 === 1 ? '#FAFBFC' : '#fff' }}>
                 <td className="px-4 py-3 text-muted font-monospace" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
                   {formatTs(log.timestamp)}
@@ -471,7 +503,7 @@ export function AuditView() {
               className="form-select form-select-sm"
               style={{ width: 'auto', fontSize: 12 }}
               value={perPage}
-              onChange={e => { const v = Number(e.target.value); /* perPage is const, would need state if dynamic */ }}
+              onChange={e => { setPerPage(Number(e.target.value)); setPage(1); }}
             >
               {PER_PAGE_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
             </select>

@@ -1,19 +1,8 @@
 import { useState, useEffect } from 'react';
-import { UserPlus, Edit2, ToggleLeft, ToggleRight, Shield, Info, X, Save, Eye, EyeOff } from 'lucide-react';
-import { Table, Button, Alert, Form, Row, Col } from '../../lib/bootstrap';
+import { UserPlus, Edit2, ToggleLeft, ToggleRight, Shield, X, Save, Eye, EyeOff } from 'lucide-react';
+import { Table, Button, Form, Row, Col } from '../../lib/bootstrap';
 import { UserRole, ROLE_LABELS } from '../../config/rbac';
-
-interface ManagedUser {
-  id: string; name: string; email: string; role: UserRole; active: boolean; createdAt: string;
-}
-
-const INITIAL_USERS: ManagedUser[] = [
-  { id: 'u1', name: 'Ana García',      email: 'admin@example.com',      role: 'admin',      active: true,  createdAt: '2024-01-15' },
-  { id: 'u2', name: 'Carlos López',    email: 'supervisor@example.com', role: 'supervisor', active: true,  createdAt: '2024-02-20' },
-  { id: 'u3', name: 'María Rodríguez', email: 'operador@example.com',   role: 'operador',   active: true,  createdAt: '2024-03-10' },
-  { id: 'u4', name: 'Jorge Sánchez',   email: 'auditor@example.com',    role: 'auditor',    active: true,  createdAt: '2024-04-05' },
-  { id: 'u5', name: 'Laura Martínez',  email: 'operador2@example.com',  role: 'operador',   active: false, createdAt: '2024-05-01' },
-];
+import { useUsers, type ManagedUser } from '../../hooks/useUsers';
 
 const ROLE_COLOR = '#123B5D';
 
@@ -154,37 +143,42 @@ function UserForm({ initial, mode, onSave, onCancel }: {
   );
 }
 
-// ─── Main view ─────────────────────────────────────────────────────────────────
+// ─── Main view (fuente: GET /users + POST/PATCH, solo admin) ──────────────────
 export function UserManagementView() {
-  const [users, setUsers] = useState<ManagedUser[]>(INITIAL_USERS);
+  const store = useUsers();
+  const { users } = store;
   const [modal, setModal] = useState<{ open: boolean; mode: 'create' | 'edit'; user: ManagedUser | null }>({
     open: false, mode: 'create', user: null,
   });
+  const [modalError, setModalError] = useState<string | null>(null);
+  const [rowBusyId, setRowBusyId] = useState<string | null>(null);
 
-  const toggle      = (id: string) => setUsers(prev => prev.map(u => u.id === id ? { ...u, active: !u.active } : u));
+  const toggle = async (id: string) => {
+    const target = users.find(u => u.id === id);
+    if (!target || rowBusyId) return;
+    setRowBusyId(id);
+    const result = await store.setActive(id, !target.active);
+    setRowBusyId(null);
+    if (!result.ok) alert(result.error ?? 'No se pudo cambiar el estado.');
+  };
   const roleCount   = (role: UserRole) => users.filter(u => u.role === role).length;
   const activeCount = users.filter(u => u.active).length;
 
-  function openCreate() { setModal({ open: true, mode: 'create', user: null }); }
-  function openEdit(u: ManagedUser) { setModal({ open: true, mode: 'edit', user: u }); }
-  function closeModal() { setModal(m => ({ ...m, open: false })); }
+  function openCreate() { setModalError(null); setModal({ open: true, mode: 'create', user: null }); }
+  function openEdit(u: ManagedUser) { setModalError(null); setModal({ open: true, mode: 'edit', user: u }); }
+  function closeModal() { setModal(m => ({ ...m, open: false })); setModalError(null); }
 
-  function handleSave(data: UserFormData) {
+  async function handleSave(data: UserFormData) {
+    setModalError(null);
     if (modal.mode === 'create') {
-      setUsers(prev => [...prev, {
-        id:        `u${Date.now()}`,
-        name:      data.name.trim(),
-        email:     data.email.trim().toLowerCase(),
-        role:      data.role,
-        active:    true,
-        createdAt: new Date().toISOString().slice(0, 10),
-      }]);
+      const result = await store.createUser({ name: data.name, email: data.email, role: data.role, password: data.password });
+      if (result.ok) closeModal();
+      else setModalError(result.error ?? 'Error al crear el usuario.');
     } else if (modal.user) {
-      setUsers(prev => prev.map(u => u.id !== modal.user!.id ? u : {
-        ...u, name: data.name.trim(), email: data.email.trim().toLowerCase(), role: data.role,
-      }));
+      const result = await store.updateUser(modal.user.id, { name: data.name, email: data.email, role: data.role });
+      if (result.ok) closeModal();
+      else setModalError(result.error ?? 'Error al actualizar el usuario.');
     }
-    closeModal();
   }
 
   const modalInitial: UserFormData = modal.user
@@ -216,7 +210,28 @@ export function UserManagementView() {
         ))}
       </div>
 
-      {/* User table */}
+      {/* User table (fuente: GET /users) */}
+      {(store.isAuthBlocked || store.isForbidden || store.isConfigMissing) && !store.isLoading && (
+        <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 rounded-3 px-4 py-3 mb-4"
+          style={{ background: '#FFF5E3', border: '1px solid #ffda6a', borderLeft: '4px solid #C47A00' }}>
+          <p className="mb-0 small">
+            <strong>No se pudieron cargar los usuarios.</strong>{' '}
+            {store.isConfigMissing
+              ? 'Falta configurar VITE_API_BASE_URL en el frontend.'
+              : store.isForbidden
+                ? 'Acceso denegado: la gestión de usuarios requiere rol administrador.'
+                : 'La API requiere autenticación Bearer. Inicie sesión nuevamente si su sesión expiró.'}
+          </p>
+          <button
+            onClick={store.retry}
+            className="border-0 bg-transparent fw-semibold"
+            style={{ fontSize: 13, color: '#965D00', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
+
       <div className="cc-card mb-4">
         <div className="d-flex justify-content-between align-items-center px-3 py-3 border-bottom">
           <h2 className="mb-0" style={{ fontSize: 16, fontWeight: 600 }}>Usuarios registrados</h2>
@@ -227,7 +242,15 @@ export function UserManagementView() {
             <tr><th>Nombre</th><th>Email</th><th>Rol</th><th>Estado</th><th>Creado</th><th>Acciones</th></tr>
           </thead>
           <tbody>
-            {users.map(user => (
+            {store.isLoading ? (
+              <tr><td colSpan={6} className="text-center text-muted py-5">Cargando usuarios…</td></tr>
+            ) : store.status === 'error' ? (
+              <tr><td colSpan={6} className="text-center py-5" style={{ color: '#B22F2F' }}>
+                No se pudieron cargar los usuarios. <button onClick={store.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+              </td></tr>
+            ) : users.length === 0 ? (
+              <tr><td colSpan={6} className="text-center text-muted py-5">No hay usuarios registrados.</td></tr>
+            ) : users.map(user => (
               <tr key={user.id} style={{ opacity: user.active ? 1 : 0.55 }}>
                 <td data-label="Nombre">
                   <div className="d-flex align-items-center gap-2">
@@ -262,6 +285,7 @@ export function UserManagementView() {
                     </Button>
                     <Button variant={user.active ? 'outline-danger' : 'outline-success'} size="sm"
                       style={{ padding: '4px 8px' }}
+                      disabled={rowBusyId === user.id}
                       title={user.active ? 'Desactivar' : 'Activar'} onClick={() => toggle(user.id)}>
                       {user.active ? <ToggleRight size={14} /> : <ToggleLeft size={14} />}
                     </Button>
@@ -273,16 +297,14 @@ export function UserManagementView() {
         </Table>
       </div>
 
-      <Alert variant="warning" className="d-flex align-items-start gap-2">
-        <Info size={15} className="flex-shrink-0 mt-1" />
-        <span>
-          <strong>Datos de desarrollo:</strong> Esta vista usa usuarios mock. Las acciones se conectarán al backend FastAPI en la siguiente fase.
-        </span>
-      </Alert>
-
-      {/* Modal */}
+      {/* Modal (POST /users en creación, PATCH /users/{id} en edición) */}
       <Modal show={modal.open} onHide={closeModal}
         title={modal.mode === 'create' ? 'Nuevo usuario' : `Editar — ${modal.user?.name}`}>
+        {modalError && (
+          <div className="rounded-3 px-3 py-2 mb-3 small" style={{ background: '#FCEEEE', border: '1px solid #f1aeb5', color: '#B22F2F' }}>
+            {modalError}
+          </div>
+        )}
         <UserForm key={modal.user?.id ?? 'new'} initial={modalInitial}
           mode={modal.mode} onSave={handleSave} onCancel={closeModal} />
       </Modal>

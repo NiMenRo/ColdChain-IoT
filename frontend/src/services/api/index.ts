@@ -8,3 +8,4 @@ export * from './history';
 export * from './events';
 export * from './notifications';
 export * from './qos';
+export * from './users';

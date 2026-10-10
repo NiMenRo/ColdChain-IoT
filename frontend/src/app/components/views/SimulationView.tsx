@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router';
-import { Play, Square, RotateCcw, ExternalLink, AlertTriangle, Info, Cpu, Thermometer, Activity, Clock, Wifi, Filter, Layers, Zap, Send, BarChart3, ArrowRight } from 'lucide-react';
+import { Play, Square, RotateCcw, ExternalLink, AlertTriangle, Cpu, Thermometer, Activity, Clock, Filter, Layers, Zap, Send, BarChart3, ArrowRight } from 'lucide-react';
 import { Button, Card, Row, Col } from '../../lib/bootstrap';
 import { useDevices, Device, DeviceType, DeviceStatus, DEVICE_TYPE_LABEL } from '../../contexts/DeviceContext';
 import { useExperiments } from '../../contexts/ExperimentContext';
@@ -69,8 +69,8 @@ function FlowDiagram({ conPriorizacion }: { conPriorizacion: boolean }) {
 export function SimulationView() {
   const navigate = useNavigate();
   const { devices } = useDevices();
-  const { startRun, finishRun } = useExperiments();
-  const activeRunIdRef = useRef<string | null>(null);
+  const { startRun, finishRun, metrics, activeRun, status: expStatus, retry: expRetry } = useExperiments();
+  const [runId, setRunId] = useState<string | null>(null);
 
   const totalCavas    = devices.filter(d => d.device_type === 'cold_room').length;
   const totalVitrinas = devices.filter(d => d.device_type === 'refrigerated_showcase').length;
@@ -79,8 +79,25 @@ export function SimulationView() {
   const [condicion,     setCondicion]     = useState<'normal' | 'critica'>('normal');
   const [running,       setRunning]       = useState(false);
   const [hasRun,        setHasRun]        = useState(false);
-  const [kpis, setKpis] = useState({ generados: 0, procesados: 0, criticos: 0, latencia: 0, perdida: 0 });
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [runError,      setRunError]      = useState<string | null>(null);
+  const [finishing,     setFinishing]     = useState(false);
+  const [starting,      setStarting]      = useState(false);
+
+  // Métricas reales de la ejecución finalizada (sin sondeo en vivo: el pipeline
+  // del backend las registra mientras el run está activo y se leen al cerrar).
+  const runMetrics = runId ? metrics.filter(m => m.run_id === runId) : [];
+  const latestOf = (type: string): number | null => {
+    const rows = runMetrics.filter(m => m.metric_type === type);
+    if (rows.length === 0) return null;
+    return [...rows].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))[0].value;
+  };
+  const avgOf = (type: string): number | null => {
+    const rows = runMetrics.filter(m => m.metric_type === type);
+    if (rows.length === 0) return null;
+    return rows.reduce((s, m) => s + m.value, 0) / rows.length;
+  };
+  const fmt = (v: number | null, digits = 0): string =>
+    v === null ? '—' : v.toLocaleString('es-CO', { maximumFractionDigits: digits, minimumFractionDigits: digits });
 
   const criticalDevices = devices.map(d => ({
     ...d,
@@ -88,49 +105,41 @@ export function SimulationView() {
   }));
   const criticalCount = criticalDevices.filter(d => d.isCritical).length;
 
-  useEffect(() => {
-    if (!running) return;
-    const baseLat = procesamiento === 'con' ? 45 : 210;
-    const basePct = procesamiento === 'con' ? 1.2 : 12.5;
-    intervalRef.current = setInterval(() => {
-      setKpis(prev => {
-        const nuevos     = devices.length / 2;
-        const criticos_  = condicion === 'critica' ? nuevos * 0.25 : nuevos * 0.03;
-        const perdidaV   = basePct + (Math.random() - 0.5) * 0.8;
-        const procesados_ = nuevos * (1 - perdidaV / 100);
-        return {
-          generados:  Math.round(prev.generados  + nuevos),
-          procesados: Math.round(prev.procesados + procesados_),
-          criticos:   Math.round(prev.criticos   + criticos_),
-          latencia:   Math.round(baseLat + (Math.random() - 0.5) * 12),
-          perdida:    Math.round(perdidaV * 10) / 10,
-        };
-      });
-    }, 500);
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [running, procesamiento, condicion, devices]);
-
-  function handleEjecutar() {
-    setKpis({ generados: 0, procesados: 0, criticos: 0, latencia: 0, perdida: 0 });
-    setHasRun(true);
-    const run = startRun({
+  async function handleEjecutar() {
+    setRunError(null);
+    setStarting(true);
+    const { run, error } = await startRun({
       scenario: procesamiento === 'con' ? 'WITH_QOS' : 'WITHOUT_QOS',
       sensorCondition: condicion === 'critica' ? 'altered' : 'normal',
     });
-    activeRunIdRef.current = run ? run.id : null;
+    setStarting(false);
+    if (!run) {
+      setRunError(error ?? 'No se pudo iniciar la ejecución.');
+      return;
+    }
+    setRunId(run.id);
+    setHasRun(true);
     setRunning(true);
   }
-  function handleDetener() {
+  async function handleDetener() {
+    if (!runId) return;
+    setFinishing(true);
+    const result = await finishRun(runId);
+    setFinishing(false);
+    if (!result.ok) {
+      setRunError(result.error ?? 'No se pudo finalizar la ejecución.');
+      return;
+    }
     setRunning(false);
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    if (activeRunIdRef.current) { finishRun(activeRunIdRef.current); activeRunIdRef.current = null; }
   }
-  function handleReiniciar() {
+  async function handleReiniciar() {
+    if (runId && running) {
+      await finishRun(runId);
+    }
     setRunning(false);
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    if (activeRunIdRef.current) { finishRun(activeRunIdRef.current); activeRunIdRef.current = null; }
-    setKpis({ generados: 0, procesados: 0, criticos: 0, latencia: 0, perdida: 0 });
+    setRunId(null);
     setHasRun(false);
+    setRunError(null);
     setProcesamiento('con'); setCondicion('normal');
   }
 
@@ -138,9 +147,9 @@ export function SimulationView() {
     <div>
       <div className="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-3">
         <div>
-          <h1 className="mb-1" style={{ fontSize: 20, fontWeight: 600 }}>Simulación — Demostración del prototipo</h1>
+          <h1 className="mb-1" style={{ fontSize: 20, fontWeight: 600 }}>Simulación — Ejecuciones experimentales</h1>
           <p className="text-muted small mb-0">
-            Experiencia conceptual para evaluar el flujo de datos bajo diferentes condiciones. Los datos son mock y no persisten en backend.
+            Inicie ejecuciones reales contra el backend (POST /experiment-runs) y consulte sus métricas al finalizar.
           </p>
         </div>
         <Button variant="outline-primary" size="sm" className="d-flex align-items-center gap-2"
@@ -149,19 +158,42 @@ export function SimulationView() {
         </Button>
       </div>
 
-      {/* Demo notice */}
-      <div className="d-flex align-items-start gap-2 rounded-3 px-4 py-3 mb-4"
-        style={{ background: '#F5F8FA', border: '1px solid #D9E2E8' }}>
-        <Info size={15} style={{ color: '#52616B', flexShrink: 0, marginTop: 2 }} />
-        <p className="mb-0 small" style={{ color: '#52616B' }}>
-          Esta pantalla es una <strong style={{ color: '#17232D' }}>demostración conceptual</strong> del prototipo. Los controles de escenario generan datos mock deterministas para evaluar la experiencia visual. No existe una API REST de simulación en el backend actual.
-        </p>
-      </div>
-
       {/* Environment summary */}
       <p className="text-muted small mb-4">
         {devices.length} dispositivos configurados · {totalCavas} Cavas · {totalVitrinas} Vitrinas
       </p>
+
+      {activeRun && !runId && (
+        <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 rounded-3 px-4 py-3 mb-4"
+          style={{ background: '#EAF1F5', border: '1px solid #c5d9e6', borderLeft: '4px solid #1F6F8B' }}>
+          <p className="mb-0 small">
+            <strong>Hay una ejecución activa en el backend</strong> ({activeRun.scenario === 'WITH_QOS' ? 'con priorización' : 'sin priorización'}, iniciada {new Date(activeRun.started_at).toLocaleString('es-CO')}). Finalícela antes de iniciar otra.
+          </p>
+          <button
+            onClick={() => { setRunId(activeRun.id); setHasRun(true); setRunning(true); }}
+            className="border-0 bg-transparent fw-semibold"
+            style={{ fontSize: 13, color: '#1F6F8B', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            Retomar
+          </button>
+        </div>
+      )}
+
+      {expStatus === 'error' && !running && !hasRun && (
+        <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 rounded-3 px-4 py-3 mb-4"
+          style={{ background: '#FFF5E3', border: '1px solid #ffda6a', borderLeft: '4px solid #C47A00' }}>
+          <p className="mb-0 small">
+            <strong>No se pudieron cargar las ejecuciones.</strong> La API requiere autenticación Bearer. Inicie sesión nuevamente si su sesión expiró.
+          </p>
+          <button
+            onClick={expRetry}
+            className="border-0 bg-transparent fw-semibold"
+            style={{ fontSize: 13, color: '#965D00', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
 
       {/* Config panel */}
       {!running && !hasRun && (
@@ -223,9 +255,17 @@ export function SimulationView() {
                 ))}
               </Col>
             </Row>
-            <Button variant="primary" className="d-flex align-items-center gap-2" onClick={handleEjecutar}>
-              <Play size={16} />Iniciar simulación
+            <Button variant="primary" className="d-flex align-items-center gap-2" onClick={handleEjecutar} disabled={starting}>
+              <Play size={16} />{starting ? 'Iniciando…' : 'Iniciar simulación'}
             </Button>
+            {runError && (
+              <div className="rounded-3 px-3 py-2 mt-3 small" style={{ background: '#FCEEEE', border: '1px solid #f1aeb5', color: '#B22F2F' }}>
+                {runError}
+              </div>
+            )}
+            <p className="text-muted mt-3 mb-0" style={{ fontSize: 11 }}>
+              Iniciar y finalizar requieren rol administrador en el backend. La condición del entorno es una etiqueta local de la ejecución.
+            </p>
           </Card.Body>
         </Card>
       )}
@@ -243,8 +283,8 @@ export function SimulationView() {
             </Col>
             <Col xs={12} lg={4} className="d-flex justify-content-lg-end">
               {running ? (
-                <Button variant="danger" size="sm" className="d-flex align-items-center gap-2" onClick={handleDetener}>
-                  <Square size={14} />Finalizar simulación
+                <Button variant="danger" size="sm" className="d-flex align-items-center gap-2" onClick={handleDetener} disabled={finishing}>
+                  <Square size={14} />{finishing ? 'Finalizando…' : 'Finalizar simulación'}
                 </Button>
               ) : (
                 <Button variant="secondary" size="sm" className="d-flex align-items-center gap-2" onClick={handleReiniciar}>
@@ -254,15 +294,25 @@ export function SimulationView() {
             </Col>
           </Row>
 
-          {/* KPIs */}
+          {/* KPIs: métricas reales de la ejecución (último valor por tipo) */}
           <Row className="g-3 mb-4">
             <Col xs={12} sm={6} xl={4}><KpiCard label="Dispositivos" value={devices.length} Icon={Cpu} accent="#123B5D" sub={`${totalCavas} cavas · ${totalVitrinas} vitrinas`} /></Col>
-            <Col xs={12} sm={6} xl={4}><KpiCard label="Lecturas generadas" value={kpis.generados.toLocaleString()} Icon={Thermometer} accent="#1F6F8B" sub="acumuladas" /></Col>
-            <Col xs={12} sm={6} xl={4}><KpiCard label="Lecturas procesadas" value={kpis.procesados.toLocaleString()} Icon={Activity} accent="#123B5D" sub="acumuladas" /></Col>
-            <Col xs={12} sm={6} xl={4}><KpiCard label="Críticas detectadas" value={kpis.criticos.toLocaleString()} Icon={AlertTriangle} accent={kpis.criticos > 0 ? '#C83B3B' : '#52616B'} sub="durante la ejecución" /></Col>
-            <Col xs={12} sm={6} xl={4}><KpiCard label="Latencia" value={kpis.latencia} unit="ms" Icon={Clock} accent="#123B5D" sub="últimos 500 ms" /></Col>
-            <Col xs={12} sm={6} xl={4}><KpiCard label="Pérdida de paquetes" value={kpis.perdida} unit="%" Icon={Wifi} accent={kpis.perdida < 5 ? '#16835B' : '#C83B3B'} sub="último intervalo" /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Mensajes recibidos" value={fmt(latestOf('messages_received'))} Icon={Thermometer} accent="#1F6F8B" sub={runMetrics.length > 0 ? `${runMetrics.length} muestras` : 'sin muestras aún'} /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Lecturas persistidas" value={fmt(latestOf('readings_persisted'))} Icon={Activity} accent="#123B5D" sub="último valor" /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Alertas generadas" value={fmt(latestOf('alerts_generated'))} Icon={AlertTriangle} accent={(latestOf('alerts_generated') ?? 0) > 0 ? '#C83B3B' : '#52616B'} sub="durante la ejecución" /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Latencia ingesta→persistencia" value={fmt(avgOf('ingest_to_persist_ms'), 1)} unit="ms" Icon={Clock} accent="#123B5D" sub="promedio de muestras" /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Backlog" value={fmt(latestOf('backlog'))} Icon={BarChart3} accent="#123B5D" sub="profundidad de cola" /></Col>
           </Row>
+          {running && (
+            <p className="text-muted small mb-4">
+              Ejecución en curso en el backend. Las métricas las registra el pipeline; se leen al finalizar (sin sondeo en vivo).
+            </p>
+          )}
+          {!running && hasRun && runMetrics.length === 0 && (
+            <p className="text-muted small mb-4">
+              La ejecución finalizó sin métricas registradas (el pipeline no reportó muestras para este run).
+            </p>
+          )}
 
           {/* Device status */}
           <Card className="cc-card mb-4">
