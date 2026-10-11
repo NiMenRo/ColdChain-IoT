@@ -108,13 +108,19 @@ function UserForm({ initial, mode, onSave, onCancel }: {
         </Col>
         <Col xs={12}>
           <Form.Label className="small fw-semibold text-muted">Rol</Form.Label>
-          <Form.Select size="sm" value={form.role} onChange={e => set('role')(e.target.value)}>
-            {(Object.keys(ROLE_LABELS) as UserRole[]).map(r => (
-              <option key={r} value={r}>{ROLE_LABELS[r]}</option>
-            ))}
-          </Form.Select>
+          {mode === 'edit' && initial.role === 'admin' ? (
+            <div className="small fw-semibold" style={{ color: '#123B5D' }}>
+              {ROLE_LABELS.admin} <span className="text-muted fw-normal">(fijo, no editable desde aquí)</span>
+            </div>
+          ) : (
+            <Form.Select size="sm" value={form.role} onChange={e => set('role')(e.target.value)}>
+              {(Object.keys(ROLE_LABELS) as UserRole[]).filter(r => r !== 'admin').map(r => (
+                <option key={r} value={r}>{ROLE_LABELS[r]}</option>
+              ))}
+            </Form.Select>
+          )}
           <div className="text-muted mt-1" style={{ fontSize: 11 }}>
-            El rol determina los permisos de acceso en el sistema.
+            El rol determina los permisos de acceso en el sistema. No es posible crear ni asignar administradores desde aquí.
           </div>
         </Col>
 
@@ -175,7 +181,12 @@ export function UserManagementView() {
       if (result.ok) closeModal();
       else setModalError(result.error ?? 'Error al crear el usuario.');
     } else if (modal.user) {
-      const result = await store.updateUser(modal.user.id, { name: data.name, email: data.email, role: data.role });
+      const roleChanged = data.role !== modal.user.role && data.role !== 'admin';
+      const result = await store.updateUser(modal.user.id, {
+        name: data.name,
+        email: data.email,
+        ...(roleChanged ? { role: data.role } : {}),
+      });
       if (result.ok) closeModal();
       else setModalError(result.error ?? 'Error al actualizar el usuario.');
     }

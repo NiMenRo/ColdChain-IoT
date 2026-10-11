@@ -32,11 +32,17 @@ export async function apiGetExperimentRuns(params?: {
   return apiFetch<ExperimentRunListResponse>(`/experiment-runs?${qs.toString()}`);
 }
 
-export async function apiStartExperimentRun(scenario: ExperimentScenario): Promise<ExperimentRun> {
-  // Sin config_snapshot: el backend usa los umbrales del sistema (no secretos).
+export async function apiStartExperimentRun(
+  scenario: ExperimentScenario,
+  configSnapshot?: Record<string, unknown>,
+): Promise<ExperimentRun> {
+  // Sin snapshot el backend usa los umbrales del sistema (no secretos).
+  // Con snapshot viaja contexto UI (p. ej. sensor_condition) para etiquetar.
   return apiFetch<ExperimentRun>('/experiment-runs', {
     method: 'POST',
-    body: JSON.stringify({ scenario }),
+    body: JSON.stringify(
+      configSnapshot === undefined ? { scenario } : { scenario, config_snapshot: configSnapshot },
+    ),
   });
 }
 

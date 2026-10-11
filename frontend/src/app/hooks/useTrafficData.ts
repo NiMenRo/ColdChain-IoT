@@ -2,6 +2,8 @@
 //
 // Fuentes reales: GET /history/summary (conteos agregados por el backend) y
 // GET /history/classifications (filas recientes con criticality/priority/queue).
+// Ámbito opcional runId: el backend filtra por ejecución vía
+// SensorReading.run_id; sin runId el ámbito es global (incluye legado).
 // No se construye ninguna serie temporal en frontend (sin endpoint que la respalde).
 
 import { useCallback, useEffect, useState } from 'react';
@@ -53,7 +55,7 @@ export interface TrafficDataState {
   recentStatus: SectionStatus;
 }
 
-export function useTrafficData(): TrafficDataState {
+export function useTrafficData(runId?: string | null): TrafficDataState {
   const [attempt, setAttempt] = useState(0);
   const [loading, setLoading] = useState(true);
   const [authBlocked, setAuthBlocked] = useState(false);
@@ -70,9 +72,10 @@ export function useTrafficData(): TrafficDataState {
     let cancelled = false;
     setLoading(true);
 
+    const scope = runId ? { run_id: runId } : undefined;
     Promise.allSettled([
-      apiGetHistorySummary(),
-      apiGetClassifications({ page: 1, per_page: 10 }),
+      apiGetHistorySummary(scope),
+      apiGetClassifications({ page: 1, per_page: 10, ...scope }),
     ]).then(([sumRes, clsRes]) => {
       if (cancelled) return;
       let auth = false;
@@ -120,7 +123,7 @@ export function useTrafficData(): TrafficDataState {
     return () => {
       cancelled = true;
     };
-  }, [attempt]);
+  }, [attempt, runId]);
 
   const total = counts ? counts.high + counts.medium + counts.low : 0;
   const rows: TrafficRow[] = ROW_META.map((meta) => {

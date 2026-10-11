@@ -118,7 +118,7 @@ export function Sidebar() {
 
         {/* Footer */}
         <div className="cc-sidebar-footer d-flex align-items-center justify-content-between px-4" style={{ height: 56, flexShrink: 0 }}>
-          {!compact && <span style={{ fontSize: 11, color: '#AFC7D8' }}>ColdChain-IoT Â· v2.1.0</span>}
+          {!compact && <span style={{ fontSize: 11, color: '#AFC7D8' }}>ColdChain-IoT · v2.1.0</span>}
           <button
             aria-label={compact ? 'Expandir navegación' : 'Compactar navegación'}
             onClick={() => setCompact(!compact)}

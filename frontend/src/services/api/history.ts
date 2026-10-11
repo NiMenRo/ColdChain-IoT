@@ -10,7 +10,9 @@
 // - GET /history/classifications    (ClassificationHistoryRepository.list)
 // - GET /history/devices/{code}/history (DeviceHistoryRepository.history)
 // Todos exigen autenticación Bearer en el backend. Los filtros temporales
-// (from_ts/to_ts) los ejecuta el backend; el frontend nunca simula filtrado.
+// (from_ts/to_ts) y por ejecución (run_id, resuelto por el backend vía
+// SensorReading.run_id / Alert.run_id) los ejecuta el backend; el frontend
+// nunca simula filtrado. Sin run_id: ámbito global (incluye legado NULL).
 
 import { apiFetch } from './client';
 
@@ -28,10 +30,17 @@ export interface HistorySummary {
   /** Claves en minúsculas según CHECK: 'low' | 'medium' | 'high'. */
   traffic_by_priority: Record<string, number>;
   qos_by_queue: Record<string, number>;
+  /** Conteo de lecturas por estado energético ('on'/'off', nulos excluidos). */
+  energy_by_state?: Record<string, number>;
+  /** Eco del filtro aplicado; null = ámbito global. */
+  run_id?: string | null;
 }
 
-export async function apiGetHistorySummary(): Promise<HistorySummary> {
-  return apiFetch<HistorySummary>('/history/summary');
+export async function apiGetHistorySummary(params?: { run_id?: string }): Promise<HistorySummary> {
+  const qs = new URLSearchParams();
+  if (params?.run_id) qs.set('run_id', params.run_id);
+  const suffix = qs.toString();
+  return apiFetch<HistorySummary>(`/history/summary${suffix ? `?${suffix}` : ''}`);
 }
 
 // ─── Alertas persistidas ─────────────────────────────────────────────────────
@@ -64,6 +73,7 @@ export interface HistoryAlertsParams {
   type?: string;
   from_ts?: string;
   to_ts?: string;
+  run_id?: string;
 }
 
 export async function apiGetHistoryAlerts(params?: HistoryAlertsParams): Promise<HistoryAlertListResponse> {
@@ -75,6 +85,7 @@ export async function apiGetHistoryAlerts(params?: HistoryAlertsParams): Promise
   if (params?.type) qs.set('type', params.type);
   if (params?.from_ts) qs.set('from_ts', params.from_ts);
   if (params?.to_ts) qs.set('to_ts', params.to_ts);
+  if (params?.run_id) qs.set('run_id', params.run_id);
   return apiFetch<HistoryAlertListResponse>(`/history/alerts?${qs.toString()}`);
 }
 
@@ -94,12 +105,13 @@ export interface ReadingTrendPoint {
 
 export async function apiGetReadingTrends(
   interval: HistoryInterval = 'hour',
-  params?: { device_code?: string; from_ts?: string; to_ts?: string },
+  params?: { device_code?: string; from_ts?: string; to_ts?: string; run_id?: string },
 ): Promise<ReadingTrendPoint[]> {
   const qs = new URLSearchParams();
   if (params?.device_code) qs.set('device_code', params.device_code);
   if (params?.from_ts) qs.set('from_ts', params.from_ts);
   if (params?.to_ts) qs.set('to_ts', params.to_ts);
+  if (params?.run_id) qs.set('run_id', params.run_id);
   qs.set('interval', interval);
   return apiFetch<ReadingTrendPoint[]>(`/history/readings/trends?${qs.toString()}`);
 }
@@ -130,9 +142,11 @@ export async function apiGetReadings(params?: {
   sort?: string;
   page?: number;
   per_page?: number;
+  run_id?: string;
 }): Promise<HistoryReadingListResponse> {
   const qs = new URLSearchParams();
   if (params?.device_code) qs.set('device_code', params.device_code);
+  if (params?.run_id) qs.set('run_id', params.run_id);
   qs.set('sort', params?.sort ?? 'timestamp.desc');
   qs.set('page', String(params?.page ?? 1));
   qs.set('per_page', String(params?.per_page ?? 20));
@@ -183,12 +197,13 @@ export interface QosTrendPoint {
 
 export async function apiGetQosTrends(
   interval: HistoryInterval = 'hour',
-  params?: { device_code?: string; from_ts?: string; to_ts?: string },
+  params?: { device_code?: string; from_ts?: string; to_ts?: string; run_id?: string },
 ): Promise<QosTrendPoint[]> {
   const qs = new URLSearchParams();
   if (params?.device_code) qs.set('device_code', params.device_code);
   if (params?.from_ts) qs.set('from_ts', params.from_ts);
   if (params?.to_ts) qs.set('to_ts', params.to_ts);
+  if (params?.run_id) qs.set('run_id', params.run_id);
   qs.set('interval', interval);
   return apiFetch<QosTrendPoint[]>(`/history/qos/trends?${qs.toString()}`);
 }
@@ -221,6 +236,7 @@ export async function apiGetQosRecords(params?: {
   device_code?: string;
   from_ts?: string;
   to_ts?: string;
+  run_id?: string;
 }): Promise<QosRecordListResponse> {
   const qs = new URLSearchParams();
   qs.set('sort', params?.sort ?? 'timestamp.desc');
@@ -229,6 +245,7 @@ export async function apiGetQosRecords(params?: {
   if (params?.device_code) qs.set('device_code', params.device_code);
   if (params?.from_ts) qs.set('from_ts', params.from_ts);
   if (params?.to_ts) qs.set('to_ts', params.to_ts);
+  if (params?.run_id) qs.set('run_id', params.run_id);
   return apiFetch<QosRecordListResponse>(`/history/qos?${qs.toString()}`);
 }
 
@@ -262,6 +279,7 @@ export async function apiGetClassifications(params?: {
   queue?: string;
   from_ts?: string;
   to_ts?: string;
+  run_id?: string;
 }): Promise<HistoryClassificationListResponse> {
   const qs = new URLSearchParams();
   qs.set('page', String(params?.page ?? 1));
@@ -271,5 +289,6 @@ export async function apiGetClassifications(params?: {
   if (params?.queue) qs.set('queue', params.queue);
   if (params?.from_ts) qs.set('from_ts', params.from_ts);
   if (params?.to_ts) qs.set('to_ts', params.to_ts);
+  if (params?.run_id) qs.set('run_id', params.run_id);
   return apiFetch<HistoryClassificationListResponse>(`/history/classifications?${qs.toString()}`);
 }

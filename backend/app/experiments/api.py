@@ -5,6 +5,7 @@ Reads are authenticated; starting/finishing a run is admin-only.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
@@ -21,6 +22,7 @@ from app.database.infrastructure.repositories import (
 )
 from app.database.infrastructure.session import get_db
 from app.experiments.active import clear_active_run, set_active_run
+from app.experiments.worker import start_worker, stop_worker
 from app.experiments.schemas import (
     ExperimentMetricListResponse,
     ExperimentMetricResponse,
@@ -32,6 +34,7 @@ from app.security.dependencies import require_admin
 router = APIRouter(
     prefix="/experiment-runs", tags=["experiments"], dependencies=[Depends(authenticated)]
 )
+logger = logging.getLogger(__name__)
 _runs = ExperimentRunRepository()
 _metrics = ExperimentMetricRepository()
 
@@ -131,6 +134,11 @@ def start_run(
         set_active_run(run.id, run.scenario)
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
+    # Telemetry for the run: launch the run-scoped simulator worker.
+    # Warn-only by design (COLDCHAIN_SIM_WORKER_ENABLED controls it):
+    # a worker problem never breaks the 201 semantics of the run itself.
+    if not start_worker(run.id):
+        logger.warning("run %s started without simulator telemetry worker", run.id)
     return _serialize_run(run)
 
 
@@ -152,6 +160,8 @@ def finish_run(
     active = get_active_run()
     if active is not None and active[0] == run.id:
         clear_active_run()
+    # Stop telemetry for the run (best-effort; missing worker is fine).
+    stop_worker(run.id)
     return _serialize_run(run)
 
 

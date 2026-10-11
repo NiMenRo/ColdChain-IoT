@@ -35,7 +35,8 @@ export async function apiGetDeviceDetail(deviceId: string): Promise<DeviceDetail
 }
 
 export interface CreateDevicePayload {
-  code: string;
+  // Sin code: el backend siempre lo genera. Se acepta pero se ignora si se envía.
+  code?: string;
   name: string;
   location: string;
   device_type: string;
@@ -45,7 +46,6 @@ export interface CreateDevicePayload {
 
 export function toCreateDevicePayload(data: DeviceFormData): CreateDevicePayload {
   return {
-    code: data.code.trim().toUpperCase(),
     name: data.name.trim(),
     location: data.location.trim(),
     device_type: data.device_type,

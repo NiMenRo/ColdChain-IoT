@@ -2,6 +2,7 @@ import { Wifi, WifiOff, Bell, LogOut, ChevronRight } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { useAuth } from '../hooks/useAuth';
+import { useUnreadCount } from '../hooks/useUnreadCount';
 import { ROLE_LABELS } from '../config/rbac';
 
 const sections: Record<string, string> = {
@@ -19,6 +20,7 @@ export function TopNav() {
   const [profileActive, setProfileActive] = useState(false);
   const [logoutHover, setLogoutHover] = useState(false);
   const { user, logout } = useAuth();
+  const { unread } = useUnreadCount();
   const navigate = useNavigate();
   const location = useLocation();
   const menuRef = useRef<HTMLDivElement>(null);
@@ -53,16 +55,20 @@ export function TopNav() {
           <span>{isConnected ? 'MQTT conectado' : 'Desconectado'}</span>
         </div>
 
-        {/* Bell button */}
+        {/* Bell button + punto rojo de no leídas (fase C).
+            El conteo viene SOLO de GET /unread-count (filas propias) y lleva
+            a la pestaña de notificaciones. Sin badge cuando no hay pendientes. */}
         <button
-          aria-label="Ver alertas"
-          onClick={() => navigate('/app/alerts')}
+          aria-label={unread > 0 ? `Ver alertas (${unread} sin leer)` : 'Ver alertas'}
+          title={unread > 0 ? `${unread} sin leer` : 'Sin notificaciones pendientes'}
+          onClick={() => navigate('/app/alerts', { state: { tab: 'notifications' } })}
           onMouseEnter={() => setBellHover(true)}
           onMouseLeave={() => { setBellHover(false); setBellActive(false); }}
           onMouseDown={() => setBellActive(true)}
           onMouseUp={() => setBellActive(false)}
           className="d-flex align-items-center justify-content-center rounded-2 border-0"
           style={{
+            position: 'relative',
             width: 40, height: 40,
             cursor: 'pointer',
             color: bellHover ? '#123B5D' : '#52616B',
@@ -72,6 +78,21 @@ export function TopNav() {
           }}
         >
           <Bell size={20} />
+          {unread > 0 && (
+            <span
+              aria-hidden="true"
+              style={{
+                position: 'absolute', top: 3, right: 3,
+                minWidth: 16, height: 16, borderRadius: 9,
+                background: '#C83B3B', color: '#fff',
+                fontSize: 10, fontWeight: 700, lineHeight: 1,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: '0 4px', border: '2px solid #fff',
+              }}
+            >
+              {unread > 99 ? '99+' : unread}
+            </span>
+          )}
         </button>
 
         <div style={{ width: 1, height: 28, background: '#D9E2E8' }} />

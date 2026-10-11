@@ -23,6 +23,7 @@ import { useQosSnapshot } from '../../hooks/useQosSnapshot';
 import type { HistorySummary, QosTrendPoint } from '../../../services/api/history';
 import { RANGE_OPTIONS, useHistoricalAnalytics, type HistoryRange } from '../../hooks/useHistoricalAnalytics';
 import { alertLabel, formatTs } from '../../hooks/useAlertsData';
+import { formatMs, formatMsValue, formatThroughput, roundMax3, secondsToMs } from '../../lib/qosUnits';
 import {
   ScenarioBadge,
   MetricComparisonCard,
@@ -41,10 +42,28 @@ function runNumber(runs: ExperimentRun[], run: ExperimentRun): number {
   return sorted.findIndex(r => r.id === run.id) + 1;
 }
 
+function snapshotCondition(run: ExperimentRun): SensorCondition | null {
+  if (!run.config_snapshot) return null;
+  try {
+    const parsed = JSON.parse(run.config_snapshot) as { sensor_condition?: unknown };
+    return parsed.sensor_condition === 'altered' || parsed.sensor_condition === 'normal'
+      ? parsed.sensor_condition
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function runLabel(runs: ExperimentRun[], run: ExperimentRun, meta: Record<string, ExperimentRunMeta>): string {
-  const cond = meta[run.id]?.sensorCondition;
+  // Prioridad: meta local de sesión; si no, condición persistida en el snapshot.
+  const cond = meta[run.id]?.sensorCondition ?? snapshotCondition(run);
   const condLabel = cond ? SENSOR_CONDITION_LABELS[cond] : 'Condición no registrada';
-  return `${condLabel} — ${run.scenario === 'WITH_QOS' ? 'Con priorización' : 'Sin priorización'} — Ejecución #${runNumber(runs, run)} (${run.started_at.slice(0, 16).replace('T', ' ')})`;
+  // Hora local del navegador (el backend persiste UTC): nunca slice crudo del ISO.
+  const d = new Date(run.started_at);
+  const when = Number.isNaN(d.getTime())
+    ? run.started_at
+    : d.toLocaleString('es-CO', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+  return `${condLabel} — ${run.scenario === 'WITH_QOS' ? 'Con priorización' : 'Sin priorización'} — Ejecución #${runNumber(runs, run)} (${when})`;
 }
 
 // ─── Helpers de presentación histórica (TSK-052; solo formato, sin agregación) ─
@@ -74,16 +93,18 @@ function qosLabel(key: QosMetricKey): string {
 }
 
 function qosValue(p: QosTrendPoint, key: QosMetricKey): number {
-  if (key === 'latency') return p.avg_latency;
-  if (key === 'jitter') return p.avg_jitter;
+  // Latencia/jitter se grafican en ms (el backend los persiste en segundos).
+  if (key === 'latency') return secondsToMs(p.avg_latency);
+  if (key === 'jitter') return secondsToMs(p.avg_jitter);
   if (key === 'packet_loss') return p.avg_packet_loss;
   if (key === 'throughput') return p.avg_throughput;
   return p.avg_pdr;
 }
 
 function qosFormat(key: QosMetricKey, v: number): string {
-  const unit = QOS_METRIC_OPTIONS.find(o => o.key === key)?.unit ?? '';
-  return `${v.toFixed(1)}${unit ? ` ${unit}` : ''}`;
+  if (key === 'latency' || key === 'jitter') return formatMsValue(v);
+  if (key === 'throughput') return formatThroughput(v);
+  return `${v.toFixed(1)} %`;
 }
 
 const ALERT_TYPE_COLORS: Record<string, string> = {
@@ -143,9 +164,9 @@ function summaryIndicators(summary: HistorySummary): Array<{ label: string; valu
   const prioTotal = ['high', 'medium', 'low'].reduce((s, k) => s + (typeof byPrio[k] === 'number' ? byPrio[k] : 0), 0);
   const highPct = prioTotal > 0 && typeof byPrio.high === 'number' ? Math.round((byPrio.high / prioTotal) * 100) : 0;
   return [
-    { label: 'Lecturas registradas', value: String(summary.total_readings), sub: 'Acumulado backend' },
-    { label: 'Clasificaciones', value: String(summary.total_classifications), sub: 'Acumulado backend' },
-    { label: 'Métricas QoS', value: String(summary.total_qos_metrics), sub: 'Acumulado backend' },
+    { label: 'Lecturas registradas', value: String(summary.total_readings), sub: 'Total registrado' },
+    { label: 'Clasificaciones', value: String(summary.total_classifications), sub: 'Total registrado' },
+    { label: 'Métricas QoS', value: String(summary.total_qos_metrics), sub: 'Total registrado' },
     {
       label: 'Tipo de alerta predominante',
       value: topType ? alertLabel(topType[0]) : '—',
@@ -160,10 +181,10 @@ export function AnalyticsView() {
   const [withQosId, setWithQosId] = useState<string | null>(null);
   const [withoutQosId, setWithoutQosId] = useState<string | null>(null);
 
-  // Runs del backend sin meta local (condición no registrada) participan en
-  // cualquier filtro: desconocido no es inventado.
+  // Runs del backend sin meta local usan su snapshot persistido; solo los
+  // realmente desconocidos participan en cualquier filtro (no se inventa).
   const runsInCondition = useMemo(
-    () => runs.filter(r => (runMeta[r.id]?.sensorCondition ?? condition) === condition),
+    () => runs.filter(r => (runMeta[r.id]?.sensorCondition ?? snapshotCondition(r) ?? condition) === condition),
     [runs, runMeta, condition],
   );
   const withQosRuns = runsInCondition.filter(r => r.scenario === 'WITH_QOS');
@@ -208,8 +229,11 @@ export function AnalyticsView() {
       cancelled = true;
     };
   }, [withQosRun?.id, withoutQosRun?.id, fetchMetrics]);
-  const qosLive = useQosSnapshot();
-  const hist = useHistoricalAnalytics();
+  // Ámbito por ejecución para las gráficas históricas (null = global).
+  // La sección comparativa usa sus propios selectores (métricas por run).
+  const [trafficRunId, setTrafficRunId] = useState<string | null>(null);
+  const qosLive = useQosSnapshot(trafficRunId);
+  const hist = useHistoricalAnalytics(trafficRunId);
   const [qosMetric, setQosMetric] = useState<QosMetricKey>('latency');
 
   const persistData = mergeLineSeries(
@@ -225,7 +249,7 @@ export function AnalyticsView() {
     <div>
       <h1 className="mb-1" style={{ fontSize: 20, fontWeight: 600 }}>QoS — Análisis de Rendimiento</h1>
       <p className="text-muted small mb-4">
-        Análisis de las ejecuciones registradas (ExperimentRun) y analítica QoS complementaria histórica.
+        Análisis del rendimiento y del histórico de la red de sensores.
       </p>
 
       {/* ─── Estado actual QoS — datos en vivo (TSK-050; análisis histórico → TSK-052) ─── */}
@@ -275,7 +299,12 @@ export function AnalyticsView() {
       </Row>
 
       <Card className="cc-card mb-4">
-        <div className="cc-card-header">Registros QoS recientes</div>
+        <div className="cc-card-header">
+          Registros QoS recientes
+          {trafficRunId && (
+            <span className="text-muted fw-normal" style={{ fontSize: 12 }}> — ejecución seleccionada</span>
+          )}
+        </div>
         {qosLive.recentStatus === 'loading' ? (
           <div className="p-4 small text-muted">Cargando registros…</div>
         ) : qosLive.recentStatus === 'error' ? (
@@ -293,18 +322,18 @@ export function AnalyticsView() {
                   <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Jitter (ms)</th>
                   <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Pérdida (%)</th>
                   <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>PDR (%)</th>
-                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Throughput</th>
+                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Throughput (B/s)</th>
                   <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Fecha</th>
                 </tr>
               </thead>
               <tbody>
                 {qosLive.recent.map((r, i) => (
                   <tr key={r.id} style={{ borderTop: '1px solid #EFF4F7', background: i % 2 === 1 ? '#FAFBFC' : '#fff' }}>
-                    <td className="px-4 py-3">{r.latency.toFixed(0)}</td>
-                    <td className="px-4 py-3">{r.jitter.toFixed(1)}</td>
+                    <td className="px-4 py-3">{formatMs(r.latency)}</td>
+                    <td className="px-4 py-3">{formatMs(r.jitter)}</td>
                     <td className="px-4 py-3">{r.packet_loss.toFixed(1)}</td>
                     <td className="px-4 py-3">{r.pdr.toFixed(1)}</td>
-                    <td className="px-4 py-3">{r.throughput.toFixed(1)}</td>
+                    <td className="px-4 py-3">{formatThroughput(r.throughput)}</td>
                     <td className="px-4 py-3 text-muted font-monospace" style={{ fontSize: 12 }}>{formatTs(r.timestamp)}</td>
                   </tr>
                 ))}
@@ -382,7 +411,7 @@ export function AnalyticsView() {
 
       {showNoMetricsNote && (
         <div className="p-3 rounded-3 mb-4 text-center text-muted small" style={{ background: '#F5F8FA', border: '1px dashed #D9E2E8' }}>
-          Las ejecuciones seleccionadas no tienen métricas registradas en el backend.
+          Las ejecuciones seleccionadas no tienen métricas registradas.
         </div>
       )}
 
@@ -415,20 +444,20 @@ export function AnalyticsView() {
                     <div className="d-flex justify-content-between mb-2">
                       <span className="small">Con priorización</span>
                       <span className="fw-bold">
-                        {avgMetric(withQosMetrics, type) !== null ? `${avgMetric(withQosMetrics, type)!.toFixed(1)} ms` : '—'}
+                        {avgMetric(withQosMetrics, type) !== null ? `${roundMax3(avgMetric(withQosMetrics, type)!).toFixed(1)} ms` : '—'}
                         <span className="text-muted small fw-normal"> avg</span>
                         {' · '}
-                        {maxMetric(withQosMetrics, type) !== null ? `${maxMetric(withQosMetrics, type)} ms` : '—'}
+                        {maxMetric(withQosMetrics, type) !== null ? `${roundMax3(maxMetric(withQosMetrics, type)!)} ms` : '—'}
                         <span className="text-muted small fw-normal"> máx</span>
                       </span>
                     </div>
                     <div className="d-flex justify-content-between">
                       <span className="small">Sin priorización</span>
                       <span className="fw-bold">
-                        {avgMetric(withoutQosMetrics, type) !== null ? `${avgMetric(withoutQosMetrics, type)!.toFixed(1)} ms` : '—'}
+                        {avgMetric(withoutQosMetrics, type) !== null ? `${roundMax3(avgMetric(withoutQosMetrics, type)!).toFixed(1)} ms` : '—'}
                         <span className="text-muted small fw-normal"> avg</span>
                         {' · '}
-                        {maxMetric(withoutQosMetrics, type) !== null ? `${maxMetric(withoutQosMetrics, type)} ms` : '—'}
+                        {maxMetric(withoutQosMetrics, type) !== null ? `${roundMax3(maxMetric(withoutQosMetrics, type)!)} ms` : '—'}
                         <span className="text-muted small fw-normal"> máx</span>
                       </span>
                     </div>
@@ -469,7 +498,26 @@ export function AnalyticsView() {
         <h2 className="mb-0" style={{ fontSize: 16, fontWeight: 600 }}>
           Análisis histórico
         </h2>
-        <div className="d-flex align-items-center gap-2 flex-wrap">
+        <div className="d-flex align-items-center gap-3 flex-wrap">
+          <div className="d-flex align-items-center gap-2 flex-wrap">
+            <span className="small fw-semibold text-muted">Ejecución:</span>
+            <select
+              className="form-select form-select-sm"
+              style={{ width: 'auto', minWidth: 220 }}
+              value={trafficRunId ?? ''}
+              onChange={(e) => setTrafficRunId(e.target.value || null)}
+            >
+              <option value="">Todas las ejecuciones</option>
+              {[...runs]
+                .sort((a, b) => b.started_at.localeCompare(a.started_at))
+                .map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {runLabel(runs, r, runMeta)}
+                  </option>
+                ))}
+            </select>
+          </div>
+          <div className="d-flex align-items-center gap-2 flex-wrap">
           <span className="small fw-semibold text-muted">Periodo:</span>
           {RANGE_OPTIONS.map(o => (
             <button key={o.value} type="button" onClick={() => hist.setRange(o.value)}
@@ -481,11 +529,13 @@ export function AnalyticsView() {
               {o.label}
             </button>
           ))}
+          </div>
         </div>
       </div>
       <p className="text-muted small mb-4">
-        Agregados del backend (`/history/*`) para {hist.rangeLabel.toLowerCase()}. Las distribuciones por
-        criticidad y por día usan una muestra paginada acotada (máx. 100 registros), no el total global.
+        Datos de {hist.rangeLabel.toLowerCase()}
+        {trafficRunId ? ' de la ejecución seleccionada' : ' (todas las ejecuciones)'}. Las
+        distribuciones por criticidad y por día usan una muestra reciente, no el total global.
       </p>
 
       {(hist.isAuthBlocked || hist.isConfigMissing) && !hist.isLoading && (
@@ -620,7 +670,7 @@ export function AnalyticsView() {
       <Row className="g-4">
         <Col xs={12} lg={6}>
           <Card className="cc-card h-100">
-            <div className="cc-card-header">Distribución de criticidad (muestra)</div>
+            <div className="cc-card-header">Distribución de criticidad</div>
             <Card.Body>
               {hist.classStatus === 'loading' ? (
                 <div className="small text-muted">Cargando…</div>
@@ -651,7 +701,7 @@ export function AnalyticsView() {
         </Col>
         <Col xs={12} lg={6}>
           <Card className="cc-card h-100">
-            <div className="cc-card-header">Alertas por día (muestra)</div>
+            <div className="cc-card-header">Alertas por día</div>
             <Card.Body>
               {hist.alertsStatus === 'loading' ? (
                 <div className="small text-muted">Cargando…</div>
@@ -685,7 +735,7 @@ export function AnalyticsView() {
       <Row className="g-4 mt-1">
         <Col xs={12} lg={4}>
           <Card className="cc-card h-100">
-            <div className="cc-card-header">Alertas por tipo (acumulado backend)</div>
+            <div className="cc-card-header">Alertas por tipo</div>
             <Card.Body>
               {hist.summaryStatus === 'loading' ? (
                 <div className="small text-muted">Cargando…</div>
@@ -712,7 +762,7 @@ export function AnalyticsView() {
 
         <Col xs={12} lg={4}>
           <Card className="cc-card h-100">
-            <div className="cc-card-header">Distribución por prioridad (acumulado backend)</div>
+            <div className="cc-card-header">Distribución por prioridad</div>
             <Card.Body>
               {hist.summaryStatus === 'loading' ? (
                 <div className="small text-muted">Cargando…</div>
@@ -734,7 +784,7 @@ export function AnalyticsView() {
                     ))}
                   </div>
                   <p className="text-muted mt-4 mb-0" style={{ fontSize: 11 }}>
-                    Total: {priorityEntries(hist.summary).reduce((s, p) => s + p.value, 0)} lecturas clasificadas
+                    Total: {priorityEntries(hist.summary).reduce((s, p) => s + p.value, 0)} mensajes clasificados
                   </p>
                 </>
               )}
@@ -744,7 +794,7 @@ export function AnalyticsView() {
 
         <Col xs={12} lg={4}>
           <Card className="cc-card h-100">
-            <div className="cc-card-header">Distribución por cola (acumulado backend)</div>
+            <div className="cc-card-header">Distribución por cola</div>
             <Card.Body>
               {hist.summaryStatus === 'loading' ? (
                 <div className="small text-muted">Cargando…</div>
@@ -760,13 +810,13 @@ export function AnalyticsView() {
                       <XAxis type="number" tick={TICK_STYLE} />
                       <YAxis type="category" dataKey="name" tick={TICK_STYLE} width={90} />
                       <Tooltip contentStyle={TOOLTIP_STYLE} />
-                      <Bar dataKey="value" name="Lecturas" radius={[0, 3, 3, 0]} isAnimationActive={false}>
+                      <Bar dataKey="value" name="Mensajes" radius={[0, 3, 3, 0]} isAnimationActive={false}>
                         {queueEntries(hist.summary).map((e, i) => <Cell key={`qd-cell-${i}`} fill={e.color} />)}
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                   <p className="text-muted mt-2 mb-0" style={{ fontSize: 11 }}>
-                    Total: {queueEntries(hist.summary).reduce((s, p) => s + p.value, 0)} lecturas clasificadas
+                    Total: {queueEntries(hist.summary).reduce((s, p) => s + p.value, 0)} mensajes clasificados
                   </p>
                 </>
               )}

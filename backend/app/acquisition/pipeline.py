@@ -38,7 +38,11 @@ def _parse_received_at(message: dict) -> datetime | None:
     """TSK-059.7 — real ingestion instant, or None when unavailable.
 
     Never fabricated: without received_at no ingest-based latency is recorded.
+    Non-dict queue items yield None instead of raising (they are still
+    counted as invalid downstream, never crash the loop).
     """
+    if not isinstance(message, dict):
+        return None
     raw = message.get("received_at")
     if not raw or not isinstance(raw, str):
         return None
@@ -141,6 +145,10 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
             classifications_for_bundle: list = []
             qos_for_bundle = None
             alerts_for_bundle: list = []
+            # (alert, notif_result, recipient, message) persisted to the
+            # notifications table in an isolated transaction AFTER the
+            # bundle commits, so this block can never lose alerts/readings.
+            notification_records: list = []
 
             # Derive I/U/R from each reading using the risk matrix. The
             # evaluator is the source of truth; payload impact/urgency/risk
@@ -164,12 +172,18 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                         continue
 
                     # store result with reference to the normalized reading and original message metadata
+                    # NOTE: never reuse the name `message` for anything else
+                    # inside this loop: rebinding it (e.g. to a notification
+                    # text) breaks every later `message.get(...)` below and
+                    # silently drops the whole bundle (no persist, no alert).
+                    msg_received_at = message.get("received_at") if isinstance(message, dict) else None
+                    msg_topic = message.get("topic") if isinstance(message, dict) else None
                     entry = {
                         "classification": classification,
                         "reading": reading,
                         "device_code": reading.device_code,
-                        "received_at": message.get("received_at"),
-                        "topic": message.get("topic"),
+                        "received_at": msg_received_at,
+                        "topic": msg_topic,
                     }
                     app_state.classifications.append(entry)
 
@@ -280,7 +294,11 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                                         "Failed to enrich alert %s", alert.id
                                     )
                         
-                        # Dispatch notifications for generated alerts
+                        # Dispatch notifications for generated alerts.
+                        # Sending happens here (never raises: failures are
+                        # recorded as FAILED/SIMULATED/DISABLED on the result);
+                        # DB persistence happens later in an isolated
+                        # transaction so it can never roll back the bundle.
                         notification_service = getattr(app_state, "notification_service", None)
                         notifications_list = getattr(app_state, "notifications", None)
                         if notification_service is not None and result["alert_count"] > 0:
@@ -289,6 +307,14 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                                     notif_result = notification_service.process(alert)
                                     if notif_result.notification is not None and notifications_list is not None:
                                         notifications_list.append(notif_result.notification)
+                                    try:
+                                        notif_recipient = notification_service.resolve_recipient(alert)
+                                        notif_message = notification_service.resolve_message(alert)
+                                    except Exception:
+                                        notif_recipient, notif_message = None, None
+                                    notification_records.append(
+                                        (alert, notif_result, notif_recipient, notif_message)
+                                    )
                                     logger.info(
                                         "Processed notification %s for alert %s",
                                         getattr(notif_result.notification, "id", None),
@@ -388,7 +414,111 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                                             )
                                         record_metrics(run_id, metrics)
             except Exception:
-                logger.exception("Failed to persist bundle for message %s", message.get("topic"))
+                logger.exception(
+                    "Failed to persist bundle for message %s",
+                    message.get("topic") if isinstance(message, dict) else None,
+                )
+
+            # Persist notification delivery records — isolated transaction.
+            # The bundle above already committed: a failure here only loses
+            # traceability rows (logged), never alerts or readings.
+            # Idempotency via UNIQUE(alert_id, channel, recipient): replays
+            # and retries skip already-recorded rows without re-sending.
+            try:
+                if notification_records:
+                    from uuid import UUID as _UUID
+
+                    from app.database.infrastructure.models import (
+                        HUMAN_USER_ROLES as _HUMAN_ROLES,
+                    )
+                    from app.database.infrastructure.models import (
+                        UserORM as _UserORM,
+                    )
+                    from app.database.infrastructure.repositories import (
+                        NotificationRepository as _NotificationRepository,
+                    )
+                    from app.database.infrastructure.session import (
+                        SessionLocal as _SessionLocal,
+                    )
+
+                    def _recipient_for(_user, _channel: str) -> str | None:
+                        """Per-user delivery address for the resolved channel.
+
+                        Keeps UNIQUE(alert_id, channel, recipient) distinct per
+                        recipient. SMS without phone falls back to a user-scoped
+                        placeholder (still SIMULATED, logged, never sent).
+                        """
+                        if _channel == "email":
+                            return (_user.email or "").strip() or None
+                        if _channel == "sms":
+                            phone = (_user.phone or "").strip()
+                            return phone or f"user:{_user.id}"
+                        return str(_user.id)
+
+                    _repo = _NotificationRepository()
+                    with _SessionLocal() as _notif_db:
+                        with _notif_db.begin():
+                            # Recipient policy (RBAC-coherent): active humans
+                            # with a supervising role (admin, supervisor,
+                            # operador, auditor read-only). System/inactive
+                            # users never own notifications.
+                            _humans = (
+                                _notif_db.query(_UserORM)
+                                .filter(_UserORM.is_active.is_(True))
+                                .filter(_UserORM.role.in_(sorted(_HUMAN_ROLES)))
+                                .all()
+                            )
+                            for _alert, _result, _recipient, _message in notification_records:
+                                _notif = getattr(_result, "notification", None)
+                                if _notif is None:
+                                    continue
+                                if not isinstance(_message, str) or not _message.strip():
+                                    continue
+                                _channel = _notif.channel.value
+                                # Fan-out targets: one row per active human
+                                # recipient. Legacy fallback (no humans in DB):
+                                # single row owned by the alert author.
+                                _targets: list[tuple] = []
+                                for _user in _humans:
+                                    _addr = _recipient_for(_user, _channel)
+                                    if _addr:
+                                        _targets.append((_user.id, _addr))
+                                if not _targets and isinstance(_alert.user_id, _UUID):
+                                    if isinstance(_recipient, str) and _recipient.strip():
+                                        _targets.append((_alert.user_id, _recipient.strip()))
+                                for _owner_id, _addr in _targets:
+                                    if _repo.find_duplicate(
+                                        _notif_db,
+                                        _alert.id,
+                                        _channel,
+                                        _addr,
+                                    ):
+                                        continue
+                                    _send = getattr(_result, "send_result", None)
+                                    # NOTE: no notification_id reuse here: each
+                                    # fan-out row gets its own PK (the domain
+                                    # id identifies the delivery attempt, not
+                                    # the per-recipient record).
+                                    _repo.create(
+                                        _notif_db,
+                                        alert_id=_alert.id,
+                                        user_id=_owner_id,
+                                        channel=_channel,
+                                        status=_notif.status.value,
+                                        recipient=_addr,
+                                        message=_message,
+                                        detail=(
+                                            _send.detail if _send is not None
+                                            else _result.error
+                                        ),
+                                        notification_date=_notif.notification_date,
+                                    )
+            except Exception:
+                logger.exception(
+                    "Failed to persist notification records for message %s "
+                    "(alerts and readings are unaffected)",
+                    message.get("topic") if isinstance(message, dict) else None,
+                )
 
         except Exception:
             logger.exception("Unhandled error in acquisition->classification worker loop")

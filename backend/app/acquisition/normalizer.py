@@ -43,6 +43,8 @@ class TelemetryNormalizer:
         return float(value)
 
     def normalize(self, message: dict[str, Any]) -> list[NormalizedReading]:
+        if not isinstance(message, dict):
+            raise ValueError("Message must be a dict with payload/device_origin")
         payload = message.get("payload", {})
         device_origin = message.get("device_origin", {})
         device_code = device_origin.get("device_code")

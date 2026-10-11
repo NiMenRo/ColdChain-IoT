@@ -97,3 +97,14 @@ def seed_system_config(db: Session) -> int:
 
 def seed_all(db: Session) -> int:
     return seed_devices(db) + seed_device_sensors(db) + seed_user(db) + seed_system_config(db)
+
+
+def seed_boot(db: Session) -> int:
+    """Minimal boot seed: system identity + thresholds only.
+
+    No demo devices or sensors: a clean database boots empty and devices
+    are created afterwards via POST /devices (which also registers them
+    for event resolution without restarting). Reproducible demo data
+    comes from scripts/seed_devices.py + scripts/seed_demo_users.py.
+    """
+    return seed_user(db) + seed_system_config(db)

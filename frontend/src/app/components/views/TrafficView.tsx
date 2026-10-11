@@ -1,19 +1,28 @@
+import { useState } from 'react';
 import { Cell, Tooltip, ResponsiveContainer, PieChart, Pie, LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { Info } from 'lucide-react';
 import { Card, Row, Col } from '../../lib/bootstrap';
 import { formatTs } from '../../hooks/useAlertsData';
 import { useTrafficData } from '../../hooks/useTrafficData';
 import { useHistoricalAnalytics } from '../../hooks/useHistoricalAnalytics';
+import { useLiveQueues } from '../../hooks/useLiveQueues';
+import { useExperiments } from '../../contexts/ExperimentContext';
+import { RunScopeSelector } from '../RunScopeSelector';
 
 const TICK_STYLE   = { fill: '#52616B', fontSize: 11 };
 const TOOLTIP_STYLE = { border: '1px solid #D9E2E8', borderRadius: '4px', fontSize: '12px' };
 
 export function TrafficView() {
-  const data = useTrafficData();
+  // Ámbito por ejecución (null = global, incluye legado). El backend filtra
+  // vía SensorReading.run_id; las colas en vivo quedan fuera del ámbito.
+  const [runId, setRunId] = useState<string | null>(null);
+  const { runs } = useExperiments();
+  const data = useTrafficData(runId);
   const { rows, total, recent } = data;
   // Análisis histórico (TSK-052): evolución y distribución de criticidad sobre
-  // muestra paginada acotada; los agregados globales vienen de /history/summary.
-  const hist = useHistoricalAnalytics();
+  // muestra paginada acotada; los agregados vienen de /history/summary.
+  const hist = useHistoricalAnalytics(runId);
+  const live = useLiveQueues();
   const critEvolution = [...hist.classSample]
     .sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1))
     .map(c => {
@@ -28,8 +37,12 @@ export function TrafficView() {
     <div>
       <h1 className="mb-1" style={{ fontSize: 20, fontWeight: 600 }}>Clasificación de Tráfico</h1>
       <p className="text-muted small mb-1">
-        Distribución y análisis de lecturas por prioridad y cola de procesamiento.
+        Distribución y análisis de mensajes por prioridad y cola de procesamiento.
+        Cada mensaje persiste una sola clasificación (representante).
       </p>
+      <div className="mb-3">
+        <RunScopeSelector id="traffic-run-scope" runs={runs} value={runId} onChange={setRunId} />
+      </div>
 
       {/* Informational notice */}
       <div className="d-flex align-items-start gap-2 rounded-3 px-4 py-3 mb-4"
@@ -77,7 +90,7 @@ export function TrafficView() {
                 <code style={{ fontSize: 12, color: row.color }}>{row.queue}</code>
               </div>
               <div style={{ fontSize: 28, fontWeight: 700, color: row.color }}>{row.count}</div>
-              <div style={{ fontSize: 12, color: row.color }}>lecturas ({row.pct.toFixed(1)}%)</div>
+              <div style={{ fontSize: 12, color: row.color }}>mensajes ({row.pct.toFixed(1)}%)</div>
             </div>
           </Col>
         ))}
@@ -92,7 +105,7 @@ export function TrafficView() {
               <tr style={{ background: '#F5F8FA' }}>
                 <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Prioridad</th>
                 <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Cola</th>
-                <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Lecturas</th>
+                    <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Mensajes</th>
                 <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Descripción</th>
               </tr>
             </thead>
@@ -123,9 +136,66 @@ export function TrafficView() {
             </tbody>
           </table>
           <div className="px-4 py-2 border-top small text-muted">
-            Total: {data.isLoading ? '…' : total} lecturas clasificadas en el periodo actual.
+            Total: {data.isLoading ? '…' : total} mensajes clasificados{runId ? ' en la ejecución seleccionada' : ' (todas las ejecuciones)'}.
           </div>
         </div>
+      </Card>
+
+      {/* Colas en vivo (GET /qos/queues): estado global e instantáneo de los
+          schedulers en memoria. No pertenece a ninguna ejecución: se vacía al
+          reiniciar el backend. Se actualiza cada 10 s. */}
+      <Card className="cc-card mb-4">
+        <div className="cc-card-header">Colas en vivo — FIFO / Round Robin / WFQ</div>
+        <div className="px-4 pt-2">
+          <p className="text-muted mb-2" style={{ fontSize: 11 }}>
+            Contenido actual de las colas en memoria (todas las ejecuciones y tráfico manual).
+            No es histórico: al reiniciar el backend vuelve a cero.
+          </p>
+        </div>
+        {live.isLoading ? (
+          <div className="p-4 small text-muted">Cargando colas…</div>
+        ) : live.status === 'error' ? (
+          <div className="p-4 small" style={{ color: '#B22F2F' }}>
+            No se pudieron cargar las colas. <button onClick={live.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+          </div>
+        ) : live.total === 0 ? (
+          <div className="p-4 small text-muted">Colas vacías: sin mensajes pendientes en este instante.</div>
+        ) : (
+          <div className="overflow-hidden">
+            <table className="w-100" style={{ borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: '#F5F8FA' }}>
+                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Cola</th>
+                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Pendientes</th>
+                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Muestra (criticidad · hora)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {live.queues.map((q) => (
+                  <tr key={q.queue} style={{ borderTop: '1px solid #EFF4F7' }}>
+                    <td className="px-4 py-3">
+                      <code style={{ fontSize: 13, background: '#EAF1F5', padding: '3px 8px', borderRadius: 4, color: '#123B5D' }}>
+                        {q.queue}
+                      </code>
+                      <span className="text-muted ms-2" style={{ fontSize: 12 }}>({q.priority})</span>
+                    </td>
+                    <td className="px-4 py-3 fw-semibold" style={{ color: '#123B5D' }}>{q.count}</td>
+                    <td className="px-4 py-3 text-muted font-monospace" style={{ fontSize: 12 }}>
+                      {q.sample.length === 0 ? '—' : q.sample.map((s) => {
+                        const d = new Date(s.timestamp);
+                        const hhmm = Number.isNaN(d.getTime()) ? s.timestamp : d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                        return `${s.criticality} · ${hhmm}`;
+                      }).join('   ')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="px-4 py-2 border-top small text-muted">
+              Total encolado ahora: {live.total} mensajes.
+            </div>
+          </div>
+        )}
       </Card>
 
       <Row className="g-4">
@@ -170,8 +240,9 @@ export function TrafficView() {
           </Card>
         </Col>
 
-        {/* Pie */}
+        {/* Pie + distribución apiladas */}
         <Col xs={12} lg={5}>
+          <div className="d-flex flex-column gap-4">
           <Card className="cc-card">
             <div className="cc-card-header">Proporción por prioridad</div>
             <Card.Body>
@@ -180,7 +251,7 @@ export function TrafficView() {
               ) : data.status === 'error' ? (
                 <div className="small" style={{ color: '#B22F2F' }}>Sin datos disponibles.</div>
               ) : total === 0 ? (
-                <div className="small text-muted">Sin lecturas clasificadas.</div>
+                <div className="small text-muted">Sin mensajes clasificados{runId ? ' en esta ejecución' : ''}.</div>
               ) : (
                 <ResponsiveContainer width="100%" height={260}>
                   <PieChart>
@@ -194,49 +265,14 @@ export function TrafficView() {
                     >
                       {rows.map((r, i) => <Cell key={`qm-cell-${i}`} fill={r.color} />)}
                     </Pie>
-                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [`${v} lecturas`]} />
+                      <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [`${v} mensajes`]} />
                   </PieChart>
                 </ResponsiveContainer>
               )}
             </Card.Body>
           </Card>
-        </Col>
-      </Row>
-
-      {/* Análisis histórico de criticidad (TSK-052, muestra acotada) */}
-      <Row className="g-4 mt-1">
-        <Col xs={12} lg={7}>
           <Card className="cc-card">
-            <div className="cc-card-header">Evolución de criticidad (muestra)</div>
-            <Card.Body>
-              {hist.classStatus === 'loading' ? (
-                <div className="small text-muted">Cargando…</div>
-              ) : hist.classStatus === 'error' ? (
-                <div className="small" style={{ color: '#B22F2F' }}>
-                  No se pudo cargar. <button onClick={hist.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
-                </div>
-              ) : critEvolution.length === 0 ? (
-                <div className="small text-muted">Sin clasificaciones en el periodo.</div>
-              ) : (
-                <ResponsiveContainer width="100%" height={240}>
-                  <LineChart data={critEvolution} margin={{ top: 8, right: 12, left: 8, bottom: 8 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" />
-                    <XAxis dataKey="t" tick={TICK_STYLE} interval="preserveStartEnd" minTickGap={48} />
-                    <YAxis tick={TICK_STYLE} domain={[3, 9]} />
-                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => `${Number(v).toFixed(1)}`} />
-                    <Line type="monotone" dataKey="criticality" name="Criticidad" stroke="#C83B3B" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              )}
-              <p className="text-muted mt-2 mb-0" style={{ fontSize: 11 }}>
-                Muestra de {hist.classSampleCount} clasificaciones recientes, no el total global.
-              </p>
-            </Card.Body>
-          </Card>
-        </Col>
-        <Col xs={12} lg={5}>
-          <Card className="cc-card h-100">
-            <div className="cc-card-header">Distribución de criticidad (muestra)</div>
+            <div className="cc-card-header">Distribución de criticidad</div>
             <Card.Body>
               {hist.classStatus === 'loading' ? (
                 <div className="small text-muted">Cargando…</div>
@@ -260,6 +296,40 @@ export function TrafficView() {
                   </p>
                 </>
               )}
+            </Card.Body>
+          </Card>
+          </div>
+        </Col>
+      </Row>
+
+      {/* Evolución de criticidad a ancho completo */}
+      <Row className="g-4 mt-1">
+        <Col xs={12}>
+          <Card className="cc-card">
+            <div className="cc-card-header">Evolución de criticidad</div>
+            <Card.Body>
+              {hist.classStatus === 'loading' ? (
+                <div className="small text-muted">Cargando…</div>
+              ) : hist.classStatus === 'error' ? (
+                <div className="small" style={{ color: '#B22F2F' }}>
+                  No se pudo cargar. <button onClick={hist.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+                </div>
+              ) : critEvolution.length === 0 ? (
+                <div className="small text-muted">Sin clasificaciones en el periodo.</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={240}>
+                  <LineChart data={critEvolution} margin={{ top: 8, right: 12, left: 8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" />
+                    <XAxis dataKey="t" tick={TICK_STYLE} interval="preserveStartEnd" minTickGap={48} />
+                    <YAxis tick={TICK_STYLE} domain={[3, 9]} />
+                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => `${Number(v).toFixed(1)}`} />
+                    <Line type="monotone" dataKey="criticality" name="Criticidad" stroke="#C83B3B" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+              <p className="text-muted mt-2 mb-0" style={{ fontSize: 11 }}>
+                Muestra de {hist.classSampleCount} clasificaciones recientes, no el total global.
+              </p>
             </Card.Body>
           </Card>
         </Col>

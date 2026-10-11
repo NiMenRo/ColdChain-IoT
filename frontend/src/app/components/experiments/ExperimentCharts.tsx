@@ -1,5 +1,5 @@
 import {
-  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell,
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { Card } from '../../lib/bootstrap';
 import {
@@ -18,10 +18,14 @@ import {
   mergeLineSeries,
 } from '../../lib/experimentAggregations';
 
-const CHART_MARGIN = { top: 8, right: 12, left: 8, bottom: 24 };
+// Margen inferior amplio: la etiqueta del eje X y la leyenda no deben superponerse.
+const CHART_MARGIN = { top: 8, right: 12, left: 8, bottom: 48 };
 const TICK_STYLE = { fill: '#52616B', fontSize: 11 };
 const TOOLTIP_STYLE = { border: '1px solid #D9E2E8', borderRadius: '4px', fontSize: '12px' };
 const LEGEND_STYLE = { wrapperStyle: { fontSize: '12px' } };
+// Leyenda arriba en los gráficos de comparación para no superponerse
+// con la etiqueta del eje X ("Minutos transcurridos").
+const LEGEND_TOP_STYLE = { verticalAlign: 'top' as const, align: 'right' as const, wrapperStyle: { fontSize: '12px', paddingBottom: 8 } };
 
 export const SCENARIO_COLORS: Record<ExperimentScenario, string> = {
   WITH_QOS: '#16835B',
@@ -69,7 +73,10 @@ export function MetricComparisonCard({
     const better = higherIsBetter ? d! > 0 : d! < 0;
     deltaColor = better ? '#16835B' : '#C83B3B';
     const sign = d! >= 0 ? '+' : '';
-    deltaLabel = `${sign}${formatNumber(d!)} ${unit} (${sign}${dPct!.toFixed(1)}%)`;
+    // dPct es null cuando la base es 0 (deltaPercent): mostrar solo el delta absoluto.
+    deltaLabel = dPct === null
+      ? `${sign}${formatNumber(d!)} ${unit}`
+      : `${sign}${formatNumber(d!)} ${unit} (${sign}${dPct.toFixed(1)}%)`;
   }
 
   return (
@@ -111,7 +118,7 @@ export function LineComparisonChart({
             <XAxis dataKey="elapsedMin" tick={TICK_STYLE} label={{ value: 'Minutos transcurridos', position: 'insideBottom', offset: -18, fill: '#52616B', fontSize: 11 }} />
             <YAxis tick={TICK_STYLE} />
             <Tooltip contentStyle={TOOLTIP_STYLE} labelFormatter={(v: number) => `${v} min`} />
-            <Legend {...LEGEND_STYLE} />
+            <Legend {...LEGEND_TOP_STYLE} />
             <Line type="monotone" dataKey="withQos" name="Con priorización" stroke={SCENARIO_COLORS.WITH_QOS} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={true} />
             <Line type="monotone" dataKey="withoutQos" name="Sin priorización" stroke={SCENARIO_COLORS.WITHOUT_QOS} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={true} />
           </LineChart>
@@ -128,7 +135,7 @@ export function BacklogChart({ withQosRun, withoutQosRun, allMetrics }: { withQo
 
   return (
     <Card className="cc-card">
-      <div className="cc-card-header">Backlog — Evolución temporal (profundidad de cola)</div>
+            <div className="cc-card-header">Cola de mensajes en espera</div>
       <Card.Body>
         <ResponsiveContainer width="100%" height={280}>
           <LineChart data={merged} margin={CHART_MARGIN}>
@@ -136,7 +143,7 @@ export function BacklogChart({ withQosRun, withoutQosRun, allMetrics }: { withQo
             <XAxis dataKey="elapsedMin" tick={TICK_STYLE} label={{ value: 'Minutos transcurridos', position: 'insideBottom', offset: -18, fill: '#52616B', fontSize: 11 }} />
             <YAxis tick={TICK_STYLE} />
             <Tooltip contentStyle={TOOLTIP_STYLE} labelFormatter={(v: number) => `${v} min`} />
-            <Legend {...LEGEND_STYLE} />
+            <Legend {...LEGEND_TOP_STYLE} />
             <Line type="monotone" dataKey="withQos" name="Con priorización" stroke={SCENARIO_COLORS.WITH_QOS} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={true} />
             <Line type="monotone" dataKey="withoutQos" name="Sin priorización" stroke={SCENARIO_COLORS.WITHOUT_QOS} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={true} />
           </LineChart>
@@ -164,12 +171,8 @@ export function CountMetricsBarChart({ withQosRun, withoutQosRun, allMetrics }: 
             <YAxis type="category" dataKey="metric" tick={TICK_STYLE} width={180} />
             <Tooltip contentStyle={TOOLTIP_STYLE} />
             <Legend {...LEGEND_STYLE} />
-            <Bar dataKey="withQos" name="Con priorización" radius={[0, 3, 3, 0]} isAnimationActive={false}>
-              <Cell fill={SCENARIO_COLORS.WITH_QOS} />
-            </Bar>
-            <Bar dataKey="withoutQos" name="Sin priorización" radius={[0, 3, 3, 0]} isAnimationActive={false}>
-              <Cell fill={SCENARIO_COLORS.WITHOUT_QOS} />
-            </Bar>
+                  <Bar dataKey="withQos" name="Con priorización" fill={SCENARIO_COLORS.WITH_QOS} radius={[0, 3, 3, 0]} isAnimationActive={false} />
+                  <Bar dataKey="withoutQos" name="Sin priorización" fill={SCENARIO_COLORS.WITHOUT_QOS} radius={[0, 3, 3, 0]} isAnimationActive={false} />
           </BarChart>
         </ResponsiveContainer>
       </Card.Body>

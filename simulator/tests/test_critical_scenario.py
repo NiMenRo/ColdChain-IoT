@@ -70,3 +70,44 @@ def test_critical_scenario_updates_and_restores_sensor_behavior():
     assert hum_sensor.min_humidity == original_humidity_min
     assert hum_sensor.max_humidity == original_humidity_max
     assert energy_sensor.current_state == EnergyState.ON
+
+
+def test_activate_anchors_duration_at_activation_time():
+    """Late scenarios (e.g. HIGH, third in a cycle) must not be born expired.
+
+    Regression: started_at was frozen at build time, so with
+    duration_seconds=2.0 the HIGH scenario expired in update() right after
+    activate() and published normal drift instead of critical values.
+    """
+    from datetime import datetime, timedelta
+
+    device = ColdRoom(
+        id="DEV-LATE",
+        code="CAVA-LATE",
+        name="Cava Late",
+        location="Lab",
+    )
+    temp_sensor = TemperatureSensor(device=device)
+    device.add_sensor(temp_sensor)
+
+    manager = CriticalScenarioManager()
+    scenario = CriticalScenario(
+        id="SCN-LATE",
+        name="Escenario tardío",
+        devices=[device],
+        temperature_range=(9.0, 12.0),
+        duration_seconds=2.0,
+    )
+    # Simulate a cycle that reaches this scenario seconds after build.
+    scenario.started_at = datetime.now() - timedelta(seconds=10)
+    scenario.finished_at = scenario.started_at + timedelta(seconds=2.0)
+
+    manager.activate(scenario)
+    manager.update()
+
+    assert scenario.active is True
+    assert scenario in manager.get_active_scenarios()
+    assert temp_sensor.min_temperature == 9.0
+    assert temp_sensor.max_temperature == 12.0
+    reading = temp_sensor.read()
+    assert 9.0 <= reading.value <= 12.0

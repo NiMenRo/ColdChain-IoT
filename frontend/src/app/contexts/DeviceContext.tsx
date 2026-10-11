@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, ReactNode } from 'react';
 import {
   Device,
   DeviceFormData,
@@ -17,11 +17,16 @@ import {
   toCreateDevicePayload,
 } from '../../services/api/devices';
 import {
+  runBulkCreate,
+  type BulkCreateSummary,
+} from '../../services/api/bulkDevices';
+import {
   apiGetDeviceHistory,
   apiGetReadingTrends,
   type HistoryReading,
   type ReadingTrendPoint,
 } from '../../services/api/history';
+import { usePolling, DEVICES_POLL_MS } from '../hooks/usePolling';
 
 export type { Device, DeviceFormData, SensorType, DeviceReadingSnapshot };
 export { DEVICE_TYPE_LABEL, SENSOR_LABEL, ALL_SENSORS };
@@ -54,11 +59,19 @@ interface DeviceContextValue {
   devices: Device[];
   devicesStatus: DeviceSectionStatus;
   readingsStatus: DeviceSectionStatus;
+  /** Refresco en segundo plano en curso (los datos visibles se conservan). */
+  isRefreshing: boolean;
+  /** Sello local de la última actualización exitosa (null = ninguna aún). */
+  lastUpdated: string | null;
+  /** Error solo del último refresco en segundo plano (no borra datos). */
+  refreshError: string | null;
   /** Sin autenticación real (login mock) la API responde 401: se documenta, no se inventa token. */
   isAuthBlocked: boolean;
   isConfigMissing: boolean;
   errorMessage: string | null;
   retry: () => void;
+  /** Actualización manual inmediata (recarga completa). */
+  refresh: () => void;
   getSensors: (deviceId: string) => SensorType[];
   getReading: (deviceId: string) => DeviceReadingSnapshot | undefined;
   getHistory: (deviceId: string) => DeviceReadingSnapshot[];
@@ -66,6 +79,19 @@ interface DeviceContextValue {
   fetchTrends: (deviceId: string) => Promise<void>;
   addDevice: (data: DeviceFormData) => Promise<{ ok: boolean; error?: string }>;
   replaceSensors: (deviceId: string, sensorTypes: SensorType[]) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Creación masiva (fase D): reutiliza POST /devices por dispositivo con
+   * concurrencia acotada. Integra los creados al estado en UNA sola
+   * actualización (sin duplicados aunque el polling intercale).
+   */
+  addManyDevices: (
+    items: DeviceFormData[],
+    opts?: {
+      concurrency?: number;
+      onProgress?: (done: number, total: number) => void;
+      isCancelled?: () => boolean;
+    },
+  ) => Promise<BulkCreateSummary>;
 }
 
 const DeviceContext = createContext<DeviceContextValue | null>(null);
@@ -84,13 +110,45 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
   const [isConfigMissing, setIsConfigMissing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [pollSeq, setPollSeq] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const busyRef = useRef(false);
+  const backgroundRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  const refresh = useCallback(() => {
+    backgroundRef.current = false;
+    setAttempt((n) => n + 1);
+  }, []);
+
+  // Polling ligero en segundo plano (10 s): lista + últimas lecturas.
+  // Sensores/detalle no se repiten (solo cambian vía addDevice/replaceSensors,
+  // que ya actualizan el estado local). Pausado con pestaña oculta.
+  usePolling(true, DEVICES_POLL_MS, useCallback(() => {
+    backgroundRef.current = true;
+    setPollSeq((n) => n + 1);
+  }, []), busyRef);
 
   useEffect(() => {
     let cancelled = false;
-    setDevicesStatus('loading');
-    setReadingsStatus('loading');
+    const background = backgroundRef.current;
+    backgroundRef.current = false;
+    if (background) {
+      setRefreshing(true);
+    } else {
+      setDevicesStatus('loading');
+      setReadingsStatus('loading');
+    }
+    busyRef.current = true;
 
     (async () => {
       let list: Device[];
@@ -98,7 +156,14 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
         const res = await apiGetDevices({ page: 1, per_page: 100 });
         list = res.results;
       } catch (err) {
-        if (cancelled) return;
+        if (cancelled || !mountedRef.current) return;
+        busyRef.current = false;
+        if (background) {
+          // Se conservan los últimos datos; aviso discreto sin borrar nada.
+          setRefreshError(err instanceof Error ? err.message : 'No se pudo actualizar.');
+          setRefreshing(false);
+          return;
+        }
         const apiErr = err instanceof ApiError ? err : null;
         setDevices([]);
         setSensorsByDevice({});
@@ -128,7 +193,8 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
           return { device: d, sensors: detail.sensors, readings: history.results.map((r) => toSnapshot(d.id, r)) };
         }),
       );
-      if (cancelled) return;
+      if (cancelled || !mountedRef.current) return;
+      busyRef.current = false;
       const sensors: Record<string, SensorType[]> = {};
       const history: Record<string, DeviceReadingSnapshot[]> = {};
       let anyOk = false;
@@ -145,20 +211,28 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
       setSensorsByDevice(sensors);
       setHistoryByDevice(history);
       if (!anyOk && list.length > 0) {
-        setReadingsStatus('error');
-        setIsAuthBlocked(sawAuth);
-        setErrorMessage(sawAuth
-          ? 'La API requiere autenticación Bearer. Inicie sesión nuevamente si su sesión expiró.'
-          : 'No se pudieron cargar las lecturas de los dispositivos.');
+        if (background) {
+          setRefreshError('No se pudieron actualizar las lecturas.');
+        } else {
+          setReadingsStatus('error');
+          setIsAuthBlocked(sawAuth);
+          setErrorMessage(sawAuth
+            ? 'La API requiere autenticación Bearer. Inicie sesión nuevamente si su sesión expiró.'
+            : 'No se pudieron cargar las lecturas de los dispositivos.');
+        }
       } else {
         setReadingsStatus('success');
+        setRefreshError(null);
+        setLastUpdated(new Date().toLocaleTimeString('es-CO', { hour12: false }));
       }
+      if (background) setRefreshing(false);
     })();
 
     return () => {
       cancelled = true;
+      busyRef.current = false;
     };
-  }, [attempt]);
+  }, [attempt, pollSeq]);
 
   function getSensors(deviceId: string): SensorType[] {
     return sensorsByDevice[deviceId] ?? [];
@@ -189,10 +263,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     if (data.sensors.length === 0) {
       return { ok: false, error: 'El dispositivo debe tener al menos un sensor configurado.' };
     }
-    const code = data.code.trim().toUpperCase();
-    if (devices.some((d) => d.code.toUpperCase() === code)) {
-      return { ok: false, error: 'Ya existe un dispositivo con ese código.' };
-    }
+    // El código lo genera siempre el backend (CAVA-*/VITRINA-*): sin chequeo local.
     try {
       const created = await apiCreateDevice(toCreateDevicePayload(data));
       setDevices((prev) => [...prev, created.device]);
@@ -201,6 +272,35 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       return { ok: false, error: toErrorMessage(err, 'No se pudo crear el dispositivo.') };
     }
+  }
+
+  async function addManyDevices(
+    items: DeviceFormData[],
+    opts?: {
+      concurrency?: number;
+      onProgress?: (done: number, total: number) => void;
+      isCancelled?: () => boolean;
+    },
+  ): Promise<BulkCreateSummary> {
+    if (items.length === 0) {
+      return { requested: 0, created: 0, failed: [], cancelled: false };
+    }
+    const { summary, details } = await runBulkCreate(items, opts);
+    if (details.length > 0 && mountedRef.current) {
+      // Inserción única y sin duplicados (el polling de 10 s puede haber
+      // traído parte del lote entre tanto: se filtra por id).
+      setDevices((prev) => {
+        const known = new Set(prev.map((d) => d.id));
+        const fresh = details.map((c) => c.device).filter((d) => !known.has(d.id));
+        return fresh.length > 0 ? [...prev, ...fresh] : prev;
+      });
+      setSensorsByDevice((prev) => {
+        const next = { ...prev };
+        for (const c of details) next[c.device.id] = c.sensors;
+        return next;
+      });
+    }
+    return summary;
   }
 
   /** Equivale a PUT /devices/{id}/sensors: reemplaza el conjunto completo (solo admin). */
@@ -223,16 +323,21 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
         devices,
         devicesStatus,
         readingsStatus,
+        isRefreshing: refreshing,
+        lastUpdated,
+        refreshError,
         isAuthBlocked,
         isConfigMissing,
         errorMessage,
         retry,
+        refresh,
         getSensors,
         getReading,
         getHistory,
         getTrends,
         fetchTrends,
         addDevice,
+        addManyDevices,
         replaceSensors,
       }}
     >

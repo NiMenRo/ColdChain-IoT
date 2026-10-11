@@ -29,7 +29,9 @@ class _StrictModel(BaseModel):
 
 
 class CreateDeviceRequest(_StrictModel):
-    code: str = Field(..., min_length=1)
+    # Accepted for backward compatibility but IGNORED: the backend always
+    # generates the code (CAVA-*/VITRINA-*). Never user-supplied.
+    code: Optional[str] = None
     name: str = Field(..., min_length=1)
     location: str = Field(..., min_length=1)
     device_type: str = Field(..., min_length=1)

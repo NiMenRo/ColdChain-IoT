@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Thermometer, Droplets, Zap, ChevronDown, ChevronUp,
   Snowflake, AlertTriangle, WrenchIcon, PowerOff,
-  Plus, Edit2, X, Save, Settings,
+  Plus, X, Save, Settings, RefreshCw, Layers,
 } from 'lucide-react';
 import { Button, Form, Row, Col } from '../../lib/bootstrap';
 import {
@@ -11,6 +11,13 @@ import {
 } from '../../contexts/DeviceContext';
 import { useAuth } from '../../hooks/useAuth';
 import { hasActionPermission } from '../../config/rbac';
+import {
+  BULK_CONCURRENCY,
+  MAX_BULK_DEVICES,
+  buildBulkPlan,
+  type BulkCreateSummary,
+  type BulkDeviceKind,
+} from '../../../services/api/bulkDevices';
 
 // ─── Status config ────────────────────────────────────────────────────────────
 const STATUS_CONFIG: Record<DeviceStatus, { label: string; bg: string; color: string; border: string; Icon: React.ElementType }> = {
@@ -53,53 +60,45 @@ function Modal({ show, onHide, title, children }: {
 }
 
 // ─── Sensor Config Form ────────────────────────────────────────────────────────
-function SensorConfigForm({ device, currentSensors, onSave, onCancel }: {
+// Configuración fija: todo dispositivo opera siempre con los 3 tipos de
+// sensores (temperatura, humedad, energía). Guardar reaplica el conjunto
+// completo vía PUT /devices/{id}/sensors. Sin checklist por decisión de UX.
+const SENSOR_ICONS: Record<SensorType, React.ElementType> = {
+  temperature: Thermometer,
+  humidity:    Droplets,
+  energy:      Zap,
+};
+
+function SensorConfigForm({ device, onSave, onCancel }: {
   device: Device;
-  currentSensors: SensorType[];
   onSave: (sensors: SensorType[]) => void;
   onCancel: () => void;
 }) {
-  const [enabled, setEnabled] = useState<SensorType[]>(currentSensors);
-  const [error, setError] = useState('');
-
-  function toggleSensor(s: SensorType) {
-    setEnabled(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]);
-  }
-
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (enabled.length === 0) {
-      setError('El dispositivo debe tener al menos un sensor configurado.');
-      return;
-    }
-    onSave(enabled);
+    onSave([...ALL_SENSORS]);
   }
 
   return (
     <form onSubmit={submit} noValidate>
       <p className="text-muted small mb-3">
-        Configura el conjunto completo de sensores para <strong>{device.name}</strong>.
-        Esta operación reemplaza la configuración actual (PUT /devices/{'{id}'}/sensors).
+        <strong>{device.name}</strong> opera siempre con los 3 tipos de sensores.
+        Guardar reaplica la configuración completa del dispositivo.
       </p>
       <div className="small fw-semibold text-muted mb-1">Sensores</div>
       <div className="rounded-3 p-3 mb-3" style={{ background: '#F5F8FA', border: '1px solid #E4ECF1' }}>
         <div className="d-flex flex-wrap gap-3">
           {ALL_SENSORS.map(s => {
-            const checked = enabled.includes(s);
+            const Icon = SENSOR_ICONS[s];
             return (
-              <label key={s} className="d-flex align-items-center gap-2 small"
-                style={{ cursor: 'pointer', userSelect: 'none' }}>
-                <input type="checkbox" className="form-check-input m-0" checked={checked}
-                  onChange={() => toggleSensor(s)}
-                  style={{ width: 16, height: 16, accentColor: '#123B5D', cursor: 'pointer' }} />
-                <span style={{ color: checked ? '#123B5D' : '#52616B', fontWeight: checked ? 600 : 400 }}>
-                  {SENSOR_LABEL[s]}
-                </span>
-              </label>
+              <span key={s} className="d-flex align-items-center gap-2 small"
+                style={{ color: '#123B5D', fontWeight: 600 }}>
+                <Icon size={15} style={{ color: '#1F6F8B' }} />
+                {SENSOR_LABEL[s]}
+              </span>
             );
           })}
         </div>
-        {error && <div className="small mt-2" style={{ color: '#C83B3B' }}>{error}</div>}
       </div>
       <div className="d-flex gap-2 justify-content-end">
         <Button type="button" variant="outline-secondary" size="sm" onClick={onCancel}>Cancelar</Button>
@@ -118,42 +117,25 @@ function DeviceForm({ initial, onSave, onCancel }: {
   onCancel: () => void;
 }) {
   const [form, setForm] = useState<DeviceFormData>(initial);
-  const [errors, setErrors] = useState<{ code?: string; name?: string; location?: string; sensors?: string }>({});
-
-  function toggleSensor(s: SensorType) {
-    setForm(prev => ({
-      ...prev,
-      sensors: prev.sensors.includes(s)
-        ? prev.sensors.filter(x => x !== s)
-        : [...prev.sensors, s],
-    }));
-  }
+  const [errors, setErrors] = useState<{ name?: string; location?: string }>({});
 
   function validate() {
     const e: typeof errors = {};
-    if (!form.code.trim())           e.code    = 'El código es requerido.';
     if (!form.name.trim())           e.name    = 'El nombre es requerido.';
     if (!form.location.trim())       e.location = 'La ubicación es requerida.';
-    if (form.sensors.length === 0)   e.sensors = 'Selecciona al menos un sensor.';
     setErrors(e);
     return Object.keys(e).length === 0;
   }
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (validate()) onSave(form);
+    // Sensores siempre fijos: todo dispositivo nace con los 3 tipos.
+    if (validate()) onSave({ ...form, sensors: [...ALL_SENSORS] });
   }
 
   return (
     <form onSubmit={submit} noValidate>
       <Row className="g-3 mb-3">
-        <Col xs={12}>
-          <Form.Label className="small fw-semibold text-muted">Código</Form.Label>
-          <Form.Control size="sm" value={form.code} placeholder="Ej. CAVA-NTE"
-            onChange={e => setForm(p => ({ ...p, code: e.target.value }))}
-            isInvalid={!!errors.code} />
-          {errors.code && <div className="invalid-feedback d-block" style={{ fontSize: 12 }}>{errors.code}</div>}
-        </Col>
         <Col xs={12}>
           <Form.Label className="small fw-semibold text-muted">Nombre del dispositivo</Form.Label>
           <Form.Control size="sm" value={form.name} placeholder="Ej. Cava Norte"
@@ -165,8 +147,8 @@ function DeviceForm({ initial, onSave, onCancel }: {
           <Form.Label className="small fw-semibold text-muted">Tipo</Form.Label>
           <Form.Select size="sm" value={form.device_type}
             onChange={e => setForm(p => ({ ...p, device_type: e.target.value as DeviceType }))}>
-            <option value="cold_room">Cava (cold_room)</option>
-            <option value="refrigerated_showcase">Vitrina (refrigerated_showcase)</option>
+            <option value="cold_room">Cava</option>
+            <option value="refrigerated_showcase">Vitrina</option>
           </Form.Select>
         </Col>
         <Col xs={12} sm={6}>
@@ -187,28 +169,21 @@ function DeviceForm({ initial, onSave, onCancel }: {
         </Col>
       </Row>
 
-      {/* Sensor selection */}
-      <div className="small fw-semibold text-muted mb-1">Sensores</div>
+      {/* Sensores fijos: todo dispositivo incluye los 3 tipos */}
+      <div className="small fw-semibold text-muted mb-1">Sensores incluidos</div>
       <div className="rounded-3 p-3 mb-1" style={{ background: '#F5F8FA', border: '1px solid #E4ECF1' }}>
         <div className="d-flex flex-wrap gap-3">
           {ALL_SENSORS.map(s => {
-            const checked = form.sensors.includes(s);
+            const Icon = SENSOR_ICONS[s];
             return (
-              <label key={s} className="d-flex align-items-center gap-2 small"
-                style={{ cursor: 'pointer', userSelect: 'none' }}>
-                <input type="checkbox" className="form-check-input m-0" checked={checked}
-                  onChange={() => toggleSensor(s)}
-                  style={{ width: 16, height: 16, accentColor: '#123B5D', cursor: 'pointer' }} />
-                <span style={{ color: checked ? '#123B5D' : '#52616B', fontWeight: checked ? 600 : 400 }}>
-                  {SENSOR_LABEL[s]}
-                </span>
-              </label>
+              <span key={s} className="d-flex align-items-center gap-2 small"
+                style={{ color: '#123B5D', fontWeight: 600 }}>
+                <Icon size={15} style={{ color: '#1F6F8B' }} />
+                {SENSOR_LABEL[s]}
+              </span>
             );
           })}
         </div>
-        {errors.sensors && (
-          <div className="small mt-2" style={{ color: '#C83B3B' }}>{errors.sensors}</div>
-        )}
       </div>
       <p className="text-muted mb-4" style={{ fontSize: 11 }}>
         Los sensores representan los tipos de lectura que el dispositivo reporta al sistema.
@@ -221,6 +196,252 @@ function DeviceForm({ initial, onSave, onCancel }: {
         </Button>
       </div>
     </form>
+  );
+}
+
+// ─── Bulk creation modal (fase D: entorno de simulación) ───────────────────────
+// Funcionalidad EXTRA: no reemplaza la creación individual. Reutiliza
+// POST /devices por dispositivo (mismos permisos/valicaciones/códigos).
+// Crear equipos NO genera telemetría: las lecturas siguen dependiendo del
+// simulador. Límite: MAX_BULK_DEVICES por operación.
+type BulkPhase = 'form' | 'confirm' | 'running' | 'done';
+
+function BulkCreateModal({ show, onHide }: { show: boolean; onHide: () => void }) {
+  const { addManyDevices, refresh } = useDevices();
+  const [kind, setKind] = useState<BulkDeviceKind>('mixed');
+  const [count, setCount] = useState('10');
+  const [namePrefix, setNamePrefix] = useState('Sim');
+  const [baseLocation, setBaseLocation] = useState('');
+  const [status, setStatus] = useState<DeviceStatus>('active');
+  const [phase, setPhase] = useState<BulkPhase>('form');
+  const [formError, setFormError] = useState<string | null>(null);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [summary, setSummary] = useState<BulkCreateSummary | null>(null);
+  const cancelRef = useRef(false);
+  const runningRef = useRef(false);
+
+  function reset() {
+    setPhase('form');
+    setFormError(null);
+    setProgress({ done: 0, total: 0 });
+    setSummary(null);
+    cancelRef.current = false;
+    runningRef.current = false;
+  }
+
+  function close() {
+    // Cierre bloqueado durante la ejecución: evita estados colgados.
+    if (runningRef.current) return;
+    if (phase === 'done') refresh();
+    reset();
+    onHide();
+  }
+
+  function preview(): { cavas: number; vitrinas: number; first: string; last: string } | null {
+    try {
+      const items = buildBulkPlan({
+        kind, count: Number(count), namePrefix, baseLocation, status,
+      });
+      const cavas = items.filter((i) => i.device_type === 'cold_room').length;
+      return {
+        cavas,
+        vitrinas: items.length - cavas,
+        first: items[0]?.name ?? '',
+        last: items[items.length - 1]?.name ?? '',
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function goConfirm(e: React.FormEvent) {
+    e.preventDefault();
+    try {
+      buildBulkPlan({ kind, count: Number(count), namePrefix, baseLocation, status });
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Revise los datos del lote.');
+      return;
+    }
+    setFormError(null);
+    setPhase('confirm');
+  }
+
+  async function start() {
+    let items;
+    try {
+      items = buildBulkPlan({ kind, count: Number(count), namePrefix, baseLocation, status });
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Revise los datos del lote.');
+      setPhase('form');
+      return;
+    }
+    setPhase('running');
+    runningRef.current = true;
+    cancelRef.current = false;
+    setProgress({ done: 0, total: items.length });
+    try {
+      const result = await addManyDevices(items, {
+        concurrency: BULK_CONCURRENCY,
+        onProgress: (done, total) => setProgress({ done, total }),
+        isCancelled: () => cancelRef.current,
+      });
+      setSummary(result);
+    } finally {
+      runningRef.current = false;
+      setPhase('done');
+    }
+  }
+
+  if (!show) return null;
+  const info = preview();
+  const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
+
+  return (
+    <Modal show={show} onHide={close} title="Creación masiva de dispositivos">
+      {phase === 'form' && (
+        <form onSubmit={goConfirm} noValidate>
+          <p className="text-muted small mb-3">
+            Crea N cavas/vitrinas de una vez para preparar escenarios de simulación.
+            Usa el mismo flujo individual (mismos permisos y códigos auto-generados).
+            <strong> No genera telemetría.</strong>
+          </p>
+          {formError && (
+            <div className="rounded-3 px-3 py-2 mb-3 small" style={{ background: '#FCEEEE', border: '1px solid #f1aeb5', color: '#B22F2F' }}>
+              {formError}
+            </div>
+          )}
+          <Row className="g-3 mb-3">
+            <Col xs={12} sm={6}>
+              <Form.Label className="small fw-semibold text-muted">Tipo</Form.Label>
+              <Form.Select size="sm" value={kind}
+                onChange={e => setKind(e.target.value as BulkDeviceKind)}>
+                <option value="cold_room">Solo cavas</option>
+                <option value="refrigerated_showcase">Solo vitrinas</option>
+                <option value="mixed">Mixto (alterna cava/vitrina)</option>
+              </Form.Select>
+            </Col>
+            <Col xs={12} sm={6}>
+              <Form.Label className="small fw-semibold text-muted">Cantidad (máx. {MAX_BULK_DEVICES})</Form.Label>
+              <Form.Control size="sm" type="number" min={1} max={MAX_BULK_DEVICES} value={count}
+                onChange={e => setCount(e.target.value)} />
+            </Col>
+            <Col xs={12} sm={6}>
+              <Form.Label className="small fw-semibold text-muted">Prefijo de nombres</Form.Label>
+              <Form.Control size="sm" value={namePrefix} placeholder="Ej. Sim"
+                onChange={e => setNamePrefix(e.target.value)} />
+            </Col>
+            <Col xs={12} sm={6}>
+              <Form.Label className="small fw-semibold text-muted">Ubicación base</Form.Label>
+              <Form.Control size="sm" value={baseLocation} placeholder="Ej. Zona B"
+                onChange={e => setBaseLocation(e.target.value)} />
+            </Col>
+            <Col xs={12} sm={6}>
+              <Form.Label className="small fw-semibold text-muted">Estado inicial</Form.Label>
+              <Form.Select size="sm" value={status}
+                onChange={e => setStatus(e.target.value as DeviceStatus)}>
+                {(Object.keys(STATUS_CONFIG) as DeviceStatus[]).map(s => (
+                  <option key={s} value={s}>{STATUS_CONFIG[s].label}</option>
+                ))}
+              </Form.Select>
+            </Col>
+            <Col xs={12} sm={6}>
+              <Form.Label className="small fw-semibold text-muted">Sensores</Form.Label>
+              <div className="small text-muted pt-1">Los 3 tipos, como en creación individual.</div>
+            </Col>
+          </Row>
+          {info && (
+            <div className="rounded-3 px-3 py-2 mb-3 small"
+              style={{ background: '#F5F8FA', border: '1px solid #E4ECF1', color: '#123B5D' }}>
+              Se preparan <strong>{info.cavas + info.vitrinas}</strong> equipos
+              ({info.cavas} cavas + {info.vitrinas} vitrinas), de «{info.first}» a «{info.last}».
+              Los códigos (CAVA-*/VITRINA-*) los asigna el backend sin colisiones.
+            </div>
+          )}
+          <div className="d-flex gap-2 justify-content-end">
+            <Button type="button" variant="outline-secondary" size="sm" onClick={close}>Cancelar</Button>
+            <Button type="submit" variant="primary" size="sm" className="d-flex align-items-center gap-1">
+              <Layers size={13} />Continuar
+            </Button>
+          </div>
+        </form>
+      )}
+
+      {phase === 'confirm' && info && (
+        <>
+          <p className="small mb-3">
+            Se crearán <strong>{info.cavas + info.vitrinas} dispositivos</strong>{' '}
+            ({info.cavas} cavas + {info.vitrinas} vitrinas) en «{baseLocation.trim()}» con
+            estado «{STATUS_CONFIG[status].label}». Esta acción no se puede deshacer en lote
+            (cada equipo queda registrado individualmente).
+          </p>
+          <div className="d-flex gap-2 justify-content-end">
+            <Button type="button" variant="outline-secondary" size="sm" onClick={() => setPhase('form')}>Volver</Button>
+            <Button type="button" variant="primary" size="sm" onClick={() => { void start(); }}>
+              Crear {info.cavas + info.vitrinas} dispositivos
+            </Button>
+          </div>
+        </>
+      )}
+
+      {phase === 'running' && (
+        <>
+          <p className="small text-muted mb-2">
+            Creando {progress.done} de {progress.total}… (concurrencia {BULK_CONCURRENCY}).
+            Puede cancelar: lo ya enviado en vuelo termina, lo pendiente no se emite.
+          </p>
+          <div className="rounded-2 mb-3" style={{ height: 10, background: '#EFF4F7', overflow: 'hidden' }}>
+            <div style={{ width: `${pct}%`, height: '100%', background: '#1F6F8B', transition: 'width 0.2s' }} />
+          </div>
+          <div className="d-flex gap-2 justify-content-end">
+            <Button type="button" variant="outline-secondary" size="sm"
+              onClick={() => { cancelRef.current = true; }}>
+              Cancelar lote
+            </Button>
+          </div>
+        </>
+      )}
+
+      {phase === 'done' && summary && (
+        <>
+          <div className="d-flex flex-wrap gap-2 mb-3">
+            {[
+              { label: 'Solicitadas', value: summary.requested, color: '#123B5D', bg: '#EFF4F7' },
+              { label: 'Creadas', value: summary.created, color: '#16835B', bg: '#EAF6EF' },
+              { label: 'Fallidas', value: summary.failed.length, color: '#B22F2F', bg: '#FCEEEE' },
+              ...(summary.cancelled
+                ? [{ label: 'Canceladas', value: summary.requested - summary.created - summary.failed.length, color: '#965D00', bg: '#FFF5E3' }]
+                : []),
+            ].map(s => (
+              <div key={s.label} className="d-flex align-items-center gap-2 rounded-3 px-3 py-2"
+                style={{ background: s.bg }}>
+                <span style={{ fontSize: 20, fontWeight: 700, color: s.color }}>{s.value}</span>
+                <span style={{ fontSize: 12, color: s.color }}>{s.label}</span>
+              </div>
+            ))}
+          </div>
+          {summary.failed.length > 0 && (
+            <div className="rounded-3 p-3 mb-3" style={{ background: '#FCEEEE', border: '1px solid #f1aeb5', maxHeight: 220, overflowY: 'auto' }}>
+              <div className="small fw-semibold mb-2" style={{ color: '#B22F2F' }}>
+                Errores por dispositivo ({summary.failed.length})
+              </div>
+              {summary.failed.map(f => (
+                <div key={f.index} className="small mb-1" style={{ color: '#7A2424' }}>
+                  <strong>{f.name}:</strong> {f.error}
+                </div>
+              ))}
+            </div>
+          )}
+          {summary.failed.length === 0 && !summary.cancelled && (
+            <p className="small mb-3" style={{ color: '#16835B' }}>
+              Lote completado sin errores. Los equipos ya aparecen en la lista.
+            </p>
+          )}
+          <div className="d-flex gap-2 justify-content-end">
+            <Button type="button" variant="primary" size="sm" onClick={close}>Cerrar</Button>
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }
 
@@ -447,7 +668,8 @@ type FilterType   = 'all' | DeviceType;
 export function DevicesView() {
   const {
     devices, devicesStatus,
-    isAuthBlocked, isConfigMissing, errorMessage, retry,
+    isRefreshing, lastUpdated, refreshError,
+    isAuthBlocked, isConfigMissing, errorMessage, retry, refresh,
     addDevice, replaceSensors, getSensors, getReading,
   } = useDevices();
   const { role } = useAuth();
@@ -458,6 +680,7 @@ export function DevicesView() {
 
   const [createModal, setCreateModal] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [bulkModal, setBulkModal] = useState(false);
   const [sensorConfigDevice, setSensorConfigDevice] = useState<Device | null>(null);
   const [sensorError, setSensorError] = useState<string | null>(null);
 
@@ -497,32 +720,51 @@ export function DevicesView() {
   }
 
   const createModalInitial: DeviceFormData = {
-    code: '', name: '', location: '', device_type: 'cold_room', status: 'active',
+    name: '', location: '', device_type: 'cold_room', status: 'active',
     sensors: ['temperature', 'humidity', 'energy'],
   };
 
   return (
     <div>
-      <div className="d-flex justify-content-between align-items-start mb-1 flex-wrap gap-2">
+      <div className="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-2">
         <div>
           <h1 className="mb-1" style={{ fontSize: 22, fontWeight: 700 }}>Dispositivos</h1>
           <p className="text-muted small mb-0">Monitoreo de cavas y vitrinas en tiempo real.</p>
         </div>
-        {canManage && (
-          <Button variant="primary" size="sm" className="d-flex align-items-center gap-2" onClick={openCreate}>
-            <Plus size={15} />Nuevo dispositivo
-          </Button>
-        )}
+        <div className="d-flex align-items-center gap-2 flex-wrap">
+          {devicesStatus !== 'loading' && lastUpdated && (
+            <span className="small text-muted">
+              Actualizado {lastUpdated}{isRefreshing ? '…' : ''}
+            </span>
+          )}
+          <button
+            onClick={refresh}
+            disabled={devicesStatus === 'loading' || isRefreshing}
+            title="Actualizar ahora"
+            className="d-flex align-items-center gap-1 border rounded-2 bg-transparent px-2 py-1"
+            style={{ color: '#123B5D', borderColor: '#D9E2E8', cursor: 'pointer', fontSize: 12 }}
+          >
+            <RefreshCw size={13} /> Actualizar
+          </button>
+          {canManage && (
+            <>
+              <Button variant="outline-secondary" className="d-flex align-items-center gap-2" onClick={() => setBulkModal(true)}>
+                <Layers size={15} />Creación masiva
+              </Button>
+              <Button variant="primary" className="d-flex align-items-center gap-2" onClick={openCreate}>
+                <Plus size={15} />Nuevo dispositivo
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
-      {canManage && (
-        <div className="d-flex align-items-center gap-2 mt-2 mb-4 rounded-3 px-3 py-2"
-          style={{ background: '#EAF1F5', border: '1px solid #c5d9e6', fontSize: 12, color: '#1F6F8B' }}>
-          <Edit2 size={12} style={{ flexShrink: 0 }} />
-          Modo gestión activo — puedes crear dispositivos y configurar sensores (solo admin).
+      {refreshError && devicesStatus !== 'loading' && devicesStatus !== 'error' && (
+        <div className="rounded-3 px-4 py-2 small text-muted mb-4"
+          style={{ background: '#EFF4F7', border: '1px solid #D9E2E8' }}>
+          No se pudo actualizar: {refreshError}
         </div>
       )}
-      {!canManage && <div className="mb-4" />}
 
       {/* Estado global de la fuente API (sin mocks como fallback) */}
       {devicesStatus === 'error' && (
@@ -643,6 +885,9 @@ export function DevicesView() {
         <DeviceForm initial={createModalInitial} onSave={handleSaveNew} onCancel={closeCreate} />
       </Modal>
 
+      {/* Bulk creation modal (fase D, solo admin; extra, no reemplaza el individual) */}
+      <BulkCreateModal show={bulkModal} onHide={() => setBulkModal(false)} />
+
       {/* Sensor config modal (PUT /devices/{id}/sensors, solo admin) */}
       <Modal show={!!sensorConfigDevice} onHide={() => setSensorConfigDevice(null)}
         title={sensorConfigDevice ? `Configurar sensores — ${sensorConfigDevice.name}` : ''}>
@@ -653,10 +898,9 @@ export function DevicesView() {
                 {sensorError}
               </div>
             )}
-            <SensorConfigForm
-              device={sensorConfigDevice}
-              currentSensors={getSensors(sensorConfigDevice.id)}
-              onSave={(sensors) => handleSaveSensors(sensorConfigDevice.id, sensors)}
+              <SensorConfigForm
+                device={sensorConfigDevice}
+                onSave={(sensors) => handleSaveSensors(sensorConfigDevice.id, sensors)}
               onCancel={() => setSensorConfigDevice(null)}
             />
           </>

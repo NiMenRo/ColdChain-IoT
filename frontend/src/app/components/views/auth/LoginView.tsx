@@ -436,7 +436,7 @@ export function LoginView() {
                     Contraseña para todos los roles:{' '}
                     <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#123B5D' }}>demo1234</span>
                     <span style={{ display: 'block', marginTop: 4 }}>
-                      Las cuentas deben existir en la API (autenticación real contra el backend).
+                      Las cuentas deben existir en el sistema.
                     </span>
                   </div>
                 </div>

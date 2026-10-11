@@ -120,15 +120,16 @@ def test_create_duplicate_sensors_400():
         assert db.query(DeviceORM).count() == 0
 
 
-def test_create_duplicate_code_409_no_orphans():
+def test_create_ignores_client_code_and_generates_unique_codes():
     h = _Harness()
-    assert h.post_device(code="DUP-001").status_code == 201
-    r = h.post_device(code="DUP-001", sensors=["temperature"])
-    assert r.status_code == 409, r.text
+    first = h.post_device(code="DUP-001", device_type="cold_room")
+    assert first.status_code == 201, first.text
+    second = h.post_device(code="DUP-001", sensors=["temperature"], device_type="cold_room")
+    assert second.status_code == 201, second.text
+    # Client-supplied codes are ignored: both got distinct generated codes.
+    assert first.json()["device"]["code"] != second.json()["device"]["code"]
     with h.Session() as db:
-        assert db.query(DeviceORM).count() == 1
-        # the failed request left no device and no sensors behind
-        assert db.query(DeviceSensorORM).count() == 3
+        assert db.query(DeviceORM).count() == 2
 
 
 def test_list_pagination_filters_search():

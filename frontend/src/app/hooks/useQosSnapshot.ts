@@ -1,14 +1,16 @@
 // Hook de snapshot QoS disponible (TSK-050).
 //
-// Fuentes reales: GET /qos/metrics (resumen de sesión) y las filas más
-// recientes de GET /history/qos (persistido). Solo disponibilidad actual;
-// el análisis histórico y la comparación con/sin priorización pertenecen
-// a TSK-052 y quedan fuera.
+// Fuentes reales: GET /qos/metrics (resumen de sesión, siempre global y
+// volátil) y las filas más recientes de GET /history/qos (persistido,
+// opcionalmente acotado a una ejecución vía runId).
+// Solo disponibilidad actual; el análisis histórico y la comparación
+// con/sin priorización pertenecen a TSK-052 y quedan fuera.
 
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError } from '../../services/api/client';
 import { apiGetQosMetrics } from '../../services/api/qos';
 import { apiGetQosRecords, type QosRecord } from '../../services/api/history';
+import { formatMs, formatThroughput } from '../lib/qosUnits';
 
 export type SectionStatus = 'loading' | 'success' | 'empty' | 'error';
 
@@ -31,7 +33,7 @@ export interface QosSnapshotState {
   recentStatus: SectionStatus;
 }
 
-export function useQosSnapshot(): QosSnapshotState {
+export function useQosSnapshot(runId?: string | null): QosSnapshotState {
   const [attempt, setAttempt] = useState(0);
   const [loading, setLoading] = useState(true);
   const [authBlocked, setAuthBlocked] = useState(false);
@@ -49,7 +51,10 @@ export function useQosSnapshot(): QosSnapshotState {
     let cancelled = false;
     setLoading(true);
 
-    Promise.allSettled([apiGetQosMetrics(), apiGetQosRecords({ per_page: 5 })]).then(([mRes, rRes]) => {
+    Promise.allSettled([
+      apiGetQosMetrics(),
+      apiGetQosRecords({ per_page: 5, ...(runId ? { run_id: runId } : {}) }),
+    ]).then(([mRes, rRes]) => {
       if (cancelled) return;
       let auth = false;
       let config = false;
@@ -93,16 +98,16 @@ export function useQosSnapshot(): QosSnapshotState {
     return () => {
       cancelled = true;
     };
-  }, [attempt]);
+  }, [attempt, runId]);
 
   const hasData = summary !== null && count > 0;
   const cells: QosCell[] = summary && count > 0
     ? [
-        { label: 'Latencia media', value: `${summary.latency.toFixed(0)} ms`, sub: 'Sesión actual' },
-        { label: 'Jitter', value: `${summary.jitter.toFixed(1)} ms`, sub: 'Sesión actual' },
+        { label: 'Latencia media', value: formatMs(summary.latency), sub: 'Sesión actual' },
+        { label: 'Jitter', value: formatMs(summary.jitter), sub: 'Sesión actual' },
         { label: 'Pérdida de paquetes', value: `${summary.packet_loss.toFixed(1)} %`, sub: 'Sesión actual' },
         { label: 'PDR', value: `${summary.pdr.toFixed(1)} %`, sub: 'Tasa de entrega' },
-        { label: 'Throughput', value: `${summary.throughput.toFixed(1)}`, sub: 'Promedio sesión' },
+        { label: 'Throughput', value: formatThroughput(summary.throughput), sub: 'Promedio sesión' },
       ]
     : [];
 

@@ -10,10 +10,12 @@ from app.database.infrastructure.models import DeviceORM, SensorReadingORM, Traf
 
 
 class ReadingHistoryRepository:
-    def list(self, db: Session, *, device_code: str | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, sort: str = "timestamp.desc", page: int = 1, per_page: int = 20):
+    def list(self, db: Session, *, device_code: str | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, run_id: UUID | None = None, sort: str = "timestamp.desc", page: int = 1, per_page: int = 20):
         q = db.query(SensorReadingORM).join(DeviceORM, SensorReadingORM.device_id == DeviceORM.id)
         if device_code:
             q = q.filter(DeviceORM.code == device_code)
+        if run_id is not None:
+            q = q.filter(SensorReadingORM.run_id == run_id)
         if from_ts:
             q = q.filter(SensorReadingORM.timestamp >= from_ts)
         if to_ts:
@@ -42,7 +44,7 @@ class ReadingHistoryRepository:
         device = db.query(DeviceORM).filter_by(id=sr.device_id).first()
         return {"device": device, "sensor_reading": sr, "traffic_classification": tc, "qos_metrics": qos, "alerts": alerts, "predictions": preds}
 
-    def trends(self, db: Session, *, device_code: str | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, interval: str = "hour"):
+    def trends(self, db: Session, *, device_code: str | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, run_id: UUID | None = None, interval: str = "hour"):
         # interval: minute, hour, day
         if db.bind and db.bind.dialect.name == "sqlite":
             fmt = {"minute": "%Y-%m-%d %H:%M:00", "hour": "%Y-%m-%d %H:00:00", "day": "%Y-%m-%d 00:00:00"}.get(interval, "%Y-%m-%d %H:00:00")
@@ -60,6 +62,8 @@ class ReadingHistoryRepository:
         ).join(DeviceORM, SensorReadingORM.device_id == DeviceORM.id)
         if device_code:
             q = q.filter(DeviceORM.code == device_code)
+        if run_id is not None:
+            q = q.filter(SensorReadingORM.run_id == run_id)
         if from_ts:
             q = q.filter(SensorReadingORM.timestamp >= from_ts)
         if to_ts:

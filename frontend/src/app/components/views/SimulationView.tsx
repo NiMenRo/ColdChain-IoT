@@ -1,11 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
-import { Play, Square, RotateCcw, ExternalLink, AlertTriangle, Cpu, Thermometer, Activity, Clock, Filter, Layers, Zap, Send, BarChart3, ArrowRight } from 'lucide-react';
+import { Play, Square, RotateCcw, ExternalLink, AlertTriangle, Cpu, Thermometer, Activity, Clock, Filter, Layers, Zap, Send, BarChart3, ArrowRight, LoaderCircle } from 'lucide-react';
 import { Button, Card, Row, Col } from '../../lib/bootstrap';
 import { useDevices, Device, DeviceType, DeviceStatus, DEVICE_TYPE_LABEL } from '../../contexts/DeviceContext';
 import { useExperiments } from '../../contexts/ExperimentContext';
+import { sumMetric } from '../../lib/experimentAggregations';
+import type { ExperimentMetricType } from '../../types/experiments';
 
-interface KpiCardProps { label: string; value: string | number; unit?: string; accent?: string; sub?: string; Icon?: any; }
+interface KpiCardProps { label: string; value: React.ReactNode; unit?: string; accent?: string; sub?: string; Icon?: any; }
 function KpiCard({ label, value, unit, accent = '#123B5D', sub, Icon }: KpiCardProps) {
   return (
     <div className="cc-card p-3" style={{ borderTop: `3px solid ${accent}`, minWidth: 140 }}>
@@ -68,9 +70,12 @@ function FlowDiagram({ conPriorizacion }: { conPriorizacion: boolean }) {
 
 export function SimulationView() {
   const navigate = useNavigate();
-  const { devices } = useDevices();
+  const { devices, getSensors } = useDevices();
   const { startRun, finishRun, metrics, activeRun, status: expStatus, retry: expRetry } = useExperiments();
   const [runId, setRunId] = useState<string | null>(null);
+  const [startedAt, setStartedAt] = useState<string | null>(null);
+  const [frozenMs, setFrozenMs] = useState<number | null>(null);
+  const [nowMs, setNowMs] = useState<number>(Date.now());
 
   const totalCavas    = devices.filter(d => d.device_type === 'cold_room').length;
   const totalVitrinas = devices.filter(d => d.device_type === 'refrigerated_showcase').length;
@@ -83,9 +88,25 @@ export function SimulationView() {
   const [finishing,     setFinishing]     = useState(false);
   const [starting,      setStarting]      = useState(false);
 
-  // Métricas reales de la ejecución finalizada (sin sondeo en vivo: el pipeline
+  // Reloj local del tiempo transcurrido (tick UI de 1s; sin sondeo a la API).
+  useEffect(() => {
+    if (!running || !startedAt) return;
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [running, startedAt]);
+
+  const elapsedMs = frozenMs ?? (startedAt ? Math.max(0, nowMs - new Date(startedAt).getTime()) : 0);
+  const elapsedLabel = `${String(Math.floor(elapsedMs / 60000)).padStart(2, '0')}:${String(Math.floor((elapsedMs % 60000) / 1000)).padStart(2, '0')}`;
+
+  // Métricas reales de la ejecución (sin sondeo en vivo: el pipeline
   // del backend las registra mientras el run está activo y se leen al cerrar).
+  // Contadores (messages_*, readings_persisted, alerts_generated) = SUMA de
+  // muestras; latencias = promedio; backlog = último valor.
   const runMetrics = runId ? metrics.filter(m => m.run_id === runId) : [];
+  const hasMetric = (type: string): boolean =>
+    runMetrics.some(m => m.metric_type === type);
+  const sumOf = (type: ExperimentMetricType): number =>
+    sumMetric(runMetrics, type);
   const latestOf = (type: string): number | null => {
     const rows = runMetrics.filter(m => m.metric_type === type);
     if (rows.length === 0) return null;
@@ -98,6 +119,11 @@ export function SimulationView() {
   };
   const fmt = (v: number | null, digits = 0): string =>
     v === null ? '—' : v.toLocaleString('es-CO', { maximumFractionDigits: digits, minimumFractionDigits: digits });
+  /** Durante la ejecución sin datos aún: spinner; si no, el valor formateado. */
+  const liveValue = (v: number | null, has: boolean, digits = 0): React.ReactNode =>
+    running && !has
+      ? <LoaderCircle size={20} className="cc-spin" style={{ color: '#1F6F8B' }} />
+      : fmt(v, digits);
 
   const criticalDevices = devices.map(d => ({
     ...d,
@@ -105,8 +131,15 @@ export function SimulationView() {
   }));
   const criticalCount = criticalDevices.filter(d => d.isCritical).length;
 
+  // Restricción: sin dispositivos con sensores no se puede simular.
+  const hasSimulatableDevices = devices.some(d => getSensors(d.id).length > 0);
+
   async function handleEjecutar() {
     setRunError(null);
+    if (!hasSimulatableDevices) {
+      setRunError('Cree al menos un dispositivo con sensores antes de iniciar una simulación.');
+      return;
+    }
     setStarting(true);
     const { run, error } = await startRun({
       scenario: procesamiento === 'con' ? 'WITH_QOS' : 'WITHOUT_QOS',
@@ -118,6 +151,8 @@ export function SimulationView() {
       return;
     }
     setRunId(run.id);
+    setStartedAt(run.started_at);
+    setFrozenMs(null);
     setHasRun(true);
     setRunning(true);
   }
@@ -130,6 +165,7 @@ export function SimulationView() {
       setRunError(result.error ?? 'No se pudo finalizar la ejecución.');
       return;
     }
+    if (startedAt) setFrozenMs(Math.max(0, Date.now() - new Date(startedAt).getTime()));
     setRunning(false);
   }
   async function handleReiniciar() {
@@ -138,6 +174,8 @@ export function SimulationView() {
     }
     setRunning(false);
     setRunId(null);
+    setStartedAt(null);
+    setFrozenMs(null);
     setHasRun(false);
     setRunError(null);
     setProcesamiento('con'); setCondicion('normal');
@@ -149,7 +187,7 @@ export function SimulationView() {
         <div>
           <h1 className="mb-1" style={{ fontSize: 20, fontWeight: 600 }}>Simulación — Ejecuciones experimentales</h1>
           <p className="text-muted small mb-0">
-            Inicie ejecuciones reales contra el backend (POST /experiment-runs) y consulte sus métricas al finalizar.
+            Inicie ejecuciones de prueba y consulte sus métricas al finalizar.
           </p>
         </div>
         <Button variant="outline-primary" size="sm" className="d-flex align-items-center gap-2"
@@ -167,10 +205,10 @@ export function SimulationView() {
         <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 rounded-3 px-4 py-3 mb-4"
           style={{ background: '#EAF1F5', border: '1px solid #c5d9e6', borderLeft: '4px solid #1F6F8B' }}>
           <p className="mb-0 small">
-            <strong>Hay una ejecución activa en el backend</strong> ({activeRun.scenario === 'WITH_QOS' ? 'con priorización' : 'sin priorización'}, iniciada {new Date(activeRun.started_at).toLocaleString('es-CO')}). Finalícela antes de iniciar otra.
+            <strong>Hay una ejecución activa</strong> ({activeRun.scenario === 'WITH_QOS' ? 'con priorización' : 'sin priorización'}, iniciada {new Date(activeRun.started_at).toLocaleString('es-CO')}). Finalícela antes de iniciar otra.
           </p>
           <button
-            onClick={() => { setRunId(activeRun.id); setHasRun(true); setRunning(true); }}
+            onClick={() => { setRunId(activeRun.id); setStartedAt(activeRun.started_at); setFrozenMs(null); setHasRun(true); setRunning(true); }}
             className="border-0 bg-transparent fw-semibold"
             style={{ fontSize: 13, color: '#1F6F8B', cursor: 'pointer', whiteSpace: 'nowrap' }}
           >
@@ -219,7 +257,7 @@ export function SimulationView() {
                       </div>
                       <div style={{ fontSize: 12 }} className="text-muted">
                         {v === 'con'
-                          ? 'Lecturas clasificadas por criticidad y encoladas (HIGH→WFQ, MEDIUM→Round Robin, LOW→FIFO).'
+                          ? 'Las lecturas se clasifican y atienden por prioridad automáticamente.'
                           : 'Lecturas procesadas directamente sin clasificación ni priorización.'}
                       </div>
                     </div>
@@ -248,23 +286,28 @@ export function SimulationView() {
                       <div style={{ fontSize: 12 }} className="text-muted">
                         {v === 'normal'
                           ? 'Dispositivos con lecturas dentro de los rangos definidos por los umbrales.'
-                          : 'Dispositivos en estado de error con lecturas fuera de rango — genera alertas TEMPERATURE_EXCEEDED y similares.'}
+                          : 'Dispositivos con lecturas fuera de los rangos seguros de temperatura, humedad o energía.'}
                       </div>
                     </div>
                   </label>
                 ))}
               </Col>
             </Row>
-            <Button variant="primary" className="d-flex align-items-center gap-2" onClick={handleEjecutar} disabled={starting}>
+            <Button variant="primary" className="d-flex align-items-center gap-2" onClick={handleEjecutar} disabled={starting || !hasSimulatableDevices}>
               <Play size={16} />{starting ? 'Iniciando…' : 'Iniciar simulación'}
             </Button>
+            {!hasSimulatableDevices && (
+              <p className="mt-3 mb-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F' }}>
+                No hay dispositivos con sensores configurados. Cree uno desde Dispositivos para habilitar la simulación.
+              </p>
+            )}
             {runError && (
               <div className="rounded-3 px-3 py-2 mt-3 small" style={{ background: '#FCEEEE', border: '1px solid #f1aeb5', color: '#B22F2F' }}>
                 {runError}
               </div>
             )}
             <p className="text-muted mt-3 mb-0" style={{ fontSize: 11 }}>
-              Iniciar y finalizar requieren rol administrador en el backend. La condición del entorno es una etiqueta local de la ejecución.
+              Iniciar y finalizar requieren rol administrador. Al iniciar, los dispositivos comienzan a generar telemetría hasta que finalice la ejecución.
             </p>
           </Card.Body>
         </Card>
@@ -275,8 +318,10 @@ export function SimulationView() {
         <>
           <Row className="g-4 mb-4 align-items-center">
             <Col xs={12} lg={8}>
-              <span className="small text-muted">
+              <span className="small text-muted d-inline-flex align-items-center gap-2">
+                {running && <LoaderCircle size={14} className="cc-spin" style={{ color: '#1F6F8B' }} />}
                 {running ? 'Simulación en curso...' : 'Simulación finalizada'} ·{' '}
+                <span className="font-monospace fw-semibold" style={{ color: '#123B5D' }}>{elapsedLabel}</span> ·{' '}
                 {procesamiento === 'con' ? 'Con priorización' : 'Sin priorización'} ·{' '}
                 {condicion === 'critica' ? 'Condición crítica' : 'Operación normal'}
               </span>
@@ -294,18 +339,18 @@ export function SimulationView() {
             </Col>
           </Row>
 
-          {/* KPIs: métricas reales de la ejecución (último valor por tipo) */}
+          {/* KPIs: totales reales de la ejecución (suma en contadores) */}
           <Row className="g-3 mb-4">
             <Col xs={12} sm={6} xl={4}><KpiCard label="Dispositivos" value={devices.length} Icon={Cpu} accent="#123B5D" sub={`${totalCavas} cavas · ${totalVitrinas} vitrinas`} /></Col>
-            <Col xs={12} sm={6} xl={4}><KpiCard label="Mensajes recibidos" value={fmt(latestOf('messages_received'))} Icon={Thermometer} accent="#1F6F8B" sub={runMetrics.length > 0 ? `${runMetrics.length} muestras` : 'sin muestras aún'} /></Col>
-            <Col xs={12} sm={6} xl={4}><KpiCard label="Lecturas persistidas" value={fmt(latestOf('readings_persisted'))} Icon={Activity} accent="#123B5D" sub="último valor" /></Col>
-            <Col xs={12} sm={6} xl={4}><KpiCard label="Alertas generadas" value={fmt(latestOf('alerts_generated'))} Icon={AlertTriangle} accent={(latestOf('alerts_generated') ?? 0) > 0 ? '#C83B3B' : '#52616B'} sub="durante la ejecución" /></Col>
-            <Col xs={12} sm={6} xl={4}><KpiCard label="Latencia ingesta→persistencia" value={fmt(avgOf('ingest_to_persist_ms'), 1)} unit="ms" Icon={Clock} accent="#123B5D" sub="promedio de muestras" /></Col>
-            <Col xs={12} sm={6} xl={4}><KpiCard label="Backlog" value={fmt(latestOf('backlog'))} Icon={BarChart3} accent="#123B5D" sub="profundidad de cola" /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Mensajes recibidos" value={liveValue(sumOf('messages_received'), hasMetric('messages_received'))} Icon={Thermometer} accent="#1F6F8B" sub={hasMetric('messages_received') ? 'total en la ejecución' : running ? 'recibiendo…' : 'sin muestras aún'} /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Lecturas persistidas" value={liveValue(sumOf('readings_persisted'), hasMetric('readings_persisted'))} Icon={Activity} accent="#123B5D" sub={hasMetric('readings_persisted') ? 'total en la ejecución' : running ? 'persistiendo…' : 'sin muestras aún'} /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Alertas generadas" value={liveValue(sumOf('alerts_generated'), hasMetric('alerts_generated'))} Icon={AlertTriangle} accent={sumOf('alerts_generated') > 0 ? '#C83B3B' : '#52616B'} sub="durante la ejecución" /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Latencia ingesta→persistencia" value={liveValue(avgOf('ingest_to_persist_ms'), hasMetric('ingest_to_persist_ms'), 1)} Icon={Clock} accent="#123B5D" sub="promedio de muestras (ms)" /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Cola pendiente" value={liveValue(latestOf('backlog'), hasMetric('backlog'))} Icon={BarChart3} accent="#123B5D" sub="mensajes en espera (último valor)" /></Col>
           </Row>
           {running && (
             <p className="text-muted small mb-4">
-              Ejecución en curso en el backend. Las métricas las registra el pipeline; se leen al finalizar (sin sondeo en vivo).
+              Ejecución en curso. Las métricas estarán disponibles al finalizar.
             </p>
           )}
           {!running && hasRun && runMetrics.length === 0 && (

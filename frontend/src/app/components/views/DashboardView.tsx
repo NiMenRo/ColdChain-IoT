@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router';
-import { Thermometer, Droplets, Zap, AlertTriangle, Cpu, ArrowRight, ChevronRight, Snowflake, Activity, CheckCircle, Clock } from 'lucide-react';
+import { Thermometer, Droplets, Zap, AlertTriangle, Cpu, ArrowRight, ChevronRight, Snowflake, Activity, CheckCircle, Clock, RefreshCw } from 'lucide-react';
 import { Card, Row, Col, Badge } from '../../lib/bootstrap';
 import { useDevices, DEVICE_TYPE_LABEL } from '../../contexts/DeviceContext';
 import { useAuth } from '../../hooks/useAuth';
@@ -18,9 +18,7 @@ export function DashboardView() {
 
   const avgTemp = dash.avgTemp;
   const avgHumidity = dash.avgHumidity;
-  // Sin fuente agregada real de energía en el backend (las lecturas exponen
-  // energy por lectura, sin endpoint agregado): se muestra no disponible.
-  const energyAvailable = false;
+  const energy = dash.energy;
 
   const totalAlerts = dash.totalAlerts;
   const criticalAlerts = dash.criticalAlerts;
@@ -59,6 +57,20 @@ export function DashboardView() {
           <span className="d-none d-sm-flex align-items-center gap-2 small text-muted">
             <Clock size={14} />{connectionLabel}
           </span>
+          {!dash.isLoading && dash.lastUpdated && (
+            <span className="d-none d-md-inline small text-muted">
+              Actualizado {dash.lastUpdated}{dash.isRefreshing ? '…' : ''}
+            </span>
+          )}
+          <button
+            onClick={dash.refresh}
+            disabled={dash.isLoading || dash.isRefreshing}
+            title="Actualizar ahora"
+            className="d-flex align-items-center border-0 bg-transparent p-1"
+            style={{ color: '#123B5D', cursor: 'pointer' }}
+          >
+            <RefreshCw size={15} />
+          </button>
           {canSimulate && (
             <button
               onClick={() => navigate('/app/simulation')}
@@ -70,6 +82,14 @@ export function DashboardView() {
           )}
         </div>
       </div>
+
+      {/* Aviso discreto de refresco fallido (conserva los últimos datos) */}
+      {dash.refreshError && !dash.isLoading && (
+        <div className="rounded-3 px-4 py-2 small text-muted"
+          style={{ background: '#EFF4F7', border: '1px solid #D9E2E8' }}>
+          No se pudo actualizar: {dash.refreshError}
+        </div>
+      )}
 
       {/* Aviso de dependencia de autenticación / configuración (no bloquea la vista) */}
       {(dash.isAuthBlocked || dash.isConfigMissing) && !dash.isLoading && (
@@ -143,7 +163,7 @@ export function DashboardView() {
           <h2 className="d-flex align-items-center gap-2 mb-0 small fw-semibold" style={{ fontSize: 15 }}>
             <Snowflake size={17} style={{ color: '#1F6F8B' }} />Condiciones ambientales
           </h2>
-          <span className="small text-muted">Promedio agregado por el backend (tendencias por hora)</span>
+          <span className="small text-muted">Promedio por hora</span>
         </div>
         <Row className="g-0">
           {/* Temperatura */}
@@ -204,23 +224,36 @@ export function DashboardView() {
               </>
             )}
           </Col>
-          {/* Energía */}
+          {/* Energía (fuente: /history/summary.energy_by_state) */}
           <Col xs={12} sm={4} className="p-4">
             <div className="d-flex align-items-center gap-2 text-muted small mb-3">
               <Zap size={16} />Estado energético
             </div>
-            <div className="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
-              <div className="d-flex align-items-baseline gap-1">
-                <span className="cc-stat-value" style={{ fontSize: '1.7rem', color: '#52616B' }}>
-                  {energyAvailable ? '' : '—'}
-                </span>
-                <span className="small text-muted">{energyAvailable ? '' : 'No disponible'}</span>
+            {dash.energyStatus === 'loading' ? (
+              <div className="small text-muted">Cargando…</div>
+            ) : dash.energyStatus === 'error' ? (
+              <div className="small" style={{ color: '#B22F2F' }}>
+                No se pudo cargar. <button onClick={dash.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
               </div>
-              <span className="fw-semibold rounded-pill px-2 py-1" style={{ fontSize: 12, background: '#EFF4F7', color: '#52616B' }}>
-                — Sin fuente agregada
-              </span>
-            </div>
-            <p className="mb-0 text-muted" style={{ fontSize: 11 }}>El backend no expone agregado de energía; no se deriva en frontend.</p>
+            ) : energy === null ? (
+              <div className="small text-muted">Sin lecturas con energía registrada.</div>
+            ) : (
+              <>
+                <div className="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+                  <div className="d-flex align-items-baseline gap-1">
+                    <span className="cc-stat-value" style={{ fontSize: '1.7rem' }}>{energy.pctOn.toFixed(0)}</span>
+                    <span className="small text-muted">% ON</span>
+                  </div>
+                  <span className="fw-semibold rounded-pill px-2 py-1" style={{ fontSize: 12,
+                    background: energy.pctOn >= 50 ? '#EAF6EF' : '#FFF5E3',
+                    color:      energy.pctOn >= 50 ? '#16835B' : '#965D00',
+                  }}>
+                    {energy.on} de {energy.on + energy.off} lecturas
+                  </span>
+                </div>
+                <p className="mb-0 text-muted" style={{ fontSize: 11 }}>Proporción de lecturas con energía encendida</p>
+              </>
+            )}
           </Col>
         </Row>
       </Card>
@@ -344,7 +377,7 @@ export function DashboardView() {
         </Col>
       </Row>
 
-      {/* ── QoS Snapshot (fuente: /history/qos/trends) ── */}
+      {/* ── QoS Snapshot (fuente: /qos/metrics, igual que la pestaña QoS) ── */}
       <Card className="cc-card">
         <div className="d-flex justify-content-between align-items-center border-bottom px-4 py-3">
           <div className="d-flex align-items-center gap-2">
@@ -373,6 +406,7 @@ export function DashboardView() {
               <Col key={m.label} xs={6} sm={3} className="p-4" style={{ borderRight: i < qosCells.length - 1 ? '1px solid #D9E2E8' : undefined }}>
                 <div className="small text-muted mb-2">{m.label}</div>
                 <div className="fw-bold" style={{ fontSize: 22, color: '#123B5D' }}>{m.value}</div>
+                <div className="small text-muted">{m.sub}</div>
               </Col>
             ))
           )}

@@ -5,10 +5,15 @@ from sqlalchemy.orm import Session
 from app.database.infrastructure.models import DeviceORM, SensorReadingORM, TrafficClassificationORM
 
 class ClassificationHistoryRepository:
-    def list(self, db: Session, *, device_code: str | None = None, priority: str | None = None, queue: str | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, sort: str = "timestamp.desc", page: int = 1, per_page: int = 20):
+    def list(self, db: Session, *, device_code: str | None = None, priority: str | None = None, queue: str | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, run_id: UUID | None = None, sort: str = "timestamp.desc", page: int = 1, per_page: int = 20):
         q = db.query(TrafficClassificationORM).join(SensorReadingORM, TrafficClassificationORM.reading_id == SensorReadingORM.id).join(DeviceORM, SensorReadingORM.device_id == DeviceORM.id)
         if device_code:
             q = q.filter(DeviceORM.code == device_code)
+        if run_id is not None:
+            # TC rows carry no run_id (UML 1:1 via SensorReading); the run
+            # linkage resolves through the reading. Legacy NULL rows only
+            # appear in unfiltered (global) mode.
+            q = q.filter(SensorReadingORM.run_id == run_id)
         if priority:
             q = q.filter(TrafficClassificationORM.priority == priority)
         if queue:

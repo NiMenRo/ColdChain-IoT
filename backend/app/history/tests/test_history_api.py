@@ -114,6 +114,8 @@ def test_summary():
         r = c.get("/history/summary")
         assert r.status_code == 200
         assert r.json()["total_readings"] == 3
+        # Agregado de energía: 3 lecturas con energy='on', sin nulos.
+        assert r.json()["energy_by_state"] == {"on": 3}
 
 def test_predictions_empty():
     with TestClient(app) as c:

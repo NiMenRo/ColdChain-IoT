@@ -28,6 +28,15 @@ def _validate_page(per_page: int, page: int):
         raise HTTPException(400, "page must be >=1")
     if not 1 <= per_page <= 100:
         raise HTTPException(400, "per_page must be 1..100")
+def _parse_run_id(v: str | None):
+    """Optional run scope. Malformed UUID -> 400; unknown-but-valid UUID
+    simply matches zero rows (never simulated, never 404)."""
+    if not v:
+        return None
+    try:
+        return UUID(str(v).strip())
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(400, "Invalid run_id, must be a UUID")
 def _serialize(obj):
     if obj is None:
         return None
@@ -44,21 +53,21 @@ def _serialize(obj):
     return d
 
 @router.get("/readings/trends")
-def reading_trends(device_code: Optional[str]=None, from_ts: Optional[str]=None, to_ts: Optional[str]=None, interval: str=Query("hour", pattern="^(minute|hour|day)$"), db: Session=Depends(get_db)):
+def reading_trends(device_code: Optional[str]=None, from_ts: Optional[str]=None, to_ts: Optional[str]=None, run_id: Optional[str]=None, interval: str=Query("hour", pattern="^(minute|hour|day)$"), db: Session=Depends(get_db)):
     f = _parse_dt(from_ts); t = _parse_dt(to_ts)
-    rows = service.readings.trends(db, device_code=device_code, from_ts=f, to_ts=t, interval=interval)
+    rows = service.readings.trends(db, device_code=device_code, from_ts=f, to_ts=t, run_id=_parse_run_id(run_id), interval=interval)
     def _num(v):
         # TSK-059.3 — NULL means sensor not enabled; never coerce to 0.
         return float(v) if v is not None else None
     return [{"bucket": r.bucket.isoformat() if hasattr(r.bucket, 'isoformat') else str(r.bucket), "avg_temp": _num(r.avg_temp), "min_temp": _num(r.min_temp), "max_temp": _num(r.max_temp), "avg_hum": _num(r.avg_hum), "min_hum": _num(r.min_hum), "max_hum": _num(r.max_hum)} for r in rows]
 
 @router.get("/readings")
-def list_readings(device_code: Optional[str]=None, from_ts: Optional[str]=None, to_ts: Optional[str]=None, sort: str="timestamp.desc", page: int=Query(1, ge=1), per_page: int=Query(20, ge=1, le=100), db: Session=Depends(get_db)):
+def list_readings(device_code: Optional[str]=None, from_ts: Optional[str]=None, to_ts: Optional[str]=None, run_id: Optional[str]=None, sort: str="timestamp.desc", page: int=Query(1, ge=1), per_page: int=Query(20, ge=1, le=100), db: Session=Depends(get_db)):
     _validate_page(per_page, page)
     f = _parse_dt(from_ts); t = _parse_dt(to_ts)
     if f and t and f > t:
         raise HTTPException(400, "from must be <= to")
-    total, items = service.readings.list(db, device_code=device_code, from_ts=f, to_ts=t, sort=sort, page=page, per_page=per_page)
+    total, items = service.readings.list(db, device_code=device_code, from_ts=f, to_ts=t, run_id=_parse_run_id(run_id), sort=sort, page=page, per_page=per_page)
     return {"total": total, "page": page, "per_page": per_page, "count": len(items), "results": [_serialize(i) for i in items]}
 
 @router.get("/readings/{id}")
@@ -83,10 +92,10 @@ def get_bundle(id: UUID, db: Session=Depends(get_db)):
     }
 
 @router.get("/classifications")
-def list_classifications(device_code: Optional[str]=None, priority: Optional[str]=None, queue: Optional[str]=None, from_ts: Optional[str]=None, to_ts: Optional[str]=None, sort: str="timestamp.desc", page: int=1, per_page: int=20, db: Session=Depends(get_db)):
+def list_classifications(device_code: Optional[str]=None, priority: Optional[str]=None, queue: Optional[str]=None, from_ts: Optional[str]=None, to_ts: Optional[str]=None, run_id: Optional[str]=None, sort: str="timestamp.desc", page: int=1, per_page: int=20, db: Session=Depends(get_db)):
     _validate_page(per_page, page)
     f = _parse_dt(from_ts); t = _parse_dt(to_ts)
-    total, items = service.classifications.list(db, device_code=device_code, priority=priority, queue=queue, from_ts=f, to_ts=t, sort=sort, page=page, per_page=per_page)
+    total, items = service.classifications.list(db, device_code=device_code, priority=priority, queue=queue, from_ts=f, to_ts=t, run_id=_parse_run_id(run_id), sort=sort, page=page, per_page=per_page)
     return {"total": total, "page": page, "per_page": per_page, "count": len(items), "results": [_serialize(i) for i in items]}
 
 @router.get("/classifications/{id}")
@@ -97,16 +106,16 @@ def get_classification(id: UUID, db: Session=Depends(get_db)):
     return _serialize(obj)
 
 @router.get("/qos/trends")
-def qos_trends(device_code: Optional[str]=None, from_ts: Optional[str]=None, to_ts: Optional[str]=None, interval: str=Query("hour", pattern="^(minute|hour|day)$"), db: Session=Depends(get_db)):
+def qos_trends(device_code: Optional[str]=None, from_ts: Optional[str]=None, to_ts: Optional[str]=None, run_id: Optional[str]=None, interval: str=Query("hour", pattern="^(minute|hour|day)$"), db: Session=Depends(get_db)):
     f = _parse_dt(from_ts); t = _parse_dt(to_ts)
-    rows = service.qos.trends(db, device_code=device_code, from_ts=f, to_ts=t, interval=interval)
+    rows = service.qos.trends(db, device_code=device_code, from_ts=f, to_ts=t, run_id=_parse_run_id(run_id), interval=interval)
     return [{"bucket": r.bucket.isoformat() if hasattr(r.bucket, 'isoformat') else str(r.bucket), "avg_latency": float(r.avg_latency or 0), "min_latency": float(r.min_latency or 0), "max_latency": float(r.max_latency or 0), "avg_packet_loss": float(r.avg_packet_loss or 0), "avg_throughput": float(r.avg_throughput or 0), "avg_pdr": float(r.avg_pdr or 0), "avg_jitter": float(r.avg_jitter or 0)} for r in rows]
 
 @router.get("/qos")
-def list_qos(device_code: Optional[str]=None, from_ts: Optional[str]=None, to_ts: Optional[str]=None, sort: str="timestamp.desc", page: int=1, per_page: int=20, db: Session=Depends(get_db)):
+def list_qos(device_code: Optional[str]=None, from_ts: Optional[str]=None, to_ts: Optional[str]=None, run_id: Optional[str]=None, sort: str="timestamp.desc", page: int=1, per_page: int=20, db: Session=Depends(get_db)):
     _validate_page(per_page, page)
     f = _parse_dt(from_ts); t = _parse_dt(to_ts)
-    total, items = service.qos.list(db, device_code=device_code, from_ts=f, to_ts=t, sort=sort, page=page, per_page=per_page)
+    total, items = service.qos.list(db, device_code=device_code, from_ts=f, to_ts=t, run_id=_parse_run_id(run_id), sort=sort, page=page, per_page=per_page)
     return {"total": total, "page": page, "per_page": per_page, "count": len(items), "results": [_serialize(i) for i in items]}
 
 @router.get("/qos/{id}")
@@ -117,10 +126,10 @@ def get_qos(id: UUID, db: Session=Depends(get_db)):
     return _serialize(obj)
 
 @router.get("/alerts")
-def list_alerts(device_code: Optional[str]=None, type: Optional[str]=None, acknowledged: Optional[bool]=None, from_ts: Optional[str]=None, to_ts: Optional[str]=None, sort: str="created_at.desc", page: int=1, per_page: int=20, db: Session=Depends(get_db)):
+def list_alerts(device_code: Optional[str]=None, type: Optional[str]=None, acknowledged: Optional[bool]=None, from_ts: Optional[str]=None, to_ts: Optional[str]=None, run_id: Optional[str]=None, sort: str="created_at.desc", page: int=1, per_page: int=20, db: Session=Depends(get_db)):
     _validate_page(per_page, page)
     f = _parse_dt(from_ts); t = _parse_dt(to_ts)
-    total, items = service.alerts.list(db, device_code=device_code, type=type, acknowledged=acknowledged, from_ts=f, to_ts=t, sort=sort, page=page, per_page=per_page)
+    total, items = service.alerts.list(db, device_code=device_code, type=type, acknowledged=acknowledged, from_ts=f, to_ts=t, run_id=_parse_run_id(run_id), sort=sort, page=page, per_page=per_page)
     return {"total": total, "page": page, "per_page": per_page, "count": len(items), "results": [_serialize(i) for i in items]}
 
 @router.get("/alerts/{id}")
@@ -161,5 +170,5 @@ def device_history(code: str, from_ts: Optional[str]=None, to_ts: Optional[str]=
     return {"device": _serialize(device), "total": total, "page": page, "per_page": per_page, "count": len(items), "results": [_serialize(i) for i in items]}
 
 @router.get("/summary")
-def summary(db: Session=Depends(get_db)):
-    return service.summary(db)
+def summary(run_id: Optional[str]=None, db: Session=Depends(get_db)):
+    return service.summary(db, run_id=_parse_run_id(run_id))

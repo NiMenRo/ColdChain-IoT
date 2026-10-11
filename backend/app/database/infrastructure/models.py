@@ -190,9 +190,14 @@ class UserORM(Base):
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
     role: Mapped[str] = mapped_column(String, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Optional contact phone for the (simulated) SMS channel. NULL = no SMS
+    # recipient available; SMS deliveries then resolve to a logged placeholder
+    # and are recorded as SIMULATED, never as really sent.
+    phone: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     alerts: Mapped[list[AlertORM]] = relationship(back_populates="user")
+    notifications: Mapped[list[NotificationORM]] = relationship(back_populates="user")
 
     @validates("email")
     def _normalize_email(self, key: str, value: str) -> str:
@@ -257,6 +262,92 @@ class AlertORM(Base):
     device: Mapped[DeviceORM] = relationship(back_populates="alerts")
     user: Mapped[UserORM] = relationship(back_populates="alerts")
     experiment_run: Mapped[ExperimentRunORM | None] = relationship(back_populates="alerts")
+    notifications: Mapped[list[NotificationORM]] = relationship(back_populates="alert")
+
+
+NOTIFICATION_CHANNELS = frozenset({"email", "sms", "push", "dashboard"})
+NOTIFICATION_STATUSES = frozenset({"pending", "sent", "failed", "simulated", "disabled"})
+
+
+class NotificationORM(Base):
+    """Persistent delivery record for one alert through one channel.
+
+    Read state (``is_read``/``read_at``) is independent from
+    ``AlertORM.acknowledged``: reading a notification never acknowledges
+    the alert, and acknowledging the alert never marks its notifications
+    as read. ``UNIQUE(alert_id, channel, recipient)`` provides
+    idempotency against pipeline reprocessing and manual retries.
+
+    Status semantics (never mark a simulated/disabled row as sent):
+    ``pending`` = prepared, delivery not attempted yet; ``sent`` = the
+    transport confirmed real delivery (dashboard in-app, SMTP accepted);
+    ``failed`` = real delivery attempted and rejected by the transport;
+    ``simulated`` = explicitly simulated delivery (SMS log, decoupled
+    push), recorded for traceability, never a real send; ``disabled`` =
+    channel not configured (e.g. SMTP off), no delivery attempted.
+    """
+
+    __tablename__ = "notifications"
+    __table_args__ = (
+        UniqueConstraint(
+            "alert_id", "channel", "recipient",
+            name="uq_notifications_alert_channel_recipient",
+        ),
+        CheckConstraint(
+            "channel IN ('email','sms','push','dashboard')",
+            name="ck_notifications_channel",
+        ),
+        CheckConstraint(
+            "status IN ('pending','sent','failed','simulated','disabled')",
+            name="ck_notifications_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    alert_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("alerts.id"), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id"), nullable=False, index=True
+    )
+    channel: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    recipient: Mapped[str] = mapped_column(String, nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notification_date: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    alert: Mapped[AlertORM] = relationship(back_populates="notifications")
+    user: Mapped[UserORM] = relationship(back_populates="notifications")
+
+    @validates("channel")
+    def _validate_channel(self, key: str, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("channel must be a string")
+        normalized = value.strip().lower()
+        if normalized not in NOTIFICATION_CHANNELS:
+            raise ValueError(
+                "channel must be one of email, sms, push, dashboard"
+            )
+        return normalized
+
+    @validates("status")
+    def _validate_status(self, key: str, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("status must be a string")
+        normalized = value.strip().lower()
+        if normalized not in NOTIFICATION_STATUSES:
+            raise ValueError(
+                "status must be one of pending, sent, failed, simulated, disabled"
+            )
+        return normalized
 
 
 class SystemConfigORM(Base):

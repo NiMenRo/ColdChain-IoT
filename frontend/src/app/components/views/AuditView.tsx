@@ -346,7 +346,7 @@ export function AuditView() {
     <div>
       <h1 className="mb-1" style={{ fontSize: 22, fontWeight: 700 }}>Auditoría</h1>
       <p className="text-muted small mb-3">
-        Registro de acciones realizadas por usuarios y el sistema. Backend real: GET /audit-logs?page&per_page
+        Registro de acciones realizadas por usuarios y el sistema.
       </p>
 
       {(audit.isAuthBlocked || audit.isForbidden || audit.isConfigMissing) && !audit.isLoading && (

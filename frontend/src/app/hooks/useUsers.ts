@@ -63,7 +63,7 @@ export interface UsersState {
   status: SectionStatus;
   users: ManagedUser[];
   createUser: (data: { name: string; email: string; role: UserRole; password: string }) => Promise<{ ok: boolean; error?: string }>;
-  updateUser: (id: string, data: { name: string; email: string; role: UserRole }) => Promise<{ ok: boolean; error?: string }>;
+  updateUser: (id: string, data: { name: string; email: string; role?: UserRole }) => Promise<{ ok: boolean; error?: string }>;
   setActive: (id: string, active: boolean) => Promise<{ ok: boolean; error?: string }>;
 }
 
@@ -135,13 +135,15 @@ export function useUsers(): UsersState {
     }
   }, [reload]);
 
-  const updateUser = useCallback(async (id: string, data: { name: string; email: string; role: UserRole }) => {
+  const updateUser = useCallback(async (id: string, data: { name: string; email: string; role?: UserRole }) => {
     try {
       const payload: UpdateUserPayload = {
         name: data.name.trim(),
         email: data.email.trim().toLowerCase(),
-        role: data.role,
       };
+      // El rol solo viaja si cambió (el backend rechaza el auto-cambio de rol
+      // propio incluso cuando el valor es el mismo).
+      if (data.role) payload.role = data.role;
       const updated = await apiUpdateUser(id, payload);
       const ui = toUiUser(updated);
       if (ui) setUsers((prev) => prev.map((u) => (u.id === id ? ui : u)));

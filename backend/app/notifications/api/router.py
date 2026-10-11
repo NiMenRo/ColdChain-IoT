@@ -19,7 +19,11 @@ from app.auth.authorization import (
     require_notification_write,
 )
 from app.auth.dependencies import AuthenticatedUser
-from app.database.infrastructure.repositories import AlertRepository
+from app.database.infrastructure.models import AlertORM
+from app.database.infrastructure.repositories import (
+    AlertRepository,
+    NotificationRepository,
+)
 from app.database.infrastructure.session import get_db
 from app.events.domain import Alert
 from app.notifications.application import (
@@ -35,6 +39,13 @@ from app.notifications.domain import (
 logger = logging.getLogger(__name__)
 _audit = AuditService()
 _alert_repo = AlertRepository()
+_notif_repo = NotificationRepository()
+
+# Persistent-history defaults: bounded reads; the runtime (in-memory)
+# /history endpoint stays uncapped as the volatile prototype.
+PERSISTENT_HISTORY_DEFAULT_LIMIT = 50
+PERSISTENT_HISTORY_MAX_LIMIT = 200
+REDISPATCHABLE_STATUSES = frozenset({"pending", "failed", "disabled"})
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
@@ -91,6 +102,33 @@ class NotificationProcessRequest(BaseModel):
     user_id: Optional[str] = None
     type: Optional[str] = None
     criticality: Optional[float] = None
+    # Manual redispatch of a failed/disabled/pending delivery (Fase C).
+    # Without force, reprocessing an already-recorded (alert, channel,
+    # recipient) returns the existing row without re-sending. With
+    # force=True and an existing failed/disabled/pending row, the delivery
+    # is attempted again and the SAME row is updated (no duplicate rows,
+    # no retry daemon). Already sent/simulated rows are never re-sent.
+    force: bool = False
+
+
+class PersistentNotificationResponse(BaseModel):
+    id: str
+    alert_id: str
+    channel: str
+    status: str
+    notification_date: str
+    is_read: bool
+    read_at: Optional[str] = None
+    alert: Optional[AlertSummary] = None
+
+
+class PersistentHistoryResponse(BaseModel):
+    count: int
+    notifications: list[PersistentNotificationResponse]
+
+
+class UnreadCountResponse(BaseModel):
+    unread: int
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +216,68 @@ def _serialize_notification(
         result["alert"] = alert_data
 
     return result
+
+
+def _serialize_alert_row(row: AlertORM) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "device_id": str(row.device_id),
+        "user_id": str(row.user_id),
+        "type": row.type,
+        "message": row.message,
+        "criticality": float(row.criticality),
+        "acknowledged": bool(row.acknowledged),
+        "created_at": row.created_at.isoformat(timespec="seconds")
+        if hasattr(row.created_at, "isoformat")
+        else str(row.created_at),
+    }
+
+
+def _serialize_persistent(row, alert_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Serialize a NotificationORM row. Shape mirrors the runtime
+    serializer plus owner read state (is_read/read_at)."""
+    date_val = (
+        row.notification_date.isoformat(timespec="seconds")
+        if hasattr(row.notification_date, "isoformat")
+        else str(row.notification_date)
+    )
+    result: dict[str, Any] = {
+        "id": str(row.id),
+        "alert_id": str(row.alert_id),
+        "channel": str(row.channel),
+        "status": str(row.status),
+        "notification_date": date_val,
+        "is_read": bool(row.is_read),
+        "read_at": (
+            row.read_at.isoformat(timespec="seconds")
+            if row.read_at is not None and hasattr(row.read_at, "isoformat")
+            else (str(row.read_at) if row.read_at is not None else None)
+        ),
+    }
+    if alert_data is not None:
+        result["alert"] = alert_data
+    return result
+
+
+def _parse_is_read(raw: Optional[str]) -> Optional[bool]:
+    if raw is None:
+        return None
+    normalized = raw.strip().lower()
+    if normalized in ("true", "1", "yes"):
+        return True
+    if normalized in ("false", "0", "no"):
+        return False
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"Invalid is_read '{raw}'. Must be true or false.",
+    )
+
+
+def _alert_summaries(db: Session, alert_ids: set[UUID]) -> dict[UUID, dict[str, Any]]:
+    if not alert_ids:
+        return {}
+    rows = db.query(AlertORM).filter(AlertORM.id.in_(list(alert_ids))).all()
+    return {row.id: _serialize_alert_row(row) for row in rows}
 
 
 def _get_notifications_list(request: Request) -> list[Notification]:
@@ -302,6 +402,171 @@ def get_notifications_history(
         _serialize_notification(notif, alerts_list) for notif in filtered
     ]
     return {"count": len(serialized_items), "notifications": serialized_items}
+
+
+# ---------------------------------------------------------------------------
+# Endpoints: Persistent history & read state (Fase C)
+#
+# Durable, owner-scoped views over the notifications table. Every endpoint
+# filters by the authenticated user's id: a user only ever sees or mutates
+# their own rows (unknown/foreign ids answer 404, never 403, to avoid
+# existence oracles). Read state (is_read/read_at) is fully independent
+# from Alert.acknowledged in both directions.
+# NOTE: single-segment GETs must stay registered BEFORE /{notification_id}
+# below, otherwise Starlette would route them as a notification id.
+# ---------------------------------------------------------------------------
+
+@router.get("/persistent", response_model=PersistentHistoryResponse)
+def get_persistent_history(
+    limit: Optional[int] = Query(None),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    channel: Optional[str] = Query(None),
+    alert_id: Optional[str] = Query(None),
+    is_read: Optional[str] = Query(None),
+    current: AuthenticatedUser = Depends(authenticated),
+    db: Session = Depends(get_db),
+):
+    """Owner-scoped persistent notification history, newest first."""
+    normalized_limit = _validated_limit(limit)
+    if normalized_limit is None:
+        normalized_limit = PERSISTENT_HISTORY_DEFAULT_LIMIT
+    if normalized_limit > PERSISTENT_HISTORY_MAX_LIMIT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"'limit' must be <= {PERSISTENT_HISTORY_MAX_LIMIT}.",
+        )
+
+    norm_status: Optional[str] = None
+    if status_filter is not None:
+        s = status_filter.strip().lower()
+        valid_statuses = {st.value for st in NotificationStatus}
+        if s not in valid_statuses:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid status '{status_filter}'. Must be one of {sorted(valid_statuses)}.",
+            )
+        norm_status = s
+
+    norm_channel: Optional[str] = None
+    if channel is not None:
+        c = channel.strip().lower()
+        valid_channels = {ch.value for ch in NotificationChannel}
+        if c not in valid_channels:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid channel '{channel}'. Must be one of {sorted(valid_channels)}.",
+            )
+        norm_channel = c
+
+    filter_alert_uuid: Optional[UUID] = None
+    if alert_id is not None:
+        filter_alert_uuid = _validate_uuid(alert_id, "alert_id")
+    read_flag = _parse_is_read(is_read)
+
+    rows = _notif_repo.list_by_owner(
+        db,
+        current.id,
+        status=norm_status,
+        channel=norm_channel,
+        alert_id=filter_alert_uuid,
+        is_read=read_flag,
+        limit=normalized_limit,
+    )
+    summaries = _alert_summaries(db, {row.alert_id for row in rows})
+    return {
+        "count": len(rows),
+        "notifications": [
+            _serialize_persistent(row, summaries.get(row.alert_id)) for row in rows
+        ],
+    }
+
+
+@router.get("/unread-count", response_model=UnreadCountResponse)
+def get_unread_count(
+    current: AuthenticatedUser = Depends(authenticated),
+    db: Session = Depends(get_db),
+):
+    """Number of owned notifications not yet read (bell badge source)."""
+    return {"unread": _notif_repo.count_unread(db, current.id)}
+
+
+@router.patch("/{notification_id}/read")
+def mark_notification_read(
+    notification_id: str,
+    current: AuthenticatedUser = Depends(authenticated),
+    db: Session = Depends(get_db),
+):
+    """Mark one owned notification as read. Idempotent; never touches
+    the linked alert's acknowledgement."""
+    notif_uuid = _validate_uuid(notification_id, "notification_id")
+    try:
+        row = _notif_repo.mark_read(db, notif_uuid, current.id)
+    except Exception:
+        logger.warning("notification.read skipped (no reachable DB)")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Notification store is not reachable.",
+        )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Notification not found.",
+        )
+    # The read commits FIRST so it is never lost when auditing is
+    # unavailable; the audit trail itself stays best-effort.
+    try:
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Notification store is not reachable.",
+        )
+    summaries = _alert_summaries(db, {row.alert_id})
+    _audit_best_effort(
+        db,
+        actor_id=current.id,
+        action="notification.read",
+        resource=f"notifications/{row.id}",
+        old_value={"is_read": False},
+        new_value={"is_read": True},
+    )
+    return {
+        "message": "Notification marked as read",
+        "notification": _serialize_persistent(row, summaries.get(row.alert_id)),
+    }
+
+
+@router.post("/read-all")
+def mark_all_notifications_read(
+    current: AuthenticatedUser = Depends(authenticated),
+    db: Session = Depends(get_db),
+):
+    """Mark all owned unread notifications as read. Returns rows updated."""
+    try:
+        updated = _notif_repo.mark_all_read(db, current.id)
+        db.commit()
+    except Exception:
+        logger.warning("notification.read_all skipped (no reachable DB)")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Notification store is not reachable.",
+        )
+    _audit_best_effort(
+        db,
+        actor_id=current.id,
+        action="notification.read_all",
+        resource="notifications",
+        new_value={"updated": updated},
+    )
+    return {"updated": updated}
 
 
 # ---------------------------------------------------------------------------
@@ -661,12 +926,35 @@ def process_notification(
 
     Admin-only manual alert creation (TSK-055). The alert owner is
     always the authenticated user; any client-provided user_id is
-    ignored.
+    ignored. The delivery record is persisted idempotently (Fase C):
+    repeats without force return the existing row without re-sending;
+    force=True re-attempts a failed/disabled/pending delivery and updates
+    the SAME row (manual redispatch, no retry daemon). Already
+    sent/simulated rows are never re-sent (409).
     """
     alert: Optional[Alert] = None
     if body.alert_id is not None:
         alert_uuid = _validate_uuid(body.alert_id, "alert_id")
         alert = _find_alert_by_id(request, alert_uuid)
+        if alert is None:
+            # Recovery after restart: the runtime list is empty but the
+            # alert row is durable. Rebuild the domain alert preserving
+            # its original owner (ownership is never stolen).
+            try:
+                alert_row = _alert_repo.get_by_id(db, alert_uuid)
+            except Exception:
+                alert_row = None
+            if alert_row is not None:
+                alert = Alert(
+                    id=alert_row.id,
+                    device_id=alert_row.device_id,
+                    user_id=alert_row.user_id,
+                    type=alert_row.type,
+                    message=alert_row.message,
+                    criticality=float(alert_row.criticality),
+                    acknowledged=bool(alert_row.acknowledged),
+                    created_at=alert_row.created_at,
+                )
 
     if alert is None:
         if body.type is not None and body.device_id is not None:
@@ -701,10 +989,12 @@ def process_notification(
 
     service = _get_notification_service(request)
     try:
-        result = service.process(
+        result, persisted = service.process_and_persist(
             alert,
+            db,
             recipient=body.recipient,
             message=body.message,
+            force=body.force,
         )
     except Exception as exc:
         raise HTTPException(
@@ -712,10 +1002,55 @@ def process_notification(
             detail=str(exc),
         ) from exc
 
+    # Duplicate detection keys on the service's explicit duplicate marker,
+    # not on a missing notification: the force-redispatch race returns the
+    # fresh attempt (notification + send_result) together with the winner row.
+    duplicate = persisted is not None and (result.error or "").startswith("duplicate:")
+    redelivered = False
+
+    if duplicate and body.force and persisted is not None:
+        # Manual redispatch: a fresh delivery was just attempted (see
+        # process_and_persist's IntegrityError path). Only
+        # failed/disabled/pending rows adopt the new outcome; already
+        # sent/simulated rows are never rewritten nor re-sent.
+        fresh_status = (
+            result.send_result.status.value
+            if result.send_result is not None
+            else None
+        )
+        if str(persisted.status) in REDISPATCHABLE_STATUSES and fresh_status is not None:
+            try:
+                _notif_repo.update_status(
+                    db,
+                    persisted,
+                    fresh_status,
+                    result.send_result.detail if result.send_result else result.error,
+                )
+                _audit_best_effort(
+                    db,
+                    actor_id=current.id,
+                    action="notification.redispatch",
+                    resource=f"notifications/{persisted.id}",
+                    new_value={"status": fresh_status},
+                )
+                redelivered = True
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(exc),
+                ) from exc
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Notification already delivered or simulated; not re-sent.",
+            )
+
     notifications_list = _get_notifications_list(request)
-    if result.notification is not None:
-        notifications_list.append(result.notification)
+    if result.notification is not None and not duplicate:
+        if all(n.id != result.notification.id for n in notifications_list):
+            notifications_list.append(result.notification)
         # TSK-059.5 — audit creation (no previous state exists).
+        # This commit also durably stores the flushed delivery row.
         _audit_best_effort(
             db,
             actor_id=current.id,
@@ -723,11 +1058,19 @@ def process_notification(
             resource=f"notifications/{result.notification.id}",
         )
 
-    serialized_notif = (
-        _serialize_notification(result.notification, _get_alerts_list(request))
-        if result.notification is not None
-        else None
-    )
+    if duplicate and persisted is not None:
+        summaries = _alert_summaries(db, {persisted.alert_id})
+        serialized_notif: Any = _serialize_persistent(
+            persisted, summaries.get(persisted.alert_id)
+        )
+        success = str(persisted.status) == NotificationStatus.SENT.value
+    else:
+        serialized_notif = (
+            _serialize_notification(result.notification, _get_alerts_list(request))
+            if result.notification is not None
+            else None
+        )
+        success = result.succeeded
 
     send_result_data = None
     if result.send_result is not None:
@@ -747,9 +1090,12 @@ def process_notification(
         }
 
     return {
-        "success": result.succeeded,
+        "success": success,
         "alert_id": str(result.alert_id),
         "notification": serialized_notif,
         "send_result": send_result_data,
         "error": result.error,
+        "duplicate": duplicate,
+        "redelivered": redelivered,
+        "persisted": persisted is not None,
     }

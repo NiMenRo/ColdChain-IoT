@@ -31,6 +31,23 @@ async def lifespan(app: FastAPI):
         level=getattr(logging, config.log_level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    # File log (best-effort): console windows are ephemeral and tracebacks
+    # of background workers would otherwise be lost. backend/logs/ is gitignored.
+    try:
+        from logging.handlers import RotatingFileHandler
+        from pathlib import Path
+
+        log_dir = Path(__file__).resolve().parent / "logs"
+        log_dir.mkdir(exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_dir / "coldchain.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8"
+        )
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        )
+        logging.getLogger().addHandler(file_handler)
+    except Exception:
+        logging.getLogger(__name__).exception("File log setup skipped")
 
     mqtt_username, mqtt_password, mqtt_ca_cert = config.mqtt_credentials()
     mqtt_client = MQTTClient(
@@ -62,15 +79,18 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("PersistenceService not available")
         app.state.persistence_service = None
-    # TSK-042A/B + TSK-047.4: seed Device + User before pipeline can persist (FKs)
-    # and load the real device_code -> Device.id mapping for event resolution.
+    # Minimal boot seed (system identity + thresholds) before the pipeline
+    # can persist (FKs). Demo devices/sensors are NOT seeded here: a clean
+    # database boots empty; reproducible demo data comes from
+    # scripts/seed_devices.py. The device_code -> Device.id mapping loads
+    # whatever devices exist (possibly none) for event resolution.
     try:
         if app.state.persistence_service is not None:
             from app.database.infrastructure.session import SessionLocal
-            from app.database.seed import SYSTEM_USER_ID, seed_all
+            from app.database.seed import SYSTEM_USER_ID, seed_boot
 
             with SessionLocal() as db:
-                seed_all(db)
+                seed_boot(db)
                 if SystemConfigRepository is None:
                     raise RuntimeError("SystemConfigRepository is not available")
                 persisted_config = SystemConfigRepository().get_current(db)
@@ -119,10 +139,20 @@ async def lifespan(app: FastAPI):
     try:
         from app.notifications.application import (
             AlertAcknowledgementService,
+            NotificationChannelRegistry,
             NotificationService,
+            production_channels,
         )
 
-        app.state.notification_service = NotificationService()
+        # Production channel set from environment: dashboard in-app,
+        # optional real SMTP, simulated SMS, decoupled push. Without
+        # credentials every external channel reports DISABLED/SIMULATED
+        # (never SENT) and the pipeline keeps running.
+        app.state.notification_service = NotificationService(
+            channel_registry=NotificationChannelRegistry(
+                channels=production_channels()
+            )
+        )
         app.state.alert_acknowledgement_service = AlertAcknowledgementService()
     except Exception:
         logger.exception("Failed to initialize notification services")
@@ -199,7 +229,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

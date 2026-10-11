@@ -19,7 +19,7 @@ export interface DeviceSensor {
 }
 
 export interface DeviceFormData {
-  code: string;
+  // Sin campo code: el backend siempre lo genera (CAVA-*/VITRINA-*).
   name: string;
   location: string;
   device_type: DeviceType;

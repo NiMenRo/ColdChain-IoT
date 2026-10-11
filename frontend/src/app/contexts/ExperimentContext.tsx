@@ -95,8 +95,16 @@ export function ExperimentProvider({ children }: { children: ReactNode }) {
   const activeRun = runs.find((r) => !r.finished_at) ?? null;
 
   const fetchMetrics = useCallback(async (runId: string) => {
-    const res = await apiGetRunMetrics(runId, { page: 1, per_page: 100 });
-    const incoming = res.results;
+    // Recorre todas las páginas (tope de seguridad): los totales del run
+    // deben reflejar todas las muestras, no solo las primeras 100.
+    const incoming: ExperimentMetric[] = [];
+    let page = 1;
+    for (;;) {
+      const res = await apiGetRunMetrics(runId, { page, per_page: 100 });
+      incoming.push(...res.results);
+      if (res.results.length === 0 || incoming.length >= res.total || incoming.length >= 1000 || page >= 10) break;
+      page += 1;
+    }
     setMetrics((prev) => {
       const known = new Set(prev.map((m) => m.id));
       return [...prev, ...incoming.filter((m) => !known.has(m.id))];
@@ -108,7 +116,9 @@ export function ExperimentProvider({ children }: { children: ReactNode }) {
       return { run: null, error: 'Ya hay una ejecución activa. Finalícela antes de iniciar otra.' };
     }
     try {
-      const run = await apiStartExperimentRun(scenario);
+      // La condición viaja persistida en config_snapshot para que la etiqueta
+      // sobreviva recargas y sesiones (el backend la guarda tal cual).
+      const run = await apiStartExperimentRun(scenario, { sensor_condition: sensorCondition });
       setRuns((prev) => [run, ...prev]);
       setRunMeta((prev) => ({ ...prev, [run.id]: { sensorCondition, scope: 'all' } }));
       return { run };

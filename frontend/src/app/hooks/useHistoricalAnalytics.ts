@@ -3,6 +3,9 @@
 // Patrón: View → useHistoricalAnalytics → services/api/history → apiFetch.
 // - Periodo 24h|7d|30d → from_ts/to_ts + interval hour|hour|day. El filtrado
 //   temporal lo ejecuta el backend; el frontend nunca simula filtrado.
+// - Ámbito opcional runId: se combina (AND) con la ventana temporal; el
+//   backend resuelve la ejecución vía SensorReading.run_id / Alert.run_id.
+//   Sin runId el ámbito es global (incluye legado).
 // - Agregados (priority/queue/alert-type) directo de GET /history/summary.
 // - ÚNICAS transformaciones frontend autorizadas, sobre muestras paginadas
 //   acotadas (≤100) y etiquetadas como muestra, nunca como global:
@@ -90,7 +93,7 @@ export interface HistoricalAnalyticsState {
   alertsSampleCount: number;
 }
 
-export function useHistoricalAnalytics(): HistoricalAnalyticsState {
+export function useHistoricalAnalytics(runId?: string | null): HistoricalAnalyticsState {
   const [range, setRange] = useState<HistoryRange>('7d');
   const [attempt, setAttempt] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -121,12 +124,13 @@ export function useHistoricalAnalytics(): HistoricalAnalyticsState {
     const fromTs = toIso(from);
     const toTs = toIso(to);
 
+    const scope = runId ? { run_id: runId } : {};
     Promise.allSettled([
-      apiGetReadingTrends(option.interval, { from_ts: fromTs, to_ts: toTs }),
-      apiGetQosTrends(option.interval, { from_ts: fromTs, to_ts: toTs }),
-      apiGetHistorySummary(),
-      apiGetClassifications({ page: 1, per_page: SAMPLE_LIMIT, sort: 'timestamp.desc', from_ts: fromTs, to_ts: toTs }),
-      apiGetHistoryAlerts({ page: 1, per_page: SAMPLE_LIMIT, sort: 'created_at.desc', from_ts: fromTs, to_ts: toTs }),
+      apiGetReadingTrends(option.interval, { from_ts: fromTs, to_ts: toTs, ...scope }),
+      apiGetQosTrends(option.interval, { from_ts: fromTs, to_ts: toTs, ...scope }),
+      apiGetHistorySummary(runId ? { run_id: runId } : undefined),
+      apiGetClassifications({ page: 1, per_page: SAMPLE_LIMIT, sort: 'timestamp.desc', from_ts: fromTs, to_ts: toTs, ...scope }),
+      apiGetHistoryAlerts({ page: 1, per_page: SAMPLE_LIMIT, sort: 'created_at.desc', from_ts: fromTs, to_ts: toTs, ...scope }),
     ]).then(([readRes, qosRes, sumRes, clsRes, alertRes]) => {
       if (cancelled) return;
       let auth = false;
@@ -194,7 +198,7 @@ export function useHistoricalAnalytics(): HistoricalAnalyticsState {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range, attempt]);
+  }, [range, attempt, runId]);
 
   // Agrupación de presentación autorizada: muestra acotada, nunca global.
   const criticalityBuckets: CriticalityBucket[] = useMemo(

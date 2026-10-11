@@ -47,9 +47,15 @@ class CriticalScenarioManager:
         self._active_scenarios: list[CriticalScenario] = []
 
     def activate(self, scenario: CriticalScenario) -> CriticalScenario:
-        """Configures the associated sensors to follow the scenario behavior."""
+        """Configures the associated sensors to follow the scenario behavior.
+
+        The duration window always anchors at activation time (not at object
+        build time): scenarios are built once per cycle but activated
+        sequentially, so a stale build timestamp would let later scenarios
+        (e.g. HIGH) expire before publishing a single reading.
+        """
         scenario.active = True
-        scenario.started_at = scenario.started_at or datetime.now()
+        scenario.started_at = datetime.now()
         if scenario.duration_seconds is not None:
             scenario.finished_at = scenario.started_at + timedelta(seconds=scenario.duration_seconds)
 
@@ -87,22 +93,31 @@ class CriticalScenarioManager:
 
     @staticmethod
     def _apply_scenario_to_device(device: Device, scenario: CriticalScenario) -> None:
+        # Duck-typed on purpose: in production main.py runs script-style
+        # while this module may resolve to the package-style copy, so the
+        # same sensor class can exist twice and isinstance() across copies
+        # is always False (silently skipping every override). Capability
+        # checks behave identically under either import style.
         for sensor in device.get_sensors():
-            if isinstance(sensor, TemperatureSensor) and scenario.temperature_range is not None:
+            if hasattr(sensor, "min_temperature") and scenario.temperature_range is not None:
                 sensor.apply_behavior_override(
                     {
                         "temperature_range": scenario.temperature_range,
                     }
                 )
 
-            if isinstance(sensor, HumiditySensor) and scenario.humidity_range is not None:
+            if hasattr(sensor, "min_humidity") and scenario.humidity_range is not None:
                 sensor.apply_behavior_override(
                     {
                         "humidity_range": scenario.humidity_range,
                     }
                 )
 
-            if isinstance(sensor, EnergyStatusSensor) and scenario.energy_state is not None:
+            if (
+                hasattr(sensor, "current_state")
+                and callable(getattr(sensor, "set_state", None))
+                and scenario.energy_state is not None
+            ):
                 sensor.set_state(scenario.energy_state)
 
     @staticmethod
@@ -111,5 +126,7 @@ class CriticalScenarioManager:
             if hasattr(sensor, "restore_behavior"):
                 sensor.restore_behavior()
 
-            if isinstance(sensor, EnergyStatusSensor):
+            if hasattr(sensor, "current_state") and callable(
+                getattr(sensor, "set_state", None)
+            ):
                 sensor.set_state(EnergyState.ON)

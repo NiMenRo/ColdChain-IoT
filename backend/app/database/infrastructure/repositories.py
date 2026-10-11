@@ -9,12 +9,15 @@ from sqlalchemy.orm import Session
 from app.acquisition.normalizer import NormalizedReading
 from app.classification.domain import TrafficClassification
 from app.database.infrastructure.models import (
+    NOTIFICATION_CHANNELS,
+    NOTIFICATION_STATUSES,
     AlertORM,
     AuditLogORM,
     DeviceORM,
     DeviceSensorORM,
     ExperimentMetricORM,
     ExperimentRunORM,
+    NotificationORM,
     PredictionORM,
     QoSMetricORM,
     SensorReadingORM,
@@ -181,6 +184,178 @@ class AlertRepository:
         if row is None:
             return None
         row.acknowledged = True
+        db.flush()
+        return row
+
+
+class NotificationRepository:
+    """Persistence for notification delivery records.
+
+    Flush only; commit is the caller's responsibility. Read state
+    (``is_read``/``read_at``) is independent from ``AlertORM.acknowledged``.
+    ``UNIQUE(alert_id, channel, recipient)`` is the source of truth for
+    idempotency: callers must check ``find_duplicate`` before ``create``
+    when reprocessing the same alert.
+    """
+
+    def create(
+        self,
+        db: Session,
+        *,
+        alert_id: uuid.UUID,
+        user_id: uuid.UUID,
+        channel: str,
+        status: str,
+        recipient: str,
+        message: str,
+        detail: str | None = None,
+        notification_date: datetime | None = None,
+        notification_id: uuid.UUID | None = None,
+    ) -> NotificationORM:
+        if not isinstance(alert_id, uuid.UUID):
+            raise ValueError("alert_id must be a UUID")
+        if not isinstance(user_id, uuid.UUID):
+            raise ValueError("user_id must be a UUID")
+        if not isinstance(channel, str) or not channel.strip():
+            raise ValueError("channel must be a non-empty string")
+        normalized_channel = channel.strip().lower()
+        if normalized_channel not in NOTIFICATION_CHANNELS:
+            raise ValueError(
+                "channel must be one of email, sms, push, dashboard"
+            )
+        if not isinstance(status, str) or not status.strip():
+            raise ValueError("status must be a non-empty string")
+        normalized_status = status.strip().lower()
+        if normalized_status not in NOTIFICATION_STATUSES:
+            raise ValueError(
+                "status must be one of pending, sent, failed, simulated, disabled"
+            )
+        if not isinstance(recipient, str) or not recipient.strip():
+            raise ValueError("recipient must be a non-empty string")
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("message must be a non-empty string")
+        obj = NotificationORM(
+            id=notification_id or uuid.uuid4(),
+            alert_id=alert_id,
+            user_id=user_id,
+            channel=normalized_channel,
+            status=normalized_status,
+            is_read=False,
+            read_at=None,
+            recipient=recipient.strip(),
+            message=message,
+            detail=detail,
+            notification_date=notification_date or datetime.now(timezone.utc),
+        )
+        db.add(obj)
+        db.flush()
+        return obj
+
+    def find_duplicate(
+        self,
+        db: Session,
+        alert_id: uuid.UUID,
+        channel: str,
+        recipient: str,
+    ) -> NotificationORM | None:
+        return (
+            db.query(NotificationORM)
+            .filter_by(
+                alert_id=alert_id,
+                channel=channel.strip().lower(),
+                recipient=recipient.strip(),
+            )
+            .first()
+        )
+
+    def get_by_id(self, db: Session, id: uuid.UUID) -> NotificationORM | None:
+        return db.query(NotificationORM).filter_by(id=id).first()
+
+    def count_unread(self, db: Session, user_id: uuid.UUID) -> int:
+        return (
+            db.query(NotificationORM)
+            .filter_by(user_id=user_id, is_read=False)
+            .count()
+        )
+
+    def mark_read(
+        self, db: Session, id: uuid.UUID, user_id: uuid.UUID
+    ) -> NotificationORM | None:
+        """Mark one owned notification as read. Idempotent; flush, no commit."""
+        row = (
+            db.query(NotificationORM)
+            .filter_by(id=id, user_id=user_id)
+            .first()
+        )
+        if row is None:
+            return None
+        if not row.is_read:
+            row.is_read = True
+            row.read_at = datetime.now(timezone.utc)
+            db.flush()
+        return row
+
+    def mark_all_read(self, db: Session, user_id: uuid.UUID) -> int:
+        """Mark all owned unread notifications as read. Returns rows updated."""
+        rows = (
+            db.query(NotificationORM)
+            .filter_by(user_id=user_id, is_read=False)
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            row.is_read = True
+            row.read_at = now
+        if rows:
+            db.flush()
+        return len(rows)
+
+    def list_by_owner(
+        self,
+        db: Session,
+        user_id: uuid.UUID,
+        *,
+        status: str | None = None,
+        channel: str | None = None,
+        alert_id: uuid.UUID | None = None,
+        is_read: bool | None = None,
+        limit: int | None = None,
+    ) -> list[NotificationORM]:
+        """Owner-scoped history, newest first. Flush-free read."""
+        query = db.query(NotificationORM).filter_by(user_id=user_id)
+        if status is not None:
+            query = query.filter_by(status=status.strip().lower())
+        if channel is not None:
+            query = query.filter_by(channel=channel.strip().lower())
+        if alert_id is not None:
+            query = query.filter_by(alert_id=alert_id)
+        if is_read is not None:
+            query = query.filter_by(is_read=is_read)
+        query = query.order_by(NotificationORM.notification_date.desc())
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
+
+    def update_status(
+        self,
+        db: Session,
+        row: NotificationORM,
+        status: str,
+        detail: str | None = None,
+    ) -> NotificationORM:
+        """Record a new delivery outcome on an existing row (manual
+        redispatch). Flush only; the caller commits. Callers must only
+        transition failed/disabled/pending rows — sent/simulated rows are
+        never rewritten."""
+        if not isinstance(status, str) or not status.strip():
+            raise ValueError("status must be a non-empty string")
+        normalized = status.strip().lower()
+        if normalized not in NOTIFICATION_STATUSES:
+            raise ValueError(
+                "status must be one of pending, sent, failed, simulated, disabled"
+            )
+        row.status = normalized
+        row.detail = detail
         db.flush()
         return row
 

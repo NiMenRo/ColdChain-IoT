@@ -1,13 +1,19 @@
-// Hook de alertas, eventos de sesión y notificaciones (TSK-050).
+// Hook de alertas, eventos de sesión y notificaciones (TSK-050 + polling híbrido + fase C).
 //
 // Patrón: AlertsView → useAlertsData → services/api/* → apiFetch → Backend.
 // - Historial persistido: GET /history/alerts (filtro `type` server-side).
 // - Sesión runtime: GET /events/summary, /events/alerts/critical, /events/events.
-// - Notificaciones: GET /notifications/history.
+// - Notificaciones: GET /notifications/persistent (historial durable propio,
+//   con is_read). El endpoint runtime /notifications/history queda sin uso en
+//   la UI (prototipo conservado en el backend).
 // - Reconocimiento: POST /notifications/alerts/{id}/acknowledge + refetch.
-// Una sola carga al montar (+ refetch manual). Sin polling ni realtime.
+//   No toca is_read (independencia lectura ↔ reconocimiento).
+// - Lectura: PATCH /notifications/{id}/read + POST /notifications/read-all
+//   (parche local inmediato + evento para la campana, sin refetch pesado).
+// Carga inicial al montar + polling ligero en segundo plano (10 s, página 1 =
+// registros recientes, sin duplicados por `id`). Sin realtime push.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '../../services/api/client';
 import { apiGetAlerts } from '../../services/api/alerts';
 import { apiGetDevices } from '../../services/api/devices';
@@ -21,9 +27,13 @@ import {
 } from '../../services/api/events';
 import {
   apiAcknowledgeAlert,
-  apiGetNotificationHistory,
+  apiGetPersistentHistory,
+  apiMarkAllNotificationsRead,
+  apiMarkNotificationRead,
+  notifyNotificationsChanged,
   type NotificationRecord,
 } from '../../services/api/notifications';
+import { usePolling, ALERTS_POLL_MS } from './usePolling';
 import type { Device } from '../types/devices';
 
 export type SectionStatus = 'loading' | 'success' | 'empty' | 'error';
@@ -83,10 +93,18 @@ function noteFailure(err: unknown, seen: { auth: boolean; config: boolean; first
 
 export interface AlertsDataState {
   isLoading: boolean;
+  /** Refresco en segundo plano en curso (los datos visibles se conservan). */
+  isRefreshing: boolean;
+  /** Sello local de la última actualización exitosa (null = ninguna aún). */
+  lastUpdated: string | null;
+  /** Error solo del último refresco en segundo plano (no borra datos). */
+  refreshError: string | null;
   isAuthBlocked: boolean;
   isConfigMissing: boolean;
   errorMessage: string | null;
   retry: () => void;
+  /** Actualización manual inmediata (recarga completa). */
+  refresh: () => void;
 
   alertsStatus: SectionStatus;
   sessionStatus: SectionStatus;
@@ -104,15 +122,35 @@ export interface AlertsDataState {
   sessionEvents: SessionEvent[];
 
   notifications: NotificationRecord[];
+  /** No leídas dentro de la página cargada (el total exacto vive en la
+   * campana vía /unread-count; este hook no duplica esa consulta). */
+  unreadCount: number;
   ackingId: string | null;
   ackError: string | null;
   acknowledge: (id: string) => Promise<void>;
+  readingId: string | null;
+  readError: string | null;
+  markRead: (id: string) => Promise<void>;
+  markAllRead: () => Promise<void>;
 }
 
 export function useAlertsData(): AlertsDataState {
   const [attempt, setAttempt] = useState(0);
+  const [pollSeq, setPollSeq] = useState(0);
   const [filter, setFilter] = useState<AlertFilter>('all');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const busyRef = useRef(false);
+  const backgroundRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const [authBlocked, setAuthBlocked] = useState(false);
   const [configMissing, setConfigMissing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -129,12 +167,32 @@ export function useAlertsData(): AlertsDataState {
 
   const [ackingId, setAckingId] = useState<string | null>(null);
   const [ackError, setAckError] = useState<string | null>(null);
+  const [readingId, setReadingId] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  const refresh = useCallback(() => {
+    backgroundRef.current = false;
+    setAttempt((n) => n + 1);
+  }, []);
+
+  // Polling ligero (10 s) sobre la página 1 = registros recientes.
+  // Sin duplicados: la lista se reemplaza por `id` desde el backend.
+  usePolling(true, ALERTS_POLL_MS, useCallback(() => {
+    backgroundRef.current = true;
+    setPollSeq((n) => n + 1);
+  }, []), busyRef);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    const background = backgroundRef.current;
+    backgroundRef.current = false;
+    if (background) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+    busyRef.current = true;
 
     Promise.allSettled([
       apiGetAlerts({ page: 1, per_page: 50, type: filter === 'all' ? undefined : filter }),
@@ -142,9 +200,10 @@ export function useAlertsData(): AlertsDataState {
       apiGetEventsSummary(),
       apiGetCriticalAlerts(10),
       apiGetSessionEvents(20),
-      apiGetNotificationHistory({ limit: 50 }),
+      apiGetPersistentHistory({ limit: 50 }),
     ]).then((results) => {
-      if (cancelled) return;
+      if (cancelled || !mountedRef.current) return;
+      busyRef.current = false;
       const [alertsRes, devRes, sumRes, critRes, evRes, notRes] = results;
       const seen = { auth: false, config: false, first: null as string | null };
 
@@ -174,9 +233,12 @@ export function useAlertsData(): AlertsDataState {
       } else {
         noteFailure(alertsRes.reason, seen);
         if (devRes.status === 'rejected') noteFailure(devRes.reason, seen);
-        setAlertsRaw([]);
-        setDevices([]);
-        setAlertsFailed(true);
+        // En segundo plano se conservan los últimos datos válidos.
+        if (!background) {
+          setAlertsRaw([]);
+          setDevices([]);
+          setAlertsFailed(true);
+        }
       }
 
       if (sumRes.status === 'fulfilled' && critRes.status === 'fulfilled' && evRes.status === 'fulfilled') {
@@ -188,10 +250,12 @@ export function useAlertsData(): AlertsDataState {
         for (const r of [sumRes, critRes, evRes]) {
           if (r.status === 'rejected') noteFailure(r.reason, seen);
         }
-        setSummary(null);
-        setCriticalSession([]);
-        setEvents([]);
-        setSessionFailed(true);
+        if (!background) {
+          setSummary(null);
+          setCriticalSession([]);
+          setEvents([]);
+          setSessionFailed(true);
+        }
       }
 
       if (notRes.status === 'fulfilled') {
@@ -199,26 +263,43 @@ export function useAlertsData(): AlertsDataState {
         setNotificationsFailed(false);
       } else {
         noteFailure(notRes.reason, seen);
-        setNotifications([]);
-        setNotificationsFailed(true);
+        if (!background) {
+          setNotifications([]);
+          setNotificationsFailed(true);
+        }
       }
 
-      setAuthBlocked(seen.auth);
-      setConfigMissing(seen.config);
-      const allFailed =
-        alertsRes.status === 'rejected' &&
-        sumRes.status === 'rejected' &&
-        critRes.status === 'rejected' &&
-        evRes.status === 'rejected' &&
-        notRes.status === 'rejected';
-      setErrorMessage(allFailed ? seen.first : null);
-      setLoading(false);
+      const anyOk =
+        alertsRes.status === 'fulfilled' ||
+        sumRes.status === 'fulfilled' ||
+        notRes.status === 'fulfilled';
+      if (background) {
+        setRefreshError(anyOk ? null : (seen.first ?? 'No se pudo actualizar.'));
+        if (anyOk) {
+          setLastUpdated(new Date().toLocaleTimeString('es-CO', { hour12: false }));
+        }
+        setRefreshing(false);
+        if (seen.auth) setAuthBlocked(true);
+        if (seen.config) setConfigMissing(true);
+      } else {
+        setAuthBlocked(seen.auth);
+        setConfigMissing(seen.config);
+        const allFailed =
+          alertsRes.status === 'rejected' &&
+          sumRes.status === 'rejected' &&
+          critRes.status === 'rejected' &&
+          evRes.status === 'rejected' &&
+          notRes.status === 'rejected';
+        setErrorMessage(allFailed ? seen.first : null);
+        setLoading(false);
+      }
     });
 
     return () => {
       cancelled = true;
+      busyRef.current = false;
     };
-  }, [attempt, filter]);
+  }, [attempt, filter, pollSeq]);
 
   const acknowledge = useCallback(async (id: string) => {
     setAckingId(id);
@@ -261,14 +342,67 @@ export function useAlertsData(): AlertsDataState {
     }
   }, [filter]);
 
+  // Lectura de notificaciones (fase C): parche local inmediato + evento
+  // para la campana. No refetch: el polling de 10 s reconcilia. No toca
+  // `acknowledged` de ninguna alerta (independencia total).
+  const markRead = useCallback(async (id: string) => {
+    setReadingId(id);
+    setReadError(null);
+    try {
+      const res = await apiMarkNotificationRead(id);
+      const updated = res.notification;
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === id
+          ? { ...n, is_read: true, read_at: updated.read_at ?? n.read_at }
+          : n)),
+      );
+      setNotificationsFailed(false);
+      notifyNotificationsChanged();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        setReadError('La notificación no existe o pertenece a otro usuario.');
+      } else if (err instanceof Error) {
+        setReadError(err.message);
+      } else {
+        setReadError('No se pudo marcar la notificación como leída.');
+      }
+    } finally {
+      setReadingId(null);
+    }
+  }, []);
+
+  const markAllRead = useCallback(async () => {
+    setReadingId('__all__');
+    setReadError(null);
+    try {
+      const res = await apiMarkAllNotificationsRead();
+      if (res.updated > 0) {
+        setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+        notifyNotificationsChanged();
+      }
+    } catch (err) {
+      if (err instanceof Error) {
+        setReadError(err.message);
+      } else {
+        setReadError('No se pudieron marcar las notificaciones como leídas.');
+      }
+    } finally {
+      setReadingId(null);
+    }
+  }, []);
+
   const pending = alertsRaw.filter((a) => !a.acknowledged);
 
   return {
     isLoading: loading,
+    isRefreshing: refreshing,
+    lastUpdated,
+    refreshError,
     isAuthBlocked: authBlocked,
     isConfigMissing: configMissing,
     errorMessage,
     retry,
+    refresh,
     alertsStatus: loading ? 'loading' : alertsFailed ? 'error' : alertsRaw.length === 0 ? 'empty' : 'success',
     sessionStatus: loading ? 'loading' : sessionFailed ? 'error' : 'success',
     notificationsStatus: loading ? 'loading' : notificationsFailed ? 'error' : notifications.length === 0 ? 'empty' : 'success',
@@ -282,8 +416,13 @@ export function useAlertsData(): AlertsDataState {
     criticalSessionAlerts: criticalSession,
     sessionEvents: events,
     notifications,
+    unreadCount: notifications.filter((n) => !n.is_read).length,
     ackingId,
     ackError,
     acknowledge,
+    readingId,
+    readError,
+    markRead,
+    markAllRead,
   };
 }

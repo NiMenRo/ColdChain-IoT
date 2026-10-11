@@ -6,10 +6,11 @@ Repositories flush; the router owns commit/rollback (single transaction).
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,7 @@ from app.database.infrastructure.repositories import (
     DeviceSensorRepository,
 )
 from app.database.infrastructure.session import get_db
+from app.devices.codes import code_prefix, next_device_code
 from app.devices.schemas import (
     CreateDeviceRequest,
     DeviceDetailResponse,
@@ -30,6 +32,7 @@ from app.devices.schemas import (
 from app.security.dependencies import require_admin
 
 router = APIRouter(prefix="/devices", tags=["devices"])
+logger = logging.getLogger(__name__)
 _devices = DeviceRepository()
 _sensors = DeviceSensorRepository()
 _audit = AuditService()
@@ -74,54 +77,92 @@ def _sensor_set(sensors: list[str]) -> list[str]:
     responses={
         401: {"description": "Not authenticated"},
         403: {"description": "Admin role required"},
-        409: {"description": "Device code already exists"},
+        409: {"description": "Could not allocate a unique device code"},
     },
 )
 def create_device(
     body: CreateDeviceRequest,
+    request: Request,
     db: Session = Depends(get_db),
     _current=Depends(require_admin),
 ):
+    """Create a device with an auto-generated code (CAVA-*/VITRINA-*).
+
+    Any client-supplied ``code`` is ignored: the backend always generates
+    the next free code for the device type and retries on unique
+    collisions, so concurrent creates cannot duplicate codes.
+    """
     sensors = _sensor_set(body.sensors)
     if not sensors:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="At least one sensor is required.",
         )
-    if _devices.exists(db, body.code):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A device with this code already exists.",
-        )
     try:
-        device = _devices.create(
-            db,
-            code=body.code,
-            name=body.name,
-            location=body.location,
-            device_type=body.device_type,
-            status=body.status,
+        code_prefix(body.device_type)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="device_type must be one of cold_room, refrigerated_showcase.",
         )
-        for sensor_type in sensors:
-            _sensors.create(db, device_id=device.id, sensor_type=sensor_type)
-        _audit.record(
-            db,
-            actor_user_id=_current.id,
-            action="device.create",
-            resource=f"devices/{device.id}",
-        )
-        db.commit()
-        db.refresh(device)
-    except ValueError as exc:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-    except IntegrityError:
-        db.rollback()
+    device = None
+    for _ in range(5):
+        code = next_device_code(db, body.device_type)
+        try:
+            device = _devices.create(
+                db,
+                code=code,
+                name=body.name,
+                location=body.location,
+                device_type=body.device_type,
+                status=body.status,
+            )
+            for sensor_type in sensors:
+                _sensors.create(db, device_id=device.id, sensor_type=sensor_type)
+            _audit.record(
+                db,
+                actor_user_id=_current.id,
+                action="device.create",
+                resource=f"devices/{device.id}",
+            )
+            db.commit()
+            db.refresh(device)
+            break
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        except IntegrityError:
+            db.rollback()
+            continue
+    if device is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="A device with this code already exists.",
+            detail="Could not allocate a unique device code.",
         )
+    _register_device_mapping(request, device)
     return _to_detail(device, sensors)
+
+
+def _register_device_mapping(request: Request, device) -> None:
+    """Register a new device for event resolution without restarting.
+
+    The acquisition pipeline resolves unknown device_code values against
+    an in-memory mapping loaded at boot; without this update, telemetry
+    and alerts for UI-created devices would be skipped until restart.
+    Best-effort by design: in contexts without the event service
+    (isolated tests), device creation must still succeed (201).
+    """
+    try:
+        service = getattr(getattr(request, "app", None), "state", None)
+        service = getattr(service, "event_processing_service", None)
+        if service is None:
+            return
+        service.set_device_mapping({device.code: device.id})
+    except Exception:
+        logger.warning(
+            "device mapping sync skipped for %s (event service unavailable)",
+            getattr(device, "code", "?"),
+        )
 
 
 @router.get(

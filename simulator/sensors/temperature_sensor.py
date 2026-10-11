@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from .base_sensor import BaseSensor
@@ -91,7 +91,9 @@ class TemperatureSensor(BaseSensor):
         measurement = TemperatureMeasurement(
             device_code=self.device.code,
             value=next_temp,
-            timestamp=datetime.now(),
+            # UTC consciente: el pipeline lo interpreta como UTC; un naive
+            # local desplazaría la hora mostrada.
+            timestamp=datetime.now(timezone.utc),
         )
         self._last_measurement = measurement
         return measurement

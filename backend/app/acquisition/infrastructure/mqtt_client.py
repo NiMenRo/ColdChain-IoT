@@ -23,6 +23,9 @@ class MQTTClient:
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=effective_client_id)
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
+        # Suscripciones registradas: con sesiones limpias el broker las
+        # olvida en cada reconexión y hay que renovarlas en on_connect.
+        self._subscriptions: list[tuple[str, object, int]] = []
         if username:
             # TSK-056: broker credentials (never logged).
             self._client.username_pw_set(username, password or "")
@@ -47,17 +50,31 @@ class MQTTClient:
 
     def subscribe(self, topic: str, callback, qos: int = 0):
         self._client.on_message = callback
-        self._client.subscribe(topic, qos=qos)
-        logger.info("MQTT suscrito a %s", topic)
+        self._subscriptions = [
+            (t, cb, q) for (t, cb, q) in self._subscriptions if t != topic
+        ] + [(topic, callback, qos)]
+        rc, _ = self._client.subscribe(topic, qos=qos)
+        if rc != mqtt.MQTT_ERR_SUCCESS:
+            logger.error("MQTT: suscripción a %s falló (rc=%s)", topic, rc)
+        else:
+            logger.info("MQTT suscrito a %s", topic)
 
     @property
     def is_connected(self) -> bool:
         return self._client.is_connected()
 
-    @staticmethod
-    def _on_connect(client, userdata, flags, reason_code, properties):
+    def _on_connect(self, client, userdata, flags, reason_code, properties):
         if reason_code == 0:
             logger.info("MQTT conexión confirmada por el broker")
+            # Renovar suscripciones: con sesión limpia el broker las olvida
+            # en cada reconexión; sin esto el backend queda sordo en silencio.
+            for topic, callback, qos in self._subscriptions:
+                client.on_message = callback
+                rc, _ = client.subscribe(topic, qos=qos)
+                if rc != mqtt.MQTT_ERR_SUCCESS:
+                    logger.error("MQTT: re-suscripción a %s falló (rc=%s)", topic, rc)
+                else:
+                    logger.info("MQTT re-suscrito a %s", topic)
         else:
             logger.error("MQTT: broker rechazó conexión (rc=%s)", reason_code)
 

@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { AlertTriangle, CheckCircle, Bell, Mail, MessageSquare, Smartphone, Monitor, Activity } from 'lucide-react';
+import { useLocation } from 'react-router';
+import { AlertTriangle, CheckCircle, Bell, Mail, MessageSquare, Smartphone, Monitor, Activity, RefreshCw, CheckCheck } from 'lucide-react';
 import { Button } from '../../lib/bootstrap';
 import { useAuth } from '../../hooks/useAuth';
 import { hasActionPermission } from '../../config/rbac';
@@ -21,9 +22,11 @@ const CHANNEL_ICON: Record<string, React.ElementType> = {
 };
 
 const NOTIF_STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
-  sent:    { label: 'Enviado',   color: '#16835B', bg: '#EAF6EF' },
-  pending: { label: 'Pendiente', color: '#965D00', bg: '#FFF5E3' },
-  failed:  { label: 'Fallido',   color: '#B22F2F', bg: '#FCEEEE' },
+  sent:      { label: 'Enviado',      color: '#16835B', bg: '#EAF6EF' },
+  pending:   { label: 'Pendiente',    color: '#965D00', bg: '#FFF5E3' },
+  failed:    { label: 'Fallido',      color: '#B22F2F', bg: '#FCEEEE' },
+  simulated: { label: 'Simulada',     color: '#1F6F8B', bg: '#E8F3F7' },
+  disabled:  { label: 'Deshabilitada', color: '#52616B', bg: '#EFF4F7' },
 };
 
 function channelIcon(channel: string): React.ElementType {
@@ -38,8 +41,14 @@ type ActiveTab = 'alerts' | 'events' | 'notifications';
 
 export function AlertsView() {
   const { role } = useAuth();
+  const location = useLocation();
   const canAcknowledge = hasActionPermission(role, 'acknowledgeAlert');
-  const [tab, setTab] = useState<ActiveTab>('alerts');
+  // La campana navega con { state: { tab: 'notifications' } }.
+  const initialTab = (location.state as { tab?: ActiveTab } | null)?.tab;
+  const [tab, setTab] = useState<ActiveTab>(
+    initialTab === 'notifications' || initialTab === 'events' ? initialTab : 'alerts',
+  );
+  const [unreadOnly, setUnreadOnly] = useState(false);
   const data = useAlertsData();
   // Análisis histórico mínimo (TSK-052): acumulado por tipo desde /history/summary.
   const hist = useHistoricalAnalytics();
@@ -48,9 +57,13 @@ export function AlertsView() {
   const {
     alerts, pendingCount, criticalCount, acknowledgedCount,
     eventsSummary, criticalSessionAlerts, sessionEvents,
-    notifications, ackingId, ackError, acknowledge,
+    notifications, unreadCount, ackingId, ackError, acknowledge,
+    readingId, readError, markRead, markAllRead,
     filter, setFilter,
   } = data;
+  const visibleNotifications = unreadOnly
+    ? notifications.filter((n) => !n.is_read)
+    : notifications;
 
   const tabStyle = (active: boolean) => ({
     padding: '8px 20px', fontSize: 13, fontWeight: active ? 600 : 400, cursor: 'pointer', border: 'none',
@@ -61,7 +74,31 @@ export function AlertsView() {
   return (
     <div>
       <h1 className="mb-1" style={{ fontSize: 20, fontWeight: 600 }}>Alertas y Notificaciones</h1>
-      <p className="text-muted small mb-4">Gestión centralizada de eventos del sistema de cadena de frío.</p>
+      <p className="text-muted small mb-2">Gestión centralizada de eventos del sistema de cadena de frío.</p>
+
+      <div className="d-flex align-items-center gap-2 mb-4">
+        {!data.isLoading && data.lastUpdated && (
+          <span className="small text-muted">
+            Actualizado {data.lastUpdated}{data.isRefreshing ? '…' : ''}
+          </span>
+        )}
+        <button
+          onClick={data.refresh}
+          disabled={data.isLoading || data.isRefreshing}
+          title="Actualizar ahora"
+          className="d-flex align-items-center gap-1 border rounded-2 bg-transparent px-2 py-1"
+          style={{ color: '#123B5D', borderColor: '#D9E2E8', cursor: 'pointer', fontSize: 12 }}
+        >
+          <RefreshCw size={13} /> Actualizar
+        </button>
+      </div>
+
+      {data.refreshError && !data.isLoading && (
+        <div className="rounded-3 px-4 py-2 small text-muted mb-4"
+          style={{ background: '#EFF4F7', border: '1px solid #D9E2E8' }}>
+          No se pudo actualizar: {data.refreshError}
+        </div>
+      )}
 
       {(data.isAuthBlocked || data.isConfigMissing) && !data.isLoading && (
         <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 rounded-3 px-4 py-3 mb-4"
@@ -120,7 +157,7 @@ export function AlertsView() {
         <>
           {/* Acumulado por tipo (GET /history/summary.alerts_by_type) */}
           <div className="cc-card px-4 py-3 mb-4">
-            <div className="small fw-semibold text-muted mb-2">Alertas por tipo (acumulado backend)</div>
+            <div className="small fw-semibold text-muted mb-2">Alertas por tipo</div>
             {hist.summaryStatus === 'loading' ? (
               <div className="small text-muted">Cargando…</div>
             ) : hist.summaryStatus === 'error' ? (
@@ -241,7 +278,7 @@ export function AlertsView() {
       {tab === 'events' && (
         <>
           <p className="text-muted small mb-4">
-            Eventos de la sesión actual del backend (runtime, no persistido). El historial persistido está en la pestaña Alertas.
+            Eventos de la sesión actual (se pierden al reiniciar). El historial está en la pestaña Alertas.
           </p>
           {data.sessionStatus === 'loading' ? (
             <div className="cc-card p-5 text-center text-muted small">Cargando eventos…</div>
@@ -318,20 +355,64 @@ export function AlertsView() {
         </>
       )}
 
-      {/* ── NOTIFICATIONS TAB (GET /notifications/history) ── */}
+      {/* ── NOTIFICATIONS TAB (GET /notifications/persistent, fase C) ── */}
       {tab === 'notifications' && (
         <>
           <p className="text-muted small mb-4">
-            Registros de notificaciones asociadas a alertas. Representan el estado del canal de entrega, no confirman la recepción real por el destinatario.
+            Historial durable de tus notificaciones. El estado representa el canal de entrega
+            (simulada/deshabilitada nunca equivalen a enviada) y la lectura es independiente
+            del reconocimiento de la alerta.
           </p>
+          <div className="d-flex flex-wrap align-items-center gap-2 mb-3">
+            <button
+              onClick={() => setUnreadOnly(false)}
+              className="rounded-2 border px-3 py-1"
+              style={{ fontSize: 12, cursor: 'pointer', fontWeight: !unreadOnly ? 600 : 400,
+                background: !unreadOnly ? '#123B5D' : '#fff',
+                color: !unreadOnly ? '#fff' : '#52616B',
+                borderColor: !unreadOnly ? '#123B5D' : '#D9E2E8' }}
+            >
+              Todas ({notifications.length})
+            </button>
+            <button
+              onClick={() => setUnreadOnly(true)}
+              className="rounded-2 border px-3 py-1"
+              style={{ fontSize: 12, cursor: 'pointer', fontWeight: unreadOnly ? 600 : 400,
+                background: unreadOnly ? '#123B5D' : '#fff',
+                color: unreadOnly ? '#fff' : '#52616B',
+                borderColor: unreadOnly ? '#123B5D' : '#D9E2E8' }}
+            >
+              No leídas ({unreadCount})
+            </button>
+            <span style={{ flex: 1 }} />
+            <Button
+              variant="outline-secondary"
+              size="sm"
+              className="d-flex align-items-center gap-1"
+              disabled={unreadCount === 0 || readingId !== null}
+              onClick={() => { void markAllRead(); }}
+              title={unreadCount === 0 ? 'Sin notificaciones por leer' : 'Marcar todas como leídas'}
+            >
+              <CheckCheck size={13} />
+              {readingId === '__all__' ? 'Marcando…' : 'Marcar todas como leídas'}
+            </Button>
+          </div>
+          {readError && (
+            <div className="rounded-3 px-3 py-2 mb-3 small"
+              style={{ background: '#FCEEEE', border: '1px solid #f1aeb5', color: '#B22F2F' }}>
+              {readError}
+            </div>
+          )}
           {data.notificationsStatus === 'loading' ? (
             <div className="cc-card p-5 text-center text-muted small">Cargando notificaciones…</div>
           ) : data.notificationsStatus === 'error' ? (
             <div className="cc-card p-5 text-center small" style={{ color: '#B22F2F' }}>
               No se pudieron cargar las notificaciones. <button onClick={data.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
             </div>
-          ) : notifications.length === 0 ? (
-            <div className="cc-card p-5 text-center text-muted small">Sin notificaciones registradas.</div>
+          ) : visibleNotifications.length === 0 ? (
+            <div className="cc-card p-5 text-center text-muted small">
+              {unreadOnly ? 'Sin notificaciones por leer.' : 'Sin notificaciones registradas.'}
+            </div>
           ) : (
             <div className="cc-card overflow-hidden">
               <table className="w-100" style={{ borderCollapse: 'collapse', fontSize: 13 }}>
@@ -339,20 +420,24 @@ export function AlertsView() {
                   <tr style={{ background: '#F5F8FA' }}>
                     <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Canal</th>
                     <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Estado</th>
+                    <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Lectura</th>
                     <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Fecha</th>
                     <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Alerta relacionada</th>
+                    <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {notifications.map((n, i) => {
+                  {visibleNotifications.map((n) => {
                     const ChannelIcon = channelIcon(n.channel);
                     const ns = notifStatus(n.status);
+                    const isUnread = !n.is_read;
+                    const marking = readingId === n.id;
                     return (
-                      <tr key={n.id} style={{ borderTop: '1px solid #EFF4F7', background: i % 2 === 1 ? '#FAFBFC' : '#fff' }}>
+                      <tr key={n.id} style={{ borderTop: '1px solid #EFF4F7', background: isUnread ? '#FFFDF4' : '#fff' }}>
                         <td className="px-4 py-3">
                           <div className="d-flex align-items-center gap-2">
                             <ChannelIcon size={15} style={{ color: '#1F6F8B' }} />
-                            <span className="fw-medium text-capitalize">{n.channel}</span>
+                            <span className="text-capitalize" style={{ fontWeight: isUnread ? 700 : 500 }}>{n.channel}</span>
                           </div>
                         </td>
                         <td className="px-4 py-3">
@@ -361,11 +446,31 @@ export function AlertsView() {
                             {ns.label}
                           </span>
                         </td>
+                        <td className="px-4 py-3">
+                          <span className="rounded-pill px-2 py-1 fw-semibold"
+                            style={{ fontSize: 12,
+                              background: isUnread ? '#FCEEEE' : '#EAF6EF',
+                              color: isUnread ? '#B22F2F' : '#16835B' }}>
+                            {isUnread ? 'No leída' : 'Leída'}
+                          </span>
+                        </td>
                         <td className="px-4 py-3 text-muted font-monospace" style={{ fontSize: 12 }}>
                           {formatTs(n.notification_date)}
                         </td>
                         <td className="px-4 py-3 text-muted" style={{ fontSize: 12 }}>
                           {n.alert ? `${alertLabel(n.alert.type)} · Criticidad ${n.alert.criticality}` : n.alert_id.slice(0, 8)}
+                        </td>
+                        <td className="px-4 py-3 text-end">
+                          {isUnread && (
+                            <button
+                              onClick={() => { void markRead(n.id); }}
+                              disabled={marking}
+                              className="border-0 bg-transparent p-0 fw-semibold"
+                              style={{ fontSize: 12, color: '#1F6F8B', cursor: marking ? 'wait' : 'pointer' }}
+                            >
+                              {marking ? 'Marcando…' : 'Marcar leída'}
+                            </button>
+                          )}
                         </td>
                       </tr>
                     );
