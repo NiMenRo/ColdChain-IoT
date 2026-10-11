@@ -132,7 +132,7 @@ class EventEnrichmentIntegrationTests(unittest.TestCase):
                 reading_id=uuid4(),
                 criticality=5.0 + i,
                 priority="medium" if i == 0 else "high",
-                queue="RR" if i == 0 else "WFQ",
+                queue="Round Robin" if i == 0 else "WFQ",
                 classification_time=datetime.now(timezone.utc),
                 timestamp=datetime.now(timezone.utc),
             )
@@ -234,7 +234,7 @@ class EventEnrichmentIntegrationTests(unittest.TestCase):
             reading_id=uuid4(),
             criticality=5.0,
             priority="medium",
-            queue="RR",
+            queue="Round Robin",
             classification_time=datetime.now(timezone.utc),
             timestamp=datetime.now(timezone.utc),
         )
@@ -281,7 +281,7 @@ class EventEnrichmentIntegrationTests(unittest.TestCase):
             reading_id=uuid4(),
             criticality=5.0,
             priority="medium",
-            queue="RR",
+            queue="Round Robin",
             classification_time=classification_time,
             timestamp=sensor_time,
         )
@@ -320,7 +320,7 @@ class EventEnrichmentIntegrationTests(unittest.TestCase):
             reading_id=uuid4(),
             criticality=5.0,
             priority="medium",
-            queue="RR",
+            queue="Round Robin",
             classification_time=datetime.now(timezone.utc),
             timestamp=datetime.now(timezone.utc),
         )

@@ -21,6 +21,17 @@ from app.qos.application.qos_metrics_service import MessageDeliveryRecord
 logger = logging.getLogger(__name__)
 
 
+def criticality_for_breaches(evaluations: list) -> float:
+    """Rule-derived severity for WITHOUT_QOS alerts (TSK-059.7).
+
+    Counts breached evaluations: 3.0 base + 2.0 per breach, capped at 9.0.
+    This is NOT QoS criticality (C = I + U + R); it carries no priority,
+    queue or scheduler meaning and must never feed TrafficClassification.
+    """
+    breached = sum(1 for e in evaluations if getattr(e, "breached", False))
+    return min(9.0, 3.0 + 2.0 * breached)
+
+
 class EventProcessingService:
     """Orchestrates event detection from readings, classifications, and QoS metrics.
 
@@ -67,17 +78,18 @@ class EventProcessingService:
     def process(
         self,
         readings: list[NormalizedReading],
-        classification: TrafficClassification,
+        classification: Optional[TrafficClassification] = None,
         metrics: Optional[MessageDeliveryRecord] = None,
     ) -> dict:
-        """Process a batch of readings with classification and optional metrics.
+        """Process a batch of readings with optional classification and metrics.
 
         Parameters
         ----------
         readings : list[NormalizedReading]
             Normalized sensor readings to process.
-        classification : TrafficClassification
-            Traffic classification result from the classification module.
+        classification : TrafficClassification, optional
+            Traffic classification result (WITH_QOS). None in WITHOUT_QOS,
+            where alert criticality is derived from rule evaluations instead.
         metrics : MessageDeliveryRecord, optional
             QoS metrics associated with this batch (not used in alert generation,
             but kept for future correlation and tracing).
@@ -94,8 +106,8 @@ class EventProcessingService:
         """
         if not isinstance(readings, list):
             raise TypeError("'readings' must be a list of NormalizedReading")
-        if not isinstance(classification, TrafficClassification):
-            raise TypeError("'classification' must be a TrafficClassification instance")
+        if classification is not None and not isinstance(classification, TrafficClassification):
+            raise TypeError("'classification' must be a TrafficClassification instance or None")
 
         # Evaluate readings against configured thresholds
         evaluations = self._rule_engine.evaluate(readings)
@@ -104,7 +116,7 @@ class EventProcessingService:
         events = self._event_detector.detect(evaluations)
 
         # Generate alerts for detected events
-        alerts = self._generate_alerts(events, readings, classification, metrics)
+        alerts = self._generate_alerts(events, readings, classification, metrics, evaluations)
 
         return {
             "evaluations": evaluations,
@@ -112,7 +124,7 @@ class EventProcessingService:
             "alerts": alerts,
             "event_count": len(events),
             "alert_count": len(alerts),
-            "classification_id": str(classification.id),
+            "classification_id": str(classification.id) if classification is not None else None,
             "processed_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -120,15 +132,17 @@ class EventProcessingService:
         self,
         events: list[DetectedEvent],
         readings: list[NormalizedReading],
-        classification: TrafficClassification,
+        classification: Optional[TrafficClassification],
         metrics: Optional[MessageDeliveryRecord] = None,
+        evaluations: list | None = None,
     ) -> list[Alert]:
         """Convert detected events into Alert objects.
 
         An Alert is generated for each DetectedEvent, enriched with:
         - device_id (from device_mapping, must be a real Device.id)
         - user_id (from config or placeholder)
-        - criticality (from classification)
+        - criticality (from classification in WITH_QOS; from rule
+          evaluations via criticality_for_breaches in WITHOUT_QOS)
         - type (from event)
         - message (from event)
         - created_at (now)
@@ -142,13 +156,17 @@ class EventProcessingService:
             device_id = self._resolve_device_id(event.device_code)
             if device_id is None:
                 continue
+            if classification is not None:
+                criticality = classification.criticality
+            else:
+                criticality = criticality_for_breaches(evaluations or [])
             alert = Alert(
                 id=uuid4(),
                 device_id=device_id,
                 user_id=self._user_id,
                 type=event.event_type,
                 message=event.message,
-                criticality=classification.criticality,
+                criticality=criticality,
                 acknowledged=False,
                 created_at=datetime.now(timezone.utc),
             )

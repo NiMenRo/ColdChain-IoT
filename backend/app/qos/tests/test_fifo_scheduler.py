@@ -25,7 +25,7 @@ class FIFOSchedulerTests(SchedulerContractTests):
         return TrafficClassification(
             id=uuid4(),
             reading_id=uuid4(),
-            criticality=2.0,
+            criticality=3.0,
             priority=priority,
             queue="FIFO",
             classification_time=datetime(2026, 8, 17, 10, 0, 0),

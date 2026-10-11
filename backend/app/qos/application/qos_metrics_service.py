@@ -83,6 +83,8 @@ class QoSMetricsService:
         received_total = self._require_non_negative_int(received_count, "received_count")
         if sent_total == 0:
             return 0.0
+        if received_total > sent_total:
+            raise ValueError("'received_count' must not exceed 'sent_count'")
         return (received_total / sent_total) * 100.0
 
     compute_pdr = calculate_pdr
@@ -92,6 +94,8 @@ class QoSMetricsService:
         received_total = self._require_non_negative_int(received_count, "received_count")
         if sent_total == 0:
             return 0.0
+        if received_total > sent_total:
+            raise ValueError("'received_count' must not exceed 'sent_count'")
         lost = sent_total - received_total
         return (lost / sent_total) * 100.0
 

@@ -11,6 +11,8 @@ class AuditLogResponse(BaseModel):
     action: str
     resource: str
     outcome: str
+    old_value: str | None = None
+    new_value: str | None = None
     created_at: datetime
 
 

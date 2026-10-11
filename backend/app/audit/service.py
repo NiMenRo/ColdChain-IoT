@@ -22,6 +22,8 @@ class AuditService:
         action: str,
         resource: str,
         outcome: str = "success",
+        old_value: str | dict | None = None,
+        new_value: str | dict | None = None,
     ) -> AuditLogORM:
         """Stage an entry in the caller's transaction; does not commit."""
         return self._repository.create(
@@ -30,6 +32,8 @@ class AuditService:
             action=action,
             resource=resource,
             outcome=outcome,
+            old_value=old_value,
+            new_value=new_value,
         )
 
     def list(self, db: Session, *, page: int, per_page: int):

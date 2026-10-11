@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -8,9 +9,15 @@ from sqlalchemy.orm import Session
 from app.acquisition.normalizer import NormalizedReading
 from app.classification.domain import TrafficClassification
 from app.database.infrastructure.models import (
+    NOTIFICATION_CHANNELS,
+    NOTIFICATION_STATUSES,
     AlertORM,
     AuditLogORM,
     DeviceORM,
+    DeviceSensorORM,
+    ExperimentMetricORM,
+    ExperimentRunORM,
+    NotificationORM,
     PredictionORM,
     QoSMetricORM,
     SensorReadingORM,
@@ -18,7 +25,11 @@ from app.database.infrastructure.models import (
     TrafficClassificationORM,
     UserORM,
 )
-from app.database.infrastructure.models import HUMAN_USER_ROLES
+from app.database.infrastructure.models import (
+    EXPERIMENT_METRIC_TYPES,
+    EXPERIMENT_SCENARIOS,
+    HUMAN_USER_ROLES,
+)
 from app.database.seed import SYSTEM_USER_ID
 from app.events.domain import Alert
 from app.qos.domain import QoSMetric
@@ -32,7 +43,18 @@ def _parse_timestamp(value: str) -> datetime:
 
 
 class SensorReadingRepository:
-    def save(self, db: Session, readings: list[NormalizedReading], device_id: uuid.UUID) -> SensorReadingORM:
+    def save(
+        self,
+        db: Session,
+        readings: list[NormalizedReading],
+        device_id: uuid.UUID,
+        run_id: uuid.UUID | None = None,
+    ) -> SensorReadingORM:
+        """TSK-059.3 — persist 1 SensorReading per bundle honoring DeviceSensor.
+
+        Absent sensors persist as NULL (not enabled, not a failure). Any
+        received sensor that is not configured rejects the whole bundle.
+        """
         if not readings:
             raise ValueError("readings must not be empty")
         device = db.query(DeviceORM).filter_by(id=device_id).first()
@@ -43,12 +65,22 @@ class SensorReadingRepository:
             raise ValueError(
                 "reading device_code does not match the registered device_id"
             )
+        enabled = {
+            row.sensor_type
+            for row in db.query(DeviceSensorORM).filter_by(device_id=device_id).all()
+        }
+        for r in readings:
+            if r.sensor_name not in enabled:
+                raise ValueError(
+                    f"sensor '{r.sensor_name}' is not configured for device '{device.code}'"
+                )
         # Group by same device_code + timestamp (documented grouping, no generic mapper)
         # Assume readings belong to the same bundle (same MQTT message)
         by_key: dict[tuple[str, str], list[NormalizedReading]] = {}
         for r in readings:
             by_key.setdefault((r.device_code, r.timestamp), []).append(r)
         # For TSK-042, persist 1 SensorReading per bundle; if multiple keys, use the first
+        # (normalizer guarantees a single timestamp per MQTT message)
         first_key = next(iter(by_key))
         group = by_key[first_key]
         values: dict[str, object] = {}
@@ -58,16 +90,24 @@ class SensorReadingRepository:
             elif r.sensor_name == "humidity":
                 values["humidity"] = float(r.value)
             elif r.sensor_name == "energy":
-                values["energy"] = str(r.raw_value).strip().lower()
-        if "temperature" not in values or "humidity" not in values or "energy" not in values:
-            raise ValueError("Missing temperature/humidity/energy in readings group")
+                # TSK-059.4 — canonical energy is on/off; numeric raw values
+                # are rejected (no producer sends them).
+                normalized_energy = str(r.raw_value).strip().lower()
+                if normalized_energy not in ("on", "off"):
+                    raise ValueError(
+                        f"energy must be 'on' or 'off', got {r.raw_value!r}"
+                    )
+                values["energy"] = normalized_energy
+        if not values:
+            raise ValueError("readings group has no valid sensor measurements")
         ts = _parse_timestamp(group[0].timestamp)
         obj = SensorReadingORM(
             device_id=device_id,
-            temperature=values["temperature"],
-            humidity=values["humidity"],
-            energy=values["energy"],
+            temperature=values.get("temperature"),
+            humidity=values.get("humidity"),
+            energy=values.get("energy"),
             timestamp=ts,
+            run_id=run_id,
         )
         db.add(obj)
         db.flush()
@@ -111,7 +151,9 @@ class QoSMetricRepository:
 
 
 class AlertRepository:
-    def save(self, db: Session, alert: Alert) -> AlertORM:
+    def save(
+        self, db: Session, alert: Alert, run_id: uuid.UUID | None = None
+    ) -> AlertORM:
         obj = AlertORM(
             id=alert.id,
             device_id=alert.device_id,
@@ -121,6 +163,7 @@ class AlertRepository:
             criticality=alert.criticality,
             acknowledged=alert.acknowledged,
             created_at=alert.created_at,
+            run_id=run_id,
         )
         db.add(obj)
         db.flush()
@@ -131,6 +174,190 @@ class AlertRepository:
         for a in alerts:
             result.append(self.save(db, a))
         return result
+
+    def get_by_id(self, db: Session, id: uuid.UUID) -> AlertORM | None:
+        return db.query(AlertORM).filter_by(id=id).first()
+
+    def acknowledge(self, db: Session, id: uuid.UUID) -> AlertORM | None:
+        """TSK-059.5 — persist acknowledged=True. Idempotent; flush, no commit."""
+        row = self.get_by_id(db, id)
+        if row is None:
+            return None
+        row.acknowledged = True
+        db.flush()
+        return row
+
+
+class NotificationRepository:
+    """Persistence for notification delivery records.
+
+    Flush only; commit is the caller's responsibility. Read state
+    (``is_read``/``read_at``) is independent from ``AlertORM.acknowledged``.
+    ``UNIQUE(alert_id, channel, recipient)`` is the source of truth for
+    idempotency: callers must check ``find_duplicate`` before ``create``
+    when reprocessing the same alert.
+    """
+
+    def create(
+        self,
+        db: Session,
+        *,
+        alert_id: uuid.UUID,
+        user_id: uuid.UUID,
+        channel: str,
+        status: str,
+        recipient: str,
+        message: str,
+        detail: str | None = None,
+        notification_date: datetime | None = None,
+        notification_id: uuid.UUID | None = None,
+    ) -> NotificationORM:
+        if not isinstance(alert_id, uuid.UUID):
+            raise ValueError("alert_id must be a UUID")
+        if not isinstance(user_id, uuid.UUID):
+            raise ValueError("user_id must be a UUID")
+        if not isinstance(channel, str) or not channel.strip():
+            raise ValueError("channel must be a non-empty string")
+        normalized_channel = channel.strip().lower()
+        if normalized_channel not in NOTIFICATION_CHANNELS:
+            raise ValueError(
+                "channel must be one of email, sms, push, dashboard"
+            )
+        if not isinstance(status, str) or not status.strip():
+            raise ValueError("status must be a non-empty string")
+        normalized_status = status.strip().lower()
+        if normalized_status not in NOTIFICATION_STATUSES:
+            raise ValueError(
+                "status must be one of pending, sent, failed, simulated, disabled"
+            )
+        if not isinstance(recipient, str) or not recipient.strip():
+            raise ValueError("recipient must be a non-empty string")
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("message must be a non-empty string")
+        obj = NotificationORM(
+            id=notification_id or uuid.uuid4(),
+            alert_id=alert_id,
+            user_id=user_id,
+            channel=normalized_channel,
+            status=normalized_status,
+            is_read=False,
+            read_at=None,
+            recipient=recipient.strip(),
+            message=message,
+            detail=detail,
+            notification_date=notification_date or datetime.now(timezone.utc),
+        )
+        db.add(obj)
+        db.flush()
+        return obj
+
+    def find_duplicate(
+        self,
+        db: Session,
+        alert_id: uuid.UUID,
+        channel: str,
+        recipient: str,
+    ) -> NotificationORM | None:
+        return (
+            db.query(NotificationORM)
+            .filter_by(
+                alert_id=alert_id,
+                channel=channel.strip().lower(),
+                recipient=recipient.strip(),
+            )
+            .first()
+        )
+
+    def get_by_id(self, db: Session, id: uuid.UUID) -> NotificationORM | None:
+        return db.query(NotificationORM).filter_by(id=id).first()
+
+    def count_unread(self, db: Session, user_id: uuid.UUID) -> int:
+        return (
+            db.query(NotificationORM)
+            .filter_by(user_id=user_id, is_read=False)
+            .count()
+        )
+
+    def mark_read(
+        self, db: Session, id: uuid.UUID, user_id: uuid.UUID
+    ) -> NotificationORM | None:
+        """Mark one owned notification as read. Idempotent; flush, no commit."""
+        row = (
+            db.query(NotificationORM)
+            .filter_by(id=id, user_id=user_id)
+            .first()
+        )
+        if row is None:
+            return None
+        if not row.is_read:
+            row.is_read = True
+            row.read_at = datetime.now(timezone.utc)
+            db.flush()
+        return row
+
+    def mark_all_read(self, db: Session, user_id: uuid.UUID) -> int:
+        """Mark all owned unread notifications as read. Returns rows updated."""
+        rows = (
+            db.query(NotificationORM)
+            .filter_by(user_id=user_id, is_read=False)
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            row.is_read = True
+            row.read_at = now
+        if rows:
+            db.flush()
+        return len(rows)
+
+    def list_by_owner(
+        self,
+        db: Session,
+        user_id: uuid.UUID,
+        *,
+        status: str | None = None,
+        channel: str | None = None,
+        alert_id: uuid.UUID | None = None,
+        is_read: bool | None = None,
+        limit: int | None = None,
+    ) -> list[NotificationORM]:
+        """Owner-scoped history, newest first. Flush-free read."""
+        query = db.query(NotificationORM).filter_by(user_id=user_id)
+        if status is not None:
+            query = query.filter_by(status=status.strip().lower())
+        if channel is not None:
+            query = query.filter_by(channel=channel.strip().lower())
+        if alert_id is not None:
+            query = query.filter_by(alert_id=alert_id)
+        if is_read is not None:
+            query = query.filter_by(is_read=is_read)
+        query = query.order_by(NotificationORM.notification_date.desc())
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
+
+    def update_status(
+        self,
+        db: Session,
+        row: NotificationORM,
+        status: str,
+        detail: str | None = None,
+    ) -> NotificationORM:
+        """Record a new delivery outcome on an existing row (manual
+        redispatch). Flush only; the caller commits. Callers must only
+        transition failed/disabled/pending rows — sent/simulated rows are
+        never rewritten."""
+        if not isinstance(status, str) or not status.strip():
+            raise ValueError("status must be a non-empty string")
+        normalized = status.strip().lower()
+        if normalized not in NOTIFICATION_STATUSES:
+            raise ValueError(
+                "status must be one of pending, sent, failed, simulated, disabled"
+            )
+        row.status = normalized
+        row.detail = detail
+        db.flush()
+        return row
 
 
 class PredictionRepository:
@@ -150,12 +377,41 @@ class PredictionRepository:
 class SystemConfigRepository:
     """Reads the persisted system configuration used by application services."""
 
+    _UPDATABLE_FIELDS = frozenset(
+        {"min_temperature", "max_temperature", "min_humidity", "max_humidity"}
+    )
+
     def get_current(self, db: Session) -> SystemConfigORM | None:
         return (
             db.query(SystemConfigORM)
             .order_by(SystemConfigORM.id.asc())
             .first()
         )
+
+    def update(self, db: Session, config: SystemConfigORM, **fields) -> SystemConfigORM:
+        """TSK-059.4 — admin-only threshold update (qos_* are read-only)."""
+        for key, value in fields.items():
+            if key not in self._UPDATABLE_FIELDS:
+                raise ValueError(f"field '{key}' is not updatable")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{key} must be numeric")
+        # Validate prospective values before setattr: reading expired
+        # attributes would trigger autoflush and surface IntegrityError first.
+        with db.no_autoflush:
+            prospective = {
+                "min_temperature": fields.get("min_temperature", config.min_temperature),
+                "max_temperature": fields.get("max_temperature", config.max_temperature),
+                "min_humidity": fields.get("min_humidity", config.min_humidity),
+                "max_humidity": fields.get("max_humidity", config.max_humidity),
+            }
+        if prospective["min_temperature"] > prospective["max_temperature"]:
+            raise ValueError("min_temperature must be <= max_temperature")
+        if prospective["min_humidity"] > prospective["max_humidity"]:
+            raise ValueError("min_humidity must be <= max_humidity")
+        for key, value in fields.items():
+            setattr(config, key, value)
+        db.flush()
+        return config
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +420,7 @@ class SystemConfigRepository:
 
 _ALLOWED_STATUSES = frozenset({"active", "inactive", "maintenance", "error"})
 _ALLOWED_DEVICE_TYPES = frozenset({"cold_room", "refrigerated_showcase"})
+_ALLOWED_SENSOR_TYPES = frozenset({"temperature", "humidity", "energy"})
 
 
 class DeviceRepository:
@@ -272,6 +529,59 @@ class DeviceRepository:
         device.status = status
         db.flush()
         return device
+
+
+class DeviceSensorRepository:
+    """TSK-059.2 — persistent Device -> DeviceSensor configuration.
+
+    Repositories use flush only; commit is caller's responsibility.
+    Deleting a sensor never touches sensor_readings history.
+    """
+
+    def list_by_device(self, db: Session, device_id: uuid.UUID) -> list[DeviceSensorORM]:
+        return (
+            db.query(DeviceSensorORM)
+            .filter_by(device_id=device_id)
+            .order_by(DeviceSensorORM.sensor_type.asc())
+            .all()
+        )
+
+    def get(self, db: Session, device_id: uuid.UUID, sensor_type: str) -> DeviceSensorORM | None:
+        if not isinstance(sensor_type, str):
+            return None
+        sensor_type = sensor_type.strip().lower()
+        if not sensor_type:
+            return None
+        return (
+            db.query(DeviceSensorORM)
+            .filter_by(device_id=device_id, sensor_type=sensor_type)
+            .first()
+        )
+
+    def create(self, db: Session, *, device_id: uuid.UUID, sensor_type: str) -> DeviceSensorORM:
+        if not isinstance(sensor_type, str) or not sensor_type.strip():
+            raise ValueError("sensor_type must be a non-empty string")
+        normalized = sensor_type.strip().lower()
+        if normalized not in _ALLOWED_SENSOR_TYPES:
+            raise ValueError(f"sensor_type must be one of {sorted(_ALLOWED_SENSOR_TYPES)}")
+        device = db.query(DeviceORM).filter_by(id=device_id).first()
+        if device is None:
+            raise ValueError(f"device_id {device_id} is not registered")
+        obj = DeviceSensorORM(device_id=device_id, sensor_type=normalized)
+        db.add(obj)
+        db.flush()
+        return obj
+
+    def delete(self, db: Session, sensor: DeviceSensorORM) -> None:
+        remaining = (
+            db.query(DeviceSensorORM)
+            .filter_by(device_id=sensor.device_id)
+            .count()
+        )
+        if remaining <= 1:
+            raise ValueError("device must keep at least one sensor configured")
+        db.delete(sensor)
+        db.flush()
 
 
 class UserRepository:
@@ -392,6 +702,11 @@ class UserRepository:
 class AuditLogRepository:
     """Persistence for immutable audit entries; intentionally no update/delete."""
 
+    # TSK-059.5 — keys that must never reach audit_logs, even nested.
+    _FORBIDDEN_VALUE_KEYS = frozenset(
+        {"password", "new_password", "password_hash", "hash", "token", "secret"}
+    )
+
     def create(
         self,
         db: Session,
@@ -400,6 +715,8 @@ class AuditLogRepository:
         action: str,
         resource: str,
         outcome: str = "success",
+        old_value: str | dict | None = None,
+        new_value: str | dict | None = None,
     ) -> AuditLogORM:
         if not isinstance(action, str) or not action.strip():
             raise ValueError("action must be a non-empty string")
@@ -412,10 +729,33 @@ class AuditLogRepository:
             action=action.strip(),
             resource=resource.strip(),
             outcome=outcome.strip(),
+            old_value=self._serialize_value(old_value, "old_value"),
+            new_value=self._serialize_value(new_value, "new_value"),
         )
         db.add(entry)
         db.flush()
         return entry
+
+    @classmethod
+    def _serialize_value(cls, value: str | dict | None, field: str) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            cls._reject_forbidden_keys(value)
+            return json.dumps(value, sort_keys=True, default=str)
+        raise ValueError(f"{field} must be a str, dict or None")
+
+    @classmethod
+    def _reject_forbidden_keys(cls, payload: dict) -> None:
+        for key, nested in payload.items():
+            if str(key).strip().lower() in cls._FORBIDDEN_VALUE_KEYS:
+                raise ValueError(
+                    f"audit value key '{key}' is forbidden (secret material)"
+                )
+            if isinstance(nested, dict):
+                cls._reject_forbidden_keys(nested)
 
     def list(
         self, db: Session, *, page: int = 1, per_page: int = 20
@@ -423,4 +763,136 @@ class AuditLogRepository:
         query = db.query(AuditLogORM).order_by(AuditLogORM.created_at.desc())
         total = query.count()
         items = query.offset((page - 1) * per_page).limit(per_page).all()
+        return total, items
+
+
+class ExperimentRunRepository:
+    """TSK-059.6 — experiment runs. Flush only; commit is caller's responsibility."""
+
+    def create(
+        self,
+        db: Session,
+        *,
+        scenario: str,
+        config_snapshot: str | dict | None = None,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+    ) -> ExperimentRunORM:
+        if not isinstance(scenario, str) or scenario.strip() not in EXPERIMENT_SCENARIOS:
+            raise ValueError(
+                f"scenario must be one of {sorted(EXPERIMENT_SCENARIOS)}"
+            )
+        snapshot = self._serialize_snapshot(config_snapshot)
+        obj = ExperimentRunORM(
+            scenario=scenario.strip(),
+            config_snapshot=snapshot,
+            started_at=started_at or datetime.now(timezone.utc),
+            finished_at=finished_at,
+        )
+        db.add(obj)
+        db.flush()
+        return obj
+
+    def get_by_id(self, db: Session, id: uuid.UUID) -> ExperimentRunORM | None:
+        return db.query(ExperimentRunORM).filter_by(id=id).first()
+
+    def list(
+        self,
+        db: Session,
+        *,
+        scenario: str | None = None,
+        page: int = 1,
+        per_page: int = 20,
+    ) -> tuple[int, list[ExperimentRunORM]]:
+        q = db.query(ExperimentRunORM)
+        if scenario is not None:
+            if scenario not in EXPERIMENT_SCENARIOS:
+                raise ValueError(
+                    f"scenario must be one of {sorted(EXPERIMENT_SCENARIOS)}"
+                )
+            q = q.filter(ExperimentRunORM.scenario == scenario)
+        q = q.order_by(ExperimentRunORM.started_at.desc())
+        total = q.count()
+        items = q.offset((page - 1) * per_page).limit(per_page).all()
+        return total, items
+
+    @staticmethod
+    def _serialize_snapshot(value: str | dict | None) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            parsed = json.loads(value)  # must be valid JSON
+            return json.dumps(parsed, sort_keys=True, default=str)
+        if isinstance(value, dict):
+            return json.dumps(value, sort_keys=True, default=str)
+        raise ValueError("config_snapshot must be a JSON str, dict or None")
+
+
+class ExperimentMetricRepository:
+    """TSK-059.6 — common comparable metrics. Flush only; no commit."""
+
+    def append(
+        self,
+        db: Session,
+        *,
+        run_id: uuid.UUID,
+        metric_type: str,
+        value: float,
+        timestamp: datetime | None = None,
+    ) -> ExperimentMetricORM:
+        if not isinstance(metric_type, str) or metric_type.strip() not in EXPERIMENT_METRIC_TYPES:
+            raise ValueError(
+                f"metric_type must be one of {sorted(EXPERIMENT_METRIC_TYPES)}"
+            )
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("value must be numeric")
+        obj = ExperimentMetricORM(
+            run_id=run_id,
+            metric_type=metric_type.strip(),
+            value=value,
+            timestamp=timestamp or datetime.now(timezone.utc),
+        )
+        db.add(obj)
+        db.flush()
+        return obj
+
+    def bulk(
+        self,
+        db: Session,
+        *,
+        run_id: uuid.UUID,
+        metrics: list[dict],
+    ) -> list[ExperimentMetricORM]:
+        result = []
+        for m in metrics:
+            result.append(
+                self.append(
+                    db,
+                    run_id=run_id,
+                    metric_type=m["metric_type"],
+                    value=m["value"],
+                    timestamp=m.get("timestamp"),
+                )
+            )
+        return result
+
+    def list(
+        self,
+        db: Session,
+        *,
+        run_id: uuid.UUID,
+        metric_type: str | None = None,
+        page: int = 1,
+        per_page: int = 20,
+    ) -> tuple[int, list[ExperimentMetricORM]]:
+        q = db.query(ExperimentMetricORM).filter_by(run_id=run_id)
+        if metric_type is not None:
+            if metric_type not in EXPERIMENT_METRIC_TYPES:
+                raise ValueError(
+                    f"metric_type must be one of {sorted(EXPERIMENT_METRIC_TYPES)}"
+                )
+            q = q.filter(ExperimentMetricORM.metric_type == metric_type)
+        q = q.order_by(ExperimentMetricORM.timestamp.asc())
+        total = q.count()
+        items = q.offset((page - 1) * per_page).limit(per_page).all()
         return total, items

@@ -5,8 +5,10 @@ from sqlalchemy.orm import Session
 from app.database.infrastructure.models import AlertORM, DeviceORM
 
 class AlertHistoryRepository:
-    def list(self, db: Session, *, device_code: str | None = None, type: str | None = None, acknowledged: bool | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, sort: str = "created_at.desc", page: int = 1, per_page: int = 20):
+    def list(self, db: Session, *, device_code: str | None = None, type: str | None = None, acknowledged: bool | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, run_id: UUID | None = None, sort: str = "created_at.desc", page: int = 1, per_page: int = 20):
         q = db.query(AlertORM)
+        if run_id is not None:
+            q = q.filter(AlertORM.run_id == run_id)
         if device_code:
             q = q.join(DeviceORM, AlertORM.device_id == DeviceORM.id).filter(DeviceORM.code == device_code)
         if type:

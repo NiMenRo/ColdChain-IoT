@@ -49,22 +49,32 @@ class QoSMetric:
     def _validate_latency(self) -> None:
         if isinstance(self.latency, bool) or not isinstance(self.latency, (int, float)):
             raise TypeError("'latency' must be numeric")
+        if self.latency < 0:
+            raise ValueError("'latency' must be >= 0 (seconds)")
 
     def _validate_packet_loss(self) -> None:
         if isinstance(self.packet_loss, bool) or not isinstance(self.packet_loss, (int, float)):
             raise TypeError("'packet_loss' must be numeric")
+        if not 0 <= self.packet_loss <= 100:
+            raise ValueError("'packet_loss' must be between 0 and 100 (percent)")
 
     def _validate_throughput(self) -> None:
         if isinstance(self.throughput, bool) or not isinstance(self.throughput, (int, float)):
             raise TypeError("'throughput' must be numeric")
+        if self.throughput < 0:
+            raise ValueError("'throughput' must be >= 0 (bytes/second)")
 
     def _validate_pdr(self) -> None:
         if isinstance(self.pdr, bool) or not isinstance(self.pdr, (int, float)):
             raise TypeError("'pdr' must be numeric")
+        if not 0 <= self.pdr <= 100:
+            raise ValueError("'pdr' must be between 0 and 100 (percent)")
 
     def _validate_jitter(self) -> None:
         if isinstance(self.jitter, bool) or not isinstance(self.jitter, (int, float)):
             raise TypeError("'jitter' must be numeric")
+        if self.jitter < 0:
+            raise ValueError("'jitter' must be >= 0 (seconds)")
 
     def _validate_timestamp(self) -> None:
         if not isinstance(self.timestamp, datetime):

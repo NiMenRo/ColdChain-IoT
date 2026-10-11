@@ -45,14 +45,18 @@ class TrafficClassification:
     def _validate_criticality(self) -> None:
         if isinstance(self.criticality, bool) or not isinstance(self.criticality, (int, float)):
             raise TypeError("'criticality' must be numeric")
+        if not 3 <= self.criticality <= 9:
+            raise ValueError("'criticality' must be between 3 and 9")
 
     def _validate_priority(self) -> None:
-        if not isinstance(self.priority, str) or not self.priority.strip():
-            raise ValueError("'priority' must be a non-empty string")
+        if not isinstance(self.priority, str) or self.priority.strip().lower() not in ("low", "medium", "high"):
+            raise ValueError("'priority' must be one of low, medium, high")
+        self.priority = self.priority.strip().lower()
 
     def _validate_queue(self) -> None:
-        if not isinstance(self.queue, str) or not self.queue.strip():
-            raise ValueError("'queue' must be a non-empty string")
+        if not isinstance(self.queue, str) or self.queue.strip() not in ("FIFO", "Round Robin", "WFQ"):
+            raise ValueError("'queue' must be one of FIFO, Round Robin, WFQ")
+        self.queue = self.queue.strip()
 
     def _validate_classification_time(self) -> None:
         if not isinstance(self.classification_time, datetime):

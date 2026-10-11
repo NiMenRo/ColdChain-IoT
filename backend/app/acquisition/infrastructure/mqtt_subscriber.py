@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..device_origin_identifier import DeviceOriginIdentifier
 from ..message_queue import MessageQueue
@@ -38,7 +38,8 @@ class MQTTSubscriber:
                     "device_code": device_origin.device_code,
                     "device_type": device_origin.device_type,
                 },
-                "received_at": datetime.now().isoformat(timespec="seconds"),
+                # TSK-059.7 — real ingestion instant, aware UTC with ms precision.
+                "received_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             })
             logger.info(
                 "Mensaje recibido de dispositivo %s (%s)",
@@ -48,9 +49,29 @@ class MQTTSubscriber:
         except json.JSONDecodeError:
             self._validator.register_invalid(msg.payload, "Payload JSON malformado", getattr(msg, "topic", None))
             logger.warning("Payload JSON malformado: %s", msg.payload)
+            self._record_invalid_metric()
         except MessageValidationError as exc:
             self._validator.register_invalid(payload_data or msg.payload, str(exc), getattr(msg, "topic", None))
             logger.warning("Mensaje MQTT inválido: %s", exc)
+            self._record_invalid_metric()
         except ValueError as exc:
             self._validator.register_invalid(payload_data or msg.payload, str(exc), getattr(msg, "topic", None))
             logger.warning("Mensaje MQTT sin dispositivo identificado: %s", exc)
+            self._record_invalid_metric()
+
+    @staticmethod
+    def _record_invalid_metric() -> None:
+        """TSK-059.7 — count real register_invalid events for the active run.
+
+        No-op without an active run, so legacy behavior is untouched.
+        """
+        from app.experiments.active import get_active_run
+        from app.experiments.metrics import record_metrics
+
+        active = get_active_run()
+        if active is None:
+            return
+        record_metrics(
+            active[0],
+            [("messages_invalid", 1.0, datetime.now(timezone.utc))],
+        )

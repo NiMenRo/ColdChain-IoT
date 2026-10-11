@@ -1,0 +1,911 @@
+import { useState, useEffect, useRef } from 'react';
+import {
+  Thermometer, Droplets, Zap, ChevronDown, ChevronUp,
+  Snowflake, AlertTriangle, WrenchIcon, PowerOff,
+  Plus, X, Save, Settings, RefreshCw, Layers,
+} from 'lucide-react';
+import { Button, Form, Row, Col } from '../../lib/bootstrap';
+import {
+  useDevices, Device, DeviceStatus, DeviceType, SensorType,
+  DEVICE_TYPE_LABEL, SENSOR_LABEL, DeviceFormData, DeviceReadingSnapshot,
+} from '../../contexts/DeviceContext';
+import { useAuth } from '../../hooks/useAuth';
+import { hasActionPermission } from '../../config/rbac';
+import {
+  BULK_CONCURRENCY,
+  MAX_BULK_DEVICES,
+  buildBulkPlan,
+  type BulkCreateSummary,
+  type BulkDeviceKind,
+} from '../../../services/api/bulkDevices';
+
+// ─── Status config ────────────────────────────────────────────────────────────
+const STATUS_CONFIG: Record<DeviceStatus, { label: string; bg: string; color: string; border: string; Icon: React.ElementType }> = {
+  active:      { label: 'Activo',        bg: '#EAF6EF', color: '#16835B', border: '#a3cfbb', Icon: Snowflake     },
+  inactive:    { label: 'Inactivo',      bg: '#EFF4F7', color: '#52616B', border: '#D9E2E8', Icon: PowerOff      },
+  maintenance: { label: 'Mantenimiento', bg: '#FFF5E3', color: '#965D00', border: '#ffda6a', Icon: WrenchIcon    },
+  error:       { label: 'Error',         bg: '#FCEEEE', color: '#B22F2F', border: '#f1aeb5', Icon: AlertTriangle },
+};
+
+const ALL_SENSORS: SensorType[] = ['temperature', 'humidity', 'energy'];
+
+// ─── Overlay Modal ─────────────────────────────────────────────────────────────
+function Modal({ show, onHide, title, children }: {
+  show: boolean; onHide: () => void; title: string; children: React.ReactNode;
+}) {
+  useEffect(() => {
+    document.body.style.overflow = show ? 'hidden' : '';
+    return () => { document.body.style.overflow = ''; };
+  }, [show]);
+
+  if (!show) return null;
+  return (
+    <div onClick={onHide}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1050,
+               display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div onClick={e => e.stopPropagation()}
+        style={{ background: '#fff', borderRadius: 12, width: '100%', maxWidth: 540,
+                 maxHeight: '90vh', overflowY: 'auto',
+                 boxShadow: '0 8px 40px rgba(0,0,0,0.18)' }}>
+        <div className="d-flex justify-content-between align-items-center px-4 py-3"
+          style={{ borderBottom: '1px solid #EFF4F7' }}>
+          <h2 className="mb-0" style={{ fontSize: 16, fontWeight: 600 }}>{title}</h2>
+          <button className="border-0 bg-transparent p-1 rounded" onClick={onHide}
+            style={{ cursor: 'pointer', color: '#52616B' }}><X size={18} /></button>
+        </div>
+        <div className="px-4 py-3">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Sensor Config Form ────────────────────────────────────────────────────────
+// Configuración fija: todo dispositivo opera siempre con los 3 tipos de
+// sensores (temperatura, humedad, energía). Guardar reaplica el conjunto
+// completo vía PUT /devices/{id}/sensors. Sin checklist por decisión de UX.
+const SENSOR_ICONS: Record<SensorType, React.ElementType> = {
+  temperature: Thermometer,
+  humidity:    Droplets,
+  energy:      Zap,
+};
+
+function SensorConfigForm({ device, onSave, onCancel }: {
+  device: Device;
+  onSave: (sensors: SensorType[]) => void;
+  onCancel: () => void;
+}) {
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    onSave([...ALL_SENSORS]);
+  }
+
+  return (
+    <form onSubmit={submit} noValidate>
+      <p className="text-muted small mb-3">
+        <strong>{device.name}</strong> opera siempre con los 3 tipos de sensores.
+        Guardar reaplica la configuración completa del dispositivo.
+      </p>
+      <div className="small fw-semibold text-muted mb-1">Sensores</div>
+      <div className="rounded-3 p-3 mb-3" style={{ background: '#F5F8FA', border: '1px solid #E4ECF1' }}>
+        <div className="d-flex flex-wrap gap-3">
+          {ALL_SENSORS.map(s => {
+            const Icon = SENSOR_ICONS[s];
+            return (
+              <span key={s} className="d-flex align-items-center gap-2 small"
+                style={{ color: '#123B5D', fontWeight: 600 }}>
+                <Icon size={15} style={{ color: '#1F6F8B' }} />
+                {SENSOR_LABEL[s]}
+              </span>
+            );
+          })}
+        </div>
+      </div>
+      <div className="d-flex gap-2 justify-content-end">
+        <Button type="button" variant="outline-secondary" size="sm" onClick={onCancel}>Cancelar</Button>
+        <Button type="submit" variant="primary" size="sm" className="d-flex align-items-center gap-1">
+          <Save size={13} />Guardar configuración
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+// ─── Device Form ───────────────────────────────────────────────────────────────
+function DeviceForm({ initial, onSave, onCancel }: {
+  initial: DeviceFormData;
+  onSave: (data: DeviceFormData) => void;
+  onCancel: () => void;
+}) {
+  const [form, setForm] = useState<DeviceFormData>(initial);
+  const [errors, setErrors] = useState<{ name?: string; location?: string }>({});
+
+  function validate() {
+    const e: typeof errors = {};
+    if (!form.name.trim())           e.name    = 'El nombre es requerido.';
+    if (!form.location.trim())       e.location = 'La ubicación es requerida.';
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  }
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    // Sensores siempre fijos: todo dispositivo nace con los 3 tipos.
+    if (validate()) onSave({ ...form, sensors: [...ALL_SENSORS] });
+  }
+
+  return (
+    <form onSubmit={submit} noValidate>
+      <Row className="g-3 mb-3">
+        <Col xs={12}>
+          <Form.Label className="small fw-semibold text-muted">Nombre del dispositivo</Form.Label>
+          <Form.Control size="sm" value={form.name} placeholder="Ej. Cava Norte"
+            onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
+            isInvalid={!!errors.name} />
+          {errors.name && <div className="invalid-feedback d-block" style={{ fontSize: 12 }}>{errors.name}</div>}
+        </Col>
+        <Col xs={12} sm={6}>
+          <Form.Label className="small fw-semibold text-muted">Tipo</Form.Label>
+          <Form.Select size="sm" value={form.device_type}
+            onChange={e => setForm(p => ({ ...p, device_type: e.target.value as DeviceType }))}>
+            <option value="cold_room">Cava</option>
+            <option value="refrigerated_showcase">Vitrina</option>
+          </Form.Select>
+        </Col>
+        <Col xs={12} sm={6}>
+          <Form.Label className="small fw-semibold text-muted">Estado inicial</Form.Label>
+          <Form.Select size="sm" value={form.status}
+            onChange={e => setForm(p => ({ ...p, status: e.target.value as DeviceStatus }))}>
+            {(Object.keys(STATUS_CONFIG) as DeviceStatus[]).map(s => (
+              <option key={s} value={s}>{STATUS_CONFIG[s].label}</option>
+            ))}
+          </Form.Select>
+        </Col>
+        <Col xs={12}>
+          <Form.Label className="small fw-semibold text-muted">Ubicación</Form.Label>
+          <Form.Control size="sm" value={form.location} placeholder="Ej. Zona A"
+            onChange={e => setForm(p => ({ ...p, location: e.target.value }))}
+            isInvalid={!!errors.location} />
+          {errors.location && <div className="invalid-feedback d-block" style={{ fontSize: 12 }}>{errors.location}</div>}
+        </Col>
+      </Row>
+
+      {/* Sensores fijos: todo dispositivo incluye los 3 tipos */}
+      <div className="small fw-semibold text-muted mb-1">Sensores incluidos</div>
+      <div className="rounded-3 p-3 mb-1" style={{ background: '#F5F8FA', border: '1px solid #E4ECF1' }}>
+        <div className="d-flex flex-wrap gap-3">
+          {ALL_SENSORS.map(s => {
+            const Icon = SENSOR_ICONS[s];
+            return (
+              <span key={s} className="d-flex align-items-center gap-2 small"
+                style={{ color: '#123B5D', fontWeight: 600 }}>
+                <Icon size={15} style={{ color: '#1F6F8B' }} />
+                {SENSOR_LABEL[s]}
+              </span>
+            );
+          })}
+        </div>
+      </div>
+      <p className="text-muted mb-4" style={{ fontSize: 11 }}>
+        Los sensores representan los tipos de lectura que el dispositivo reporta al sistema.
+      </p>
+
+      <div className="d-flex gap-2 justify-content-end">
+        <Button type="button" variant="outline-secondary" size="sm" onClick={onCancel}>Cancelar</Button>
+        <Button type="submit" variant="primary" size="sm" className="d-flex align-items-center gap-1">
+          <Save size={13} />Guardar
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+// ─── Bulk creation modal (fase D: entorno de simulación) ───────────────────────
+// Funcionalidad EXTRA: no reemplaza la creación individual. Reutiliza
+// POST /devices por dispositivo (mismos permisos/valicaciones/códigos).
+// Crear equipos NO genera telemetría: las lecturas siguen dependiendo del
+// simulador. Límite: MAX_BULK_DEVICES por operación.
+type BulkPhase = 'form' | 'confirm' | 'running' | 'done';
+
+function BulkCreateModal({ show, onHide }: { show: boolean; onHide: () => void }) {
+  const { addManyDevices, refresh } = useDevices();
+  const [kind, setKind] = useState<BulkDeviceKind>('mixed');
+  const [count, setCount] = useState('10');
+  const [namePrefix, setNamePrefix] = useState('Sim');
+  const [baseLocation, setBaseLocation] = useState('');
+  const [status, setStatus] = useState<DeviceStatus>('active');
+  const [phase, setPhase] = useState<BulkPhase>('form');
+  const [formError, setFormError] = useState<string | null>(null);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [summary, setSummary] = useState<BulkCreateSummary | null>(null);
+  const cancelRef = useRef(false);
+  const runningRef = useRef(false);
+
+  function reset() {
+    setPhase('form');
+    setFormError(null);
+    setProgress({ done: 0, total: 0 });
+    setSummary(null);
+    cancelRef.current = false;
+    runningRef.current = false;
+  }
+
+  function close() {
+    // Cierre bloqueado durante la ejecución: evita estados colgados.
+    if (runningRef.current) return;
+    if (phase === 'done') refresh();
+    reset();
+    onHide();
+  }
+
+  function preview(): { cavas: number; vitrinas: number; first: string; last: string } | null {
+    try {
+      const items = buildBulkPlan({
+        kind, count: Number(count), namePrefix, baseLocation, status,
+      });
+      const cavas = items.filter((i) => i.device_type === 'cold_room').length;
+      return {
+        cavas,
+        vitrinas: items.length - cavas,
+        first: items[0]?.name ?? '',
+        last: items[items.length - 1]?.name ?? '',
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function goConfirm(e: React.FormEvent) {
+    e.preventDefault();
+    try {
+      buildBulkPlan({ kind, count: Number(count), namePrefix, baseLocation, status });
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Revise los datos del lote.');
+      return;
+    }
+    setFormError(null);
+    setPhase('confirm');
+  }
+
+  async function start() {
+    let items;
+    try {
+      items = buildBulkPlan({ kind, count: Number(count), namePrefix, baseLocation, status });
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Revise los datos del lote.');
+      setPhase('form');
+      return;
+    }
+    setPhase('running');
+    runningRef.current = true;
+    cancelRef.current = false;
+    setProgress({ done: 0, total: items.length });
+    try {
+      const result = await addManyDevices(items, {
+        concurrency: BULK_CONCURRENCY,
+        onProgress: (done, total) => setProgress({ done, total }),
+        isCancelled: () => cancelRef.current,
+      });
+      setSummary(result);
+    } finally {
+      runningRef.current = false;
+      setPhase('done');
+    }
+  }
+
+  if (!show) return null;
+  const info = preview();
+  const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
+
+  return (
+    <Modal show={show} onHide={close} title="Creación masiva de dispositivos">
+      {phase === 'form' && (
+        <form onSubmit={goConfirm} noValidate>
+          <p className="text-muted small mb-3">
+            Crea N cavas/vitrinas de una vez para preparar escenarios de simulación.
+            Usa el mismo flujo individual (mismos permisos y códigos auto-generados).
+            <strong> No genera telemetría.</strong>
+          </p>
+          {formError && (
+            <div className="rounded-3 px-3 py-2 mb-3 small" style={{ background: '#FCEEEE', border: '1px solid #f1aeb5', color: '#B22F2F' }}>
+              {formError}
+            </div>
+          )}
+          <Row className="g-3 mb-3">
+            <Col xs={12} sm={6}>
+              <Form.Label className="small fw-semibold text-muted">Tipo</Form.Label>
+              <Form.Select size="sm" value={kind}
+                onChange={e => setKind(e.target.value as BulkDeviceKind)}>
+                <option value="cold_room">Solo cavas</option>
+                <option value="refrigerated_showcase">Solo vitrinas</option>
+                <option value="mixed">Mixto (alterna cava/vitrina)</option>
+              </Form.Select>
+            </Col>
+            <Col xs={12} sm={6}>
+              <Form.Label className="small fw-semibold text-muted">Cantidad (máx. {MAX_BULK_DEVICES})</Form.Label>
+              <Form.Control size="sm" type="number" min={1} max={MAX_BULK_DEVICES} value={count}
+                onChange={e => setCount(e.target.value)} />
+            </Col>
+            <Col xs={12} sm={6}>
+              <Form.Label className="small fw-semibold text-muted">Prefijo de nombres</Form.Label>
+              <Form.Control size="sm" value={namePrefix} placeholder="Ej. Sim"
+                onChange={e => setNamePrefix(e.target.value)} />
+            </Col>
+            <Col xs={12} sm={6}>
+              <Form.Label className="small fw-semibold text-muted">Ubicación base</Form.Label>
+              <Form.Control size="sm" value={baseLocation} placeholder="Ej. Zona B"
+                onChange={e => setBaseLocation(e.target.value)} />
+            </Col>
+            <Col xs={12} sm={6}>
+              <Form.Label className="small fw-semibold text-muted">Estado inicial</Form.Label>
+              <Form.Select size="sm" value={status}
+                onChange={e => setStatus(e.target.value as DeviceStatus)}>
+                {(Object.keys(STATUS_CONFIG) as DeviceStatus[]).map(s => (
+                  <option key={s} value={s}>{STATUS_CONFIG[s].label}</option>
+                ))}
+              </Form.Select>
+            </Col>
+            <Col xs={12} sm={6}>
+              <Form.Label className="small fw-semibold text-muted">Sensores</Form.Label>
+              <div className="small text-muted pt-1">Los 3 tipos, como en creación individual.</div>
+            </Col>
+          </Row>
+          {info && (
+            <div className="rounded-3 px-3 py-2 mb-3 small"
+              style={{ background: '#F5F8FA', border: '1px solid #E4ECF1', color: '#123B5D' }}>
+              Se preparan <strong>{info.cavas + info.vitrinas}</strong> equipos
+              ({info.cavas} cavas + {info.vitrinas} vitrinas), de «{info.first}» a «{info.last}».
+              Los códigos (CAVA-*/VITRINA-*) los asigna el backend sin colisiones.
+            </div>
+          )}
+          <div className="d-flex gap-2 justify-content-end">
+            <Button type="button" variant="outline-secondary" size="sm" onClick={close}>Cancelar</Button>
+            <Button type="submit" variant="primary" size="sm" className="d-flex align-items-center gap-1">
+              <Layers size={13} />Continuar
+            </Button>
+          </div>
+        </form>
+      )}
+
+      {phase === 'confirm' && info && (
+        <>
+          <p className="small mb-3">
+            Se crearán <strong>{info.cavas + info.vitrinas} dispositivos</strong>{' '}
+            ({info.cavas} cavas + {info.vitrinas} vitrinas) en «{baseLocation.trim()}» con
+            estado «{STATUS_CONFIG[status].label}». Esta acción no se puede deshacer en lote
+            (cada equipo queda registrado individualmente).
+          </p>
+          <div className="d-flex gap-2 justify-content-end">
+            <Button type="button" variant="outline-secondary" size="sm" onClick={() => setPhase('form')}>Volver</Button>
+            <Button type="button" variant="primary" size="sm" onClick={() => { void start(); }}>
+              Crear {info.cavas + info.vitrinas} dispositivos
+            </Button>
+          </div>
+        </>
+      )}
+
+      {phase === 'running' && (
+        <>
+          <p className="small text-muted mb-2">
+            Creando {progress.done} de {progress.total}… (concurrencia {BULK_CONCURRENCY}).
+            Puede cancelar: lo ya enviado en vuelo termina, lo pendiente no se emite.
+          </p>
+          <div className="rounded-2 mb-3" style={{ height: 10, background: '#EFF4F7', overflow: 'hidden' }}>
+            <div style={{ width: `${pct}%`, height: '100%', background: '#1F6F8B', transition: 'width 0.2s' }} />
+          </div>
+          <div className="d-flex gap-2 justify-content-end">
+            <Button type="button" variant="outline-secondary" size="sm"
+              onClick={() => { cancelRef.current = true; }}>
+              Cancelar lote
+            </Button>
+          </div>
+        </>
+      )}
+
+      {phase === 'done' && summary && (
+        <>
+          <div className="d-flex flex-wrap gap-2 mb-3">
+            {[
+              { label: 'Solicitadas', value: summary.requested, color: '#123B5D', bg: '#EFF4F7' },
+              { label: 'Creadas', value: summary.created, color: '#16835B', bg: '#EAF6EF' },
+              { label: 'Fallidas', value: summary.failed.length, color: '#B22F2F', bg: '#FCEEEE' },
+              ...(summary.cancelled
+                ? [{ label: 'Canceladas', value: summary.requested - summary.created - summary.failed.length, color: '#965D00', bg: '#FFF5E3' }]
+                : []),
+            ].map(s => (
+              <div key={s.label} className="d-flex align-items-center gap-2 rounded-3 px-3 py-2"
+                style={{ background: s.bg }}>
+                <span style={{ fontSize: 20, fontWeight: 700, color: s.color }}>{s.value}</span>
+                <span style={{ fontSize: 12, color: s.color }}>{s.label}</span>
+              </div>
+            ))}
+          </div>
+          {summary.failed.length > 0 && (
+            <div className="rounded-3 p-3 mb-3" style={{ background: '#FCEEEE', border: '1px solid #f1aeb5', maxHeight: 220, overflowY: 'auto' }}>
+              <div className="small fw-semibold mb-2" style={{ color: '#B22F2F' }}>
+                Errores por dispositivo ({summary.failed.length})
+              </div>
+              {summary.failed.map(f => (
+                <div key={f.index} className="small mb-1" style={{ color: '#7A2424' }}>
+                  <strong>{f.name}:</strong> {f.error}
+                </div>
+              ))}
+            </div>
+          )}
+          {summary.failed.length === 0 && !summary.cancelled && (
+            <p className="small mb-3" style={{ color: '#16835B' }}>
+              Lote completado sin errores. Los equipos ya aparecen en la lista.
+            </p>
+          )}
+          <div className="d-flex gap-2 justify-content-end">
+            <Button type="button" variant="primary" size="sm" onClick={close}>Cerrar</Button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+// ─── Reading history detail (fuente: /history/devices/{code}/history + trends) ──
+function ReadingRow({ device }: { device: Device }) {
+  const { getHistory, getTrends, fetchTrends, readingsStatus, retry } = useDevices();
+  const [trendsState, setTrendsState] = useState<'loading' | 'ready' | 'error'>('loading');
+
+  const history = getHistory(device.id);
+
+  useEffect(() => {
+    let cancelled = false;
+    setTrendsState('loading');
+    fetchTrends(device.id).then(
+      () => { if (!cancelled) setTrendsState('ready'); },
+      () => { if (!cancelled) setTrendsState('error'); },
+    );
+    return () => { cancelled = true; };
+  }, [device.id]);
+
+  // Tira prom/min/máx calculada por el backend (último bucket con datos).
+  const trends = getTrends(device.id);
+  const lastBucket = [...trends].reverse().find(p => p.avg_temp !== null || p.avg_hum !== null) ?? null;
+
+  function clock(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
+    return d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  return (
+    <div className="mt-3">
+      <div className="small fw-semibold text-muted text-uppercase mb-2"
+        style={{ letterSpacing: '0.06em', fontSize: 11 }}>Últimas lecturas</div>
+      <div className="overflow-auto">
+        <table className="w-100" style={{ fontSize: 12, borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ color: '#52616B' }}>
+              <th className="py-1 pe-4 text-start fw-medium">Hora</th>
+              <th className="py-1 pe-4 text-start fw-medium">Temperatura</th>
+              <th className="py-1 pe-4 text-start fw-medium">Humedad</th>
+              <th className="py-1 text-start fw-medium">Energía</th>
+            </tr>
+          </thead>
+          <tbody>
+            {readingsStatus === 'loading'
+              ? <tr><td colSpan={4} className="py-2 text-muted">Cargando lecturas…</td></tr>
+              : readingsStatus === 'error' && history.length === 0
+                ? <tr><td colSpan={4} className="py-2" style={{ color: '#B22F2F' }}>
+                    No se pudieron cargar las lecturas. <button onClick={retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+                  </td></tr>
+              : history.length === 0
+              ? <tr><td colSpan={4} className="py-2 text-muted">Sin lecturas disponibles.</td></tr>
+              : history.map((h) => (
+                <tr key={h.id} style={{ borderTop: '1px solid #EFF4F7' }}>
+                  <td className="py-1 pe-4 font-monospace text-muted">{clock(h.timestamp)}</td>
+                  <td className="py-1 pe-4 fw-medium">
+                    {h.temperature !== null
+                      ? <span style={{ color: h.temperature > 4 ? '#C83B3B' : '#123B5D' }}>{h.temperature} °C</span>
+                      : '—'}
+                  </td>
+                  <td className="py-1 pe-4 fw-medium">
+                    {h.humidity !== null
+                      ? <span style={{ color: h.humidity > 90 ? '#C83B3B' : '#123B5D' }}>{h.humidity} %</span>
+                      : '—'}
+                  </td>
+                  <td className="py-1">
+                    {h.energy === 'on'
+                      ? <span className="fw-semibold" style={{ color: '#16835B' }}>ON</span>
+                      : h.energy === 'off'
+                        ? <span className="fw-semibold" style={{ color: '#C83B3B' }}>OFF</span>
+                        : <span className="text-muted">—</span>}
+                  </td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      </div>
+      {trendsState === 'loading' ? (
+        <div className="small text-muted mt-3 pt-3" style={{ borderTop: '1px dashed #D9E2E8' }}>
+          Cargando tendencias…
+        </div>
+      ) : lastBucket && (
+        <div className="d-flex flex-wrap gap-4 mt-3 pt-3" style={{ borderTop: '1px dashed #D9E2E8' }}>
+          <div>
+            <div className="small text-muted mb-1">Temperatura (prom / mín / máx)</div>
+            <span className="fw-semibold small">{lastBucket.avg_temp !== null ? `${lastBucket.avg_temp.toFixed(1)} °C` : '—'}</span>
+            <span className="text-muted small"> / {lastBucket.min_temp !== null ? lastBucket.min_temp.toFixed(1) : '—'} / {lastBucket.max_temp !== null ? lastBucket.max_temp.toFixed(1) : '—'} °C</span>
+          </div>
+          <div>
+            <div className="small text-muted mb-1">Humedad (prom / mín / máx)</div>
+            <span className="fw-semibold small">{lastBucket.avg_hum !== null ? `${lastBucket.avg_hum.toFixed(0)} %` : '—'}</span>
+            <span className="text-muted small"> / {lastBucket.min_hum !== null ? lastBucket.min_hum.toFixed(0) : '—'} / {lastBucket.max_hum !== null ? lastBucket.max_hum.toFixed(0) : '—'} %</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Device Card ───────────────────────────────────────────────────────────────
+// Sensores: lista de tipos desde GET /devices/{id} (sin entidad Sensor ni sensor_id).
+function DeviceCard({ device, reading, sensors: deviceSensors, canManage, onConfigure }: {
+  device: Device;
+  reading: DeviceReadingSnapshot | undefined;
+  sensors: SensorType[];
+  canManage: boolean;
+  onConfigure: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const s = STATUS_CONFIG[device.status];
+  const Icon = s.Icon;
+  const tempCritical = reading?.temperature !== null && reading?.temperature !== undefined && reading.temperature > 4;
+  const humCritical  = reading?.humidity    !== null && reading?.humidity    !== undefined && reading.humidity    > 90;
+
+  return (
+    <div className="rounded-3 overflow-hidden" style={{ border: `1px solid ${s.border}` }}>
+      <div className="p-3" style={{ background: s.bg }}>
+        <div className="d-flex justify-content-between align-items-start gap-2">
+          <div className="d-flex align-items-center gap-2">
+            <div className="rounded-2 p-1" style={{ background: '#fff', color: s.color }}>
+              <Icon size={16} />
+            </div>
+            <div>
+              <div className="fw-semibold" style={{ fontSize: 14 }}>{device.name}</div>
+              <div className="text-muted" style={{ fontSize: 11 }}>{device.code} · {device.location}</div>
+            </div>
+          </div>
+          <div className="d-flex align-items-center gap-2 flex-shrink-0">
+            <span className="fw-semibold rounded-pill px-2 py-0"
+              style={{ fontSize: 11, color: s.color, background: '#fff', border: `1px solid ${s.border}` }}>
+              {s.label}
+            </span>
+            {canManage && (
+              <button onClick={onConfigure}
+                className="border-0 rounded p-1 d-flex align-items-center justify-content-center"
+                style={{ background: '#fff', cursor: 'pointer', color: '#1F6F8B' }} title="Configurar sensores">
+                <Settings size={13} />
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="d-flex flex-wrap gap-1 mt-2">
+          <span className="rounded-pill px-2 py-0"
+            style={{ fontSize: 11, background: '#fff', color: '#52616B', border: '1px solid #D9E2E8' }}>
+            {DEVICE_TYPE_LABEL[device.device_type]}
+          </span>
+          {deviceSensors.map(sensor => (
+            <span key={sensor} className="rounded-pill px-2 py-0"
+              style={{ fontSize: 11, background: '#EAF1F5', color: '#123B5D', border: '1px solid #c5d9e6' }}>
+              {SENSOR_LABEL[sensor]}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="p-3" style={{ background: '#fff' }}>
+        {device.status === 'active' && reading && reading.temperature !== null ? (
+          <div className="d-flex flex-wrap gap-3">
+            {deviceSensors.includes('temperature') && (
+              <div className="d-flex align-items-center gap-2">
+                <Thermometer size={15} style={{ color: tempCritical ? '#C83B3B' : '#1F6F8B', flexShrink: 0 }} />
+                <div>
+                  <div className="text-muted" style={{ fontSize: 11 }}>Temperatura</div>
+                  <div className="fw-bold" style={{ color: tempCritical ? '#C83B3B' : '#17232D' }}>{reading.temperature} °C</div>
+                </div>
+              </div>
+            )}
+            {deviceSensors.includes('humidity') && reading.humidity !== null && (
+              <div className="d-flex align-items-center gap-2">
+                <Droplets size={15} style={{ color: humCritical ? '#C83B3B' : '#1F6F8B', flexShrink: 0 }} />
+                <div>
+                  <div className="text-muted" style={{ fontSize: 11 }}>Humedad</div>
+                  <div className="fw-bold" style={{ color: humCritical ? '#C83B3B' : '#17232D' }}>{reading.humidity} %</div>
+                </div>
+              </div>
+            )}
+            {deviceSensors.includes('energy') && (
+              <div className="d-flex align-items-center gap-2">
+                <Zap size={15} style={{ color: reading.energy === 'on' ? '#16835B' : reading.energy === 'off' ? '#C83B3B' : '#52616B', flexShrink: 0 }} />
+                <div>
+                  <div className="text-muted" style={{ fontSize: 11 }}>Energía</div>
+                  <div className="fw-bold" style={{ color: reading.energy === 'on' ? '#16835B' : reading.energy === 'off' ? '#C83B3B' : '#52616B' }}>
+                    {reading.energy === 'on' ? 'ON' : reading.energy === 'off' ? 'OFF' : '—'}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="text-muted small mb-0">
+            {device.status === 'maintenance' ? 'Dispositivo en mantenimiento — sin lecturas disponibles.'
+             : device.status === 'inactive'  ? 'Dispositivo inactivo.'
+             : device.status === 'error'     ? 'Dispositivo en error.'
+             : 'Sin lecturas disponibles.'}
+          </p>
+        )}
+
+        <div className="d-flex justify-content-between align-items-center mt-3">
+          <span className="text-muted" style={{ fontSize: 11 }}>
+            {reading?.timestamp && (
+              <>Última lectura: <span className="font-monospace">{new Date(reading.timestamp).toLocaleString('es-CO', {
+                day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
+              })}</span></>
+            )}
+          </span>
+          <button onClick={() => setExpanded(!expanded)}
+            className="d-flex align-items-center gap-1 border-0 bg-transparent fw-medium"
+            style={{ fontSize: 12, color: '#1F6F8B', cursor: 'pointer' }}>
+            {expanded ? <><ChevronUp size={14} />Ocultar historial</> : <><ChevronDown size={14} />Ver historial</>}
+          </button>
+        </div>
+        {expanded && <ReadingRow device={device} />}
+      </div>
+    </div>
+  );
+}
+
+// ─── Main view ─────────────────────────────────────────────────────────────────
+type FilterStatus = 'all' | DeviceStatus;
+type FilterType   = 'all' | DeviceType;
+
+export function DevicesView() {
+  const {
+    devices, devicesStatus,
+    isRefreshing, lastUpdated, refreshError,
+    isAuthBlocked, isConfigMissing, errorMessage, retry, refresh,
+    addDevice, replaceSensors, getSensors, getReading,
+  } = useDevices();
+  const { role } = useAuth();
+  const canManage = hasActionPermission(role, 'manageDevices');
+
+  const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
+  const [filterType,   setFilterType]   = useState<FilterType>('all');
+
+  const [createModal, setCreateModal] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [bulkModal, setBulkModal] = useState(false);
+  const [sensorConfigDevice, setSensorConfigDevice] = useState<Device | null>(null);
+  const [sensorError, setSensorError] = useState<string | null>(null);
+
+  const counts = {
+    active:      devices.filter(d => d.status === 'active').length,
+    maintenance: devices.filter(d => d.status === 'maintenance').length,
+    error:       devices.filter(d => d.status === 'error').length,
+    inactive:    devices.filter(d => d.status === 'inactive').length,
+  };
+
+  const filtered = devices.filter(d =>
+    (filterStatus === 'all' || d.status === filterStatus) &&
+    (filterType   === 'all' || d.device_type === filterType)
+  );
+
+  function openCreate() { setCreateError(null); setCreateModal(true); }
+  function closeCreate() { setCreateModal(false); setCreateError(null); }
+
+  async function handleSaveNew(data: DeviceFormData) {
+    setCreateError(null);
+    const result = await addDevice(data);
+    if (result.ok) {
+      closeCreate();
+    } else {
+      setCreateError(result.error ?? 'Error al crear el dispositivo.');
+    }
+  }
+
+  async function handleSaveSensors(deviceId: string, sensorTypes: SensorType[]) {
+    setSensorError(null);
+    const result = await replaceSensors(deviceId, sensorTypes);
+    if (result.ok) {
+      setSensorConfigDevice(null);
+    } else {
+      setSensorError(result.error ?? 'Error al actualizar sensores.');
+    }
+  }
+
+  const createModalInitial: DeviceFormData = {
+    name: '', location: '', device_type: 'cold_room', status: 'active',
+    sensors: ['temperature', 'humidity', 'energy'],
+  };
+
+  return (
+    <div>
+      <div className="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-2">
+        <div>
+          <h1 className="mb-1" style={{ fontSize: 22, fontWeight: 700 }}>Dispositivos</h1>
+          <p className="text-muted small mb-0">Monitoreo de cavas y vitrinas en tiempo real.</p>
+        </div>
+        <div className="d-flex align-items-center gap-2 flex-wrap">
+          {devicesStatus !== 'loading' && lastUpdated && (
+            <span className="small text-muted">
+              Actualizado {lastUpdated}{isRefreshing ? '…' : ''}
+            </span>
+          )}
+          <button
+            onClick={refresh}
+            disabled={devicesStatus === 'loading' || isRefreshing}
+            title="Actualizar ahora"
+            className="d-flex align-items-center gap-1 border rounded-2 bg-transparent px-2 py-1"
+            style={{ color: '#123B5D', borderColor: '#D9E2E8', cursor: 'pointer', fontSize: 12 }}
+          >
+            <RefreshCw size={13} /> Actualizar
+          </button>
+          {canManage && (
+            <>
+              <Button variant="outline-secondary" className="d-flex align-items-center gap-2" onClick={() => setBulkModal(true)}>
+                <Layers size={15} />Creación masiva
+              </Button>
+              <Button variant="primary" className="d-flex align-items-center gap-2" onClick={openCreate}>
+                <Plus size={15} />Nuevo dispositivo
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {refreshError && devicesStatus !== 'loading' && devicesStatus !== 'error' && (
+        <div className="rounded-3 px-4 py-2 small text-muted mb-4"
+          style={{ background: '#EFF4F7', border: '1px solid #D9E2E8' }}>
+          No se pudo actualizar: {refreshError}
+        </div>
+      )}
+
+      {/* Estado global de la fuente API (sin mocks como fallback) */}
+      {devicesStatus === 'error' && (
+        <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 rounded-3 px-4 py-3 mb-4"
+          style={{ background: '#FFF5E3', border: '1px solid #ffda6a', borderLeft: '4px solid #C47A00' }}>
+          <p className="mb-0 small">
+            <strong>No se pudieron cargar los dispositivos.</strong>{' '}
+            {isConfigMissing
+              ? 'Falta configurar VITE_API_BASE_URL en el frontend.'
+              : isAuthBlocked
+                ? 'La API requiere autenticación Bearer. Inicie sesión nuevamente si su sesión expiró.'
+                : errorMessage}
+          </p>
+          <button
+            onClick={retry}
+            className="d-flex align-items-center gap-2 border-0 bg-transparent fw-semibold"
+            style={{ fontSize: 13, color: '#965D00', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
+
+      {/* Summary strip */}
+      <div className="d-flex flex-wrap gap-3 mb-4">
+        {[
+          { label: 'Activos',       value: counts.active,      color: '#16835B', bg: '#EAF6EF', border: '#a3cfbb' },
+          { label: 'Mantenimiento', value: counts.maintenance, color: '#965D00', bg: '#FFF5E3', border: '#ffda6a' },
+          { label: 'Error',         value: counts.error,       color: '#B22F2F', bg: '#FCEEEE', border: '#f1aeb5' },
+          { label: 'Inactivos',     value: counts.inactive,    color: '#52616B', bg: '#EFF4F7', border: '#D9E2E8' },
+        ].map(s => (
+          <div key={s.label} className="d-flex align-items-center gap-2 rounded-3 px-3 py-2"
+            style={{ background: s.bg, border: `1px solid ${s.border}` }}>
+            <span style={{ fontSize: 22, fontWeight: 700, color: s.color }}>{s.value}</span>
+            <span style={{ fontSize: 13, color: s.color }}>{s.label}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div className="d-flex flex-wrap gap-3 mb-4">
+        <div className="d-flex align-items-center gap-2 flex-wrap">
+          <span className="small fw-semibold text-muted">Estado:</span>
+          {(['all', 'active', 'inactive', 'maintenance', 'error'] as FilterStatus[]).map(s => (
+            <button key={s} onClick={() => setFilterStatus(s)} className="rounded-2 border px-3 py-1"
+              style={{ fontSize: 12, cursor: 'pointer', fontWeight: filterStatus === s ? 600 : 400,
+                background:  filterStatus === s ? '#123B5D' : '#fff',
+                color:       filterStatus === s ? '#fff'    : '#52616B',
+                borderColor: filterStatus === s ? '#123B5D' : '#D9E2E8' }}>
+              {s === 'all' ? 'Todos' : STATUS_CONFIG[s].label}
+            </button>
+          ))}
+        </div>
+        <div className="d-flex align-items-center gap-2 flex-wrap">
+          <span className="small fw-semibold text-muted">Tipo:</span>
+          {(['all', 'cold_room', 'refrigerated_showcase'] as FilterType[]).map(t => (
+            <button key={t} onClick={() => setFilterType(t)} className="rounded-2 border px-3 py-1"
+              style={{ fontSize: 12, cursor: 'pointer', fontWeight: filterType === t ? 600 : 400,
+                background:  filterType === t ? '#1F6F8B' : '#fff',
+                color:       filterType === t ? '#fff'    : '#52616B',
+                borderColor: filterType === t ? '#1F6F8B' : '#D9E2E8' }}>
+              {t === 'all' ? 'Todos' : DEVICE_TYPE_LABEL[t]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Device cards (fuente: GET /devices + historiales reales) */}
+      {devicesStatus === 'loading' ? (
+        <div className="cc-card p-5 text-center">
+          <p className="text-muted mb-0">Cargando dispositivos…</p>
+        </div>
+      ) : devicesStatus === 'error' ? (
+        <div className="cc-card p-5 text-center">
+          <p className="mb-0" style={{ color: '#B22F2F', fontSize: 13 }}>
+            No se pudieron cargar los dispositivos. <button onClick={retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 13, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+          </p>
+        </div>
+      ) : devices.length === 0 ? (
+        <div className="cc-card p-5 text-center">
+          <p className="text-muted mb-0">No hay dispositivos registrados.</p>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="cc-card p-5 text-center">
+          <p className="text-muted mb-0">No hay dispositivos que coincidan con los filtros seleccionados.</p>
+        </div>
+      ) : (
+        <div className="row g-3">
+          {filtered.map(d => {
+            const reading = getReading(d.id);
+            const deviceSensors = getSensors(d.id);
+            return (
+              <div key={d.id} className="col-12 col-lg-6">
+                <DeviceCard
+                  device={d}
+                  reading={reading}
+                  sensors={deviceSensors}
+                  canManage={canManage}
+                  onConfigure={() => { setSensorError(null); setSensorConfigDevice(d); }}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <p className="text-muted mt-3 mb-0" style={{ fontSize: 11 }}>
+        {filtered.length} de {devices.length} dispositivo{devices.length !== 1 ? 's' : ''} mostrado{filtered.length !== 1 ? 's' : ''}.
+      </p>
+
+      {/* Create modal (POST /devices, solo admin) */}
+      <Modal show={createModal} onHide={closeCreate} title="Nuevo dispositivo">
+        {createError && (
+          <div className="rounded-3 px-3 py-2 mb-3 small" style={{ background: '#FCEEEE', border: '1px solid #f1aeb5', color: '#B22F2F' }}>
+            {createError}
+          </div>
+        )}
+        <DeviceForm initial={createModalInitial} onSave={handleSaveNew} onCancel={closeCreate} />
+      </Modal>
+
+      {/* Bulk creation modal (fase D, solo admin; extra, no reemplaza el individual) */}
+      <BulkCreateModal show={bulkModal} onHide={() => setBulkModal(false)} />
+
+      {/* Sensor config modal (PUT /devices/{id}/sensors, solo admin) */}
+      <Modal show={!!sensorConfigDevice} onHide={() => setSensorConfigDevice(null)}
+        title={sensorConfigDevice ? `Configurar sensores — ${sensorConfigDevice.name}` : ''}>
+        {sensorConfigDevice && (
+          <>
+            {sensorError && (
+              <div className="rounded-3 px-3 py-2 mb-3 small" style={{ background: '#FCEEEE', border: '1px solid #f1aeb5', color: '#B22F2F' }}>
+                {sensorError}
+              </div>
+            )}
+              <SensorConfigForm
+                device={sensorConfigDevice}
+                onSave={(sensors) => handleSaveSensors(sensorConfigDevice.id, sensors)}
+              onCancel={() => setSensorConfigDevice(null)}
+            />
+          </>
+        )}
+      </Modal>
+    </div>
+  );
+}

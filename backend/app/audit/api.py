@@ -41,6 +41,8 @@ def list_audit_logs(
                 action=entry.action,
                 resource=entry.resource,
                 outcome=entry.outcome,
+                old_value=entry.old_value,
+                new_value=entry.new_value,
                 created_at=entry.created_at,
             )
             for entry in entries

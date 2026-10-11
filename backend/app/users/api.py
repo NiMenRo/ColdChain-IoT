@@ -170,13 +170,19 @@ def update_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Users cannot modify their own role.",
         )
+    # TSK-059.5 — snapshot auditable fields before mutating (no secrets:
+    # UserUpdate carries no password/hash/token by schema).
+    old_values = {k: getattr(user, k) for k in fields}
     try:
         updated = _auth.update_user(db, user, **fields)
+        new_values = {k: getattr(updated, k) for k in fields}
         _audit.record(
             db,
             actor_user_id=current.id,
             action="user.update",
             resource=f"users/{updated.id}",
+            old_value=old_values,
+            new_value=new_values,
         )
         db.commit()
         db.refresh(updated)

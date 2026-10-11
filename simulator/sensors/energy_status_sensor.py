@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Union
 
@@ -62,7 +62,8 @@ class EnergyStatusSensor(BaseSensor):
         )
         self.current_state = self._normalize_state(initial_state)
         self.current_energy_state = self.current_state
-        self.last_state_change_timestamp = datetime.now()
+        # UTC consciente: ver nota en temperature_sensor.py.
+        self.last_state_change_timestamp = datetime.now(timezone.utc)
 
     @staticmethod
     def _normalize_state(state: Union[EnergyState, str]) -> EnergyState:
@@ -83,7 +84,7 @@ class EnergyStatusSensor(BaseSensor):
     def state(self, new_state: Union[EnergyState, str]) -> None:
         self.current_state = self._normalize_state(new_state)
         self.current_energy_state = self.current_state
-        self.last_state_change_timestamp = datetime.now()
+        self.last_state_change_timestamp = datetime.now(timezone.utc)
 
     @property
     def current_power_state(self) -> EnergyState:

@@ -41,18 +41,27 @@ class PersistenceService:
         *,
         readings: list[NormalizedReading],
         device_id: uuid.UUID,
-        classification: TrafficClassification,
+        classification: TrafficClassification | None,
         qos_metric: QoSMetric | None = None,
         alerts: list[Alert] | None = None,
         predictions: list[dict] | None = None,
+        run_id: uuid.UUID | None = None,
     ) -> dict:
-        """Persiste un bundle coherente SensorReading 1:1 TrafficClassification -> QoSMetric/Alert/Prediction."""
+        """Persiste un bundle coherente SensorReading [1:1 TrafficClassification -> QoSMetric]/Alert/Prediction.
+
+        TSK-059.7 — classification=None (WITHOUT_QOS) skips TrafficClassification
+        and QoSMetric; run_id links rows to the experiment run (None = legacy).
+        """
         was_in_transaction = db.in_transaction()
         try:
-            sensor_row = self.sensor_repo.save(db, readings, device_id)
-            tc_row = self.tc_repo.save(db, classification, sensor_row.id)
+            sensor_row = self.sensor_repo.save(db, readings, device_id, run_id=run_id)
+            tc_row = None
+            if classification is not None:
+                tc_row = self.tc_repo.save(db, classification, sensor_row.id)
             qos_row = None
             if qos_metric is not None:
+                if tc_row is None:
+                    raise ValueError("qos_metric requires a classification")
                 if qos_metric.classification_id != tc_row.id:
                     qos_metric = QoSMetric(
                         id=qos_metric.id,
@@ -78,7 +87,7 @@ class PersistenceService:
                         acknowledged=a.acknowledged,
                         created_at=a.created_at,
                     )
-                    alert_rows.append(self.alert_repo.save(db, remapped))
+                    alert_rows.append(self.alert_repo.save(db, remapped, run_id=run_id))
             pred_rows = []
             if predictions:
                 for p in predictions:
