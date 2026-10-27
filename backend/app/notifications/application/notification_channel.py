@@ -198,21 +198,33 @@ class SmtpEmailChannel(NotificationChannelSender):
         )
 
     def _send_mail(self, recipient: str, message: str) -> None:
-        msg = EmailMessage()
-        msg["From"] = self._config.from_addr
-        msg["To"] = recipient
-        msg["Subject"] = "ColdChain-IoT | Anomalía en sistema de refrigeración"
-        msg.set_content(message)
-        with smtplib.SMTP(
-            self._config.host, self._config.port,
-            timeout=self._config.timeout_seconds,
-        ) as client:
-            if self._config.use_tls:
-                client.starttls()
-            if self._config.username:
-                # Password goes only to the transport, never to logs/results.
-                client.login(self._config.username, self._config.password)
-            client.send_message(msg)
+        send_smtp_email(
+            self._config,
+            recipient,
+            "ColdChain-IoT | Anomalía en sistema de refrigeración",
+            message,
+        )
+
+
+def send_smtp_email(
+    config: SmtpConfig, recipient: str, subject: str, message: str
+) -> None:
+    """Send a generic email over the configured SMTP transport."""
+    if not config.is_configured:
+        raise RuntimeError("SMTP email is disabled or not configured")
+    email = EmailMessage()
+    email["From"] = config.from_addr
+    email["To"] = recipient
+    email["Subject"] = subject
+    email.set_content(message)
+    with smtplib.SMTP(
+        config.host, config.port, timeout=config.timeout_seconds
+    ) as client:
+        if config.use_tls:
+            client.starttls()
+        if config.username:
+            client.login(config.username, config.password)
+        client.send_message(email)
 
 
 class LoggingSmsChannel(NotificationChannelSender):
