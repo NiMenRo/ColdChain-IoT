@@ -201,7 +201,7 @@ class SmtpEmailChannel(NotificationChannelSender):
         msg = EmailMessage()
         msg["From"] = self._config.from_addr
         msg["To"] = recipient
-        msg["Subject"] = "ColdChain-IoT alert notification"
+        msg["Subject"] = "ColdChain-IoT | Anomalía en sistema de refrigeración"
         msg.set_content(message)
         with smtplib.SMTP(
             self._config.host, self._config.port,

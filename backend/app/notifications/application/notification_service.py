@@ -13,7 +13,7 @@ from app.notifications.application.notification_channel import (
     NotificationSendResult,
 )
 from app.notifications.application.notification_manager import NotificationManager
-from app.notifications.domain import Notification, NotificationStatus
+from app.notifications.domain import Notification, NotificationChannel, NotificationStatus
 
 
 @dataclass(frozen=True)
@@ -80,6 +80,7 @@ class NotificationService:
         *,
         recipient: str | None = None,
         message: str | None = None,
+        channel_override: NotificationChannel | str | None = None,
     ) -> NotificationProcessResult:
         """Prepare and deliver one alert through its configured channel.
 
@@ -93,7 +94,7 @@ class NotificationService:
         self._validate_alert(alert)
         notification: Notification | None = None
         try:
-            notification = self._manager.prepare(alert)
+            notification = self._manager.prepare(alert, channel_override=channel_override)
             request = NotificationSendRequest(
                 notification=notification,
                 recipient=self.resolve_recipient(alert, recipient),
@@ -124,6 +125,7 @@ class NotificationService:
         message: str | None = None,
         user_id: UUID | None = None,
         force: bool = False,
+        channel_override: NotificationChannel | str | None = None,
     ):
         """Process one alert and persist the delivery record idempotently.
 
@@ -162,7 +164,9 @@ class NotificationService:
                 None,
             )
         try:
-            channel = self._manager.select_channel(alert)
+            channel = self._manager.select_channel(
+                alert, channel_override=channel_override
+            )
         except (TypeError, ValueError) as exc:
             return (
                 NotificationProcessResult(
@@ -189,7 +193,12 @@ class NotificationService:
                     ),
                     existing,
                 )
-        result = self.process(alert, recipient=recipient, message=message)
+        result = self.process(
+            alert,
+            recipient=recipient,
+            message=message,
+            channel_override=channel_override,
+        )
         if result.notification is None:
             return result, None
         try:

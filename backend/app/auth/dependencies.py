@@ -11,6 +11,7 @@ authorization is enforced here.
 
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass
 
@@ -20,6 +21,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.auth.tokens import decode_token
+from app.auth.sessions import active_sessions
 from app.database.infrastructure.models import TECHNICAL_USER_ROLE
 from app.database.infrastructure.repositories import UserRepository
 from app.database.infrastructure.session import get_db
@@ -63,6 +65,11 @@ def get_current_user(
         raise _unauthorized("Invalid token")
     if not user.is_active:
         raise _unauthorized("User is inactive")
+    expires_at = payload.get("exp")
+    if isinstance(expires_at, (int, float)) and not isinstance(expires_at, bool):
+        expires_in = int(expires_at - time.time())
+        if expires_in > 0:
+            active_sessions.login(user.id, expires_in)
     return AuthenticatedUser(
         id=user.id,
         email=user.email,

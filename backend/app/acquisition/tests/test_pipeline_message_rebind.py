@@ -15,6 +15,7 @@ asserts all three readings classify AND every durable row exists.
 from __future__ import annotations
 
 import os
+import smtplib
 import tempfile
 import threading
 import time
@@ -26,7 +27,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.acquisition.pipeline import _worker_loop
+from app.acquisition.pipeline import _critical_email_message, _worker_loop
 from app.database.infrastructure.base import Base
 from app.database.infrastructure.models import (
     AlertORM,
@@ -40,7 +41,13 @@ from app.database.infrastructure.models import (
 from app.database.application.persistence_service import PersistenceService
 from app.events.application.event_processing_service import EventProcessingService
 from app.events.domain import ThresholdConfig
-from app.notifications.application import NotificationService
+from app.history.infrastructure.alert_history_repository import AlertHistoryRepository
+from app.notifications.application import (
+    NotificationChannelRegistry,
+    NotificationService,
+    production_channels,
+)
+from app.auth.sessions import active_sessions
 from app.qos.application.qos_metrics_service import QoSMetricsService
 from app.qos.application.traffic_planning_service import TrafficPlanningService
 
@@ -60,6 +67,19 @@ class _ScriptedQueue:
 
     def get_all(self):
         return []
+
+
+def test_critical_email_formats_alert_time_in_colombia():
+    alert = types.SimpleNamespace(
+        type="TEMPERATURE_EXCEEDED",
+        message="Temperatura fuera de rango (9.5 °C) (0-4 °C)",
+        criticality=8,
+        created_at=datetime(2026, 10, 27, 18, 0, tzinfo=timezone.utc),
+    )
+
+    email = _critical_email_message(alert, "CAVA-001")
+
+    assert "Fecha y hora: 27/10/2026 – 13:00 (hora Colombia)" in email
 
 
 def test_breach_first_message_persists_whole_bundle(monkeypatch, tmp_path):
@@ -179,7 +199,7 @@ def _seed_fanout_db(TestSession):
     return dev_id, author_id, ids
 
 
-def _pump_one_message(TestSession, dev_id, author_id, message):
+def _pump_one_message(TestSession, dev_id, author_id, message, notification_service=None):
     import app.database.infrastructure.session as session_module
     # NOTE: caller must have monkeypatched session_module.SessionLocal already
     # for the worker thread; this helper only builds state + runs the loop.
@@ -200,7 +220,7 @@ def _pump_one_message(TestSession, dev_id, author_id, message):
         qos_records=[],
         persistence_service=PersistenceService(),
         event_processing_service=event_service,
-        notification_service=NotificationService(),
+        notification_service=notification_service or NotificationService(),
     )
     stop = threading.Event()
     worker = threading.Thread(target=_worker_loop,
@@ -292,4 +312,81 @@ def test_fanout_falls_back_to_alert_author_without_humans(monkeypatch, tmp_path)
         rows = db.query(NotificationORM).all()
         assert len(rows) == len(state.alerts)
         assert {r.user_id for r in rows} == {author_id}
+    engine.dispose()
+
+
+def test_critical_alert_sends_email_and_is_available_to_dashboard(monkeypatch, tmp_path):
+    db_file = str(tmp_path / "worker_critical_notifications.db")
+    engine = create_engine(f"sqlite:///{db_file}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    TestSession = sessionmaker(bind=engine, autoflush=False)
+    dev_id, author_id, ids = _seed_fanout_db(TestSession)
+    import app.database.infrastructure.session as session_module
+    monkeypatch.setattr(session_module, "SessionLocal", TestSession)
+    recipient_id = ids["admin"]
+    active_sessions.login(recipient_id, 3600)
+    sent_emails = []
+
+    class _FakeSMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def starttls(self):
+            pass
+
+        def login(self, username, password):
+            pass
+
+        def send_message(self, message):
+            sent_emails.append(message)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSMTP)
+    monkeypatch.setenv("SMTP_ENABLED", "true")
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("SMTP_FROM", "alerts@example.com")
+    monkeypatch.setenv("SMTP_USERNAME", "alerts@example.com")
+    monkeypatch.setenv("SMTP_PASSWORD", "test-password")
+    notification_service = NotificationService(
+        channel_registry=NotificationChannelRegistry(channels=production_channels())
+    )
+
+    try:
+        state = _pump_one_message(
+            TestSession, dev_id, author_id, _breach_message(), notification_service
+        )
+    finally:
+        active_sessions.logout(recipient_id)
+
+    critical_alert_ids = {
+        alert.id for alert in state.alerts if alert.criticality >= 8
+    }
+    assert critical_alert_ids
+    assert len(sent_emails) == len(critical_alert_ids)
+    assert all(email["To"] == "admin@example.com" for email in sent_emails)
+
+    with TestSession() as db:
+        rows = (
+            db.query(NotificationORM)
+            .filter(
+                NotificationORM.user_id == recipient_id,
+                NotificationORM.alert_id.in_(critical_alert_ids),
+            )
+            .all()
+        )
+        assert {(row.channel, row.status) for row in rows} == {
+            ("dashboard", "sent"),
+            ("email", "sent"),
+        }
+        total, dashboard_alerts = AlertHistoryRepository().list(
+            db, page=1, per_page=5
+        )
+        assert total >= len(critical_alert_ids)
+        assert critical_alert_ids.intersection({alert.id for alert in dashboard_alerts})
+
     engine.dispose()

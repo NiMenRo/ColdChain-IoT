@@ -3,11 +3,14 @@ from __future__ import annotations
 import threading
 import time
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
+
+COLOMBIA_TIMEZONE = timezone(timedelta(hours=-5), "COT")
 
 
 def _as_aware_utc(value: datetime | None) -> datetime | None:
@@ -53,6 +56,51 @@ def _parse_received_at(message: dict) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _critical_email_message(alert, device_code: str) -> str:
+    """Render the local critical-email template from a persisted alert."""
+    type_labels = {
+        "TEMPERATURE_EXCEEDED": "Temperatura fuera del rango permitido",
+        "TEMPERATURE_BELOW_MIN": "Temperatura por debajo del rango permitido",
+        "HUMIDITY_ABOVE_MAX": "Humedad fuera del rango permitido",
+        "HUMIDITY_BELOW_MIN": "Humedad por debajo del rango permitido",
+        "ENERGY_STATE_ANOMALY": "Estado de energía anómalo",
+    }
+    values = re.findall(r"\(([^)]+)\)", alert.message)
+    observed = values[0] if values else "No disponible"
+    configured_range = values[1] if len(values) > 1 else "Ver detalle técnico"
+    created_at = _as_aware_utc(alert.created_at) or datetime.now(timezone.utc)
+    colombia_created_at = created_at.astimezone(COLOMBIA_TIMEZONE)
+    return f"""Se ha detectado una alerta crítica en el sistema de refrigeración.
+
+Estimado usuario:
+
+El sistema ColdChain-IoT ha identificado una condición crítica que requiere atención inmediata, debido a que podría comprometer las condiciones de conservación de los productos almacenados.
+
+DETALLES DE LA ALERTA
+
+- Dispositivo: {device_code}
+- Tipo de alerta: {type_labels.get(alert.type, alert.type)}
+- Valor registrado: {observed}
+- Rango establecido: {configured_range}
+- Nivel de criticidad: CRÍTICO ({alert.criticality:g}/9)
+- Fecha y hora: {colombia_created_at.strftime('%d/%m/%Y – %H:%M')}
+- Estado: Pendiente de atención
+- Detalle técnico: {alert.message}
+
+ACCIÓN RECOMENDADA
+
+Se recomienda verificar inmediatamente el estado del sistema de refrigeración, comprobar las condiciones del dispositivo y realizar las acciones correctivas necesarias para evitar posibles afectaciones a los productos almacenados.
+
+Por favor, ingrese a la plataforma ColdChain-IoT para consultar los detalles de la alerta y realizar el seguimiento correspondiente.
+
+IMPORTANTE: Esta notificación ha sido generada automáticamente por el sistema de monitoreo. La alerta permanecerá sujeta a seguimiento hasta que se verifique y atienda la condición detectada.
+
+Atentamente,
+Sistema de monitoreo ColdChain-IoT
+Monitoreo y gestión de alertas para la conservación de la cadena de frío.
+"""
 
 
 def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
@@ -294,36 +342,19 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
                                         "Failed to enrich alert %s", alert.id
                                     )
                         
-                        # Dispatch notifications for generated alerts.
-                        # Sending happens here (never raises: failures are
-                        # recorded as FAILED/SIMULATED/DISABLED on the result);
-                        # DB persistence happens later in an isolated
-                        # transaction so it can never roll back the bundle.
+                        # Queue notifications. Delivery is deferred until the
+                        # committed alert can be fanned out to users holding a
+                        # local active session, one transport attempt per
+                        # recipient.
                         notification_service = getattr(app_state, "notification_service", None)
-                        notifications_list = getattr(app_state, "notifications", None)
                         if notification_service is not None and result["alert_count"] > 0:
                             for alert in result["alerts"]:
                                 try:
-                                    notif_result = notification_service.process(alert)
-                                    if notif_result.notification is not None and notifications_list is not None:
-                                        notifications_list.append(notif_result.notification)
-                                    try:
-                                        notif_recipient = notification_service.resolve_recipient(alert)
-                                        notif_message = notification_service.resolve_message(alert)
-                                    except Exception:
-                                        notif_recipient, notif_message = None, None
                                     notification_records.append(
-                                        (alert, notif_result, notif_recipient, notif_message)
-                                    )
-                                    logger.info(
-                                        "Processed notification %s for alert %s",
-                                        getattr(notif_result.notification, "id", None),
-                                        alert.id,
+                                        (alert, notification_service.resolve_message(alert))
                                     )
                                 except Exception:
-                                    logger.exception(
-                                        "Failed to process notification for alert %s", alert.id
-                                    )
+                                    logger.exception("Failed to queue notification for alert %s", alert.id)
 
                         if result["alert_count"] > 0:
                             logger.warning(
@@ -426,93 +457,74 @@ def _worker_loop(message_queue, app_state, stop_event: threading.Event) -> None:
             # and retries skip already-recorded rows without re-sending.
             try:
                 if notification_records:
-                    from uuid import UUID as _UUID
-
+                    from app.auth.sessions import active_sessions as _active_sessions
                     from app.database.infrastructure.models import (
                         HUMAN_USER_ROLES as _HUMAN_ROLES,
                     )
                     from app.database.infrastructure.models import (
                         UserORM as _UserORM,
                     )
-                    from app.database.infrastructure.repositories import (
-                        NotificationRepository as _NotificationRepository,
+                    from app.database.infrastructure.models import (
+                        DeviceORM as _DeviceORM,
                     )
                     from app.database.infrastructure.session import (
                         SessionLocal as _SessionLocal,
                     )
 
                     def _recipient_for(_user, _channel: str) -> str | None:
-                        """Per-user delivery address for the resolved channel.
-
-                        Keeps UNIQUE(alert_id, channel, recipient) distinct per
-                        recipient. SMS without phone falls back to a user-scoped
-                        placeholder (still SIMULATED, logged, never sent).
-                        """
+                        """Return the per-user address for a selected channel."""
                         if _channel == "email":
                             return (_user.email or "").strip() or None
-                        if _channel == "sms":
-                            phone = (_user.phone or "").strip()
-                            return phone or f"user:{_user.id}"
                         return str(_user.id)
 
-                    _repo = _NotificationRepository()
                     with _SessionLocal() as _notif_db:
                         with _notif_db.begin():
-                            # Recipient policy (RBAC-coherent): active humans
-                            # with a supervising role (admin, supervisor,
-                            # operador, auditor read-only). System/inactive
-                            # users never own notifications.
+                            # Local recipient policy: every human role may
+                            # receive alerts, but only while explicitly logged
+                            # into this backend instance. System/inactive users
+                            # are never notification owners.
+                            _active_ids = _active_sessions.active_user_ids()
                             _humans = (
                                 _notif_db.query(_UserORM)
                                 .filter(_UserORM.is_active.is_(True))
                                 .filter(_UserORM.role.in_(sorted(_HUMAN_ROLES)))
+                                .filter(_UserORM.id.in_(_active_ids))
                                 .all()
-                            )
-                            for _alert, _result, _recipient, _message in notification_records:
-                                _notif = getattr(_result, "notification", None)
-                                if _notif is None:
-                                    continue
+                            ) if _active_ids else []
+                            _device_codes = {
+                                device.id: device.code
+                                for device in _notif_db.query(_DeviceORM)
+                                .filter(_DeviceORM.id.in_({alert.device_id for alert, _ in notification_records}))
+                                .all()
+                            }
+                            _runtime_notifications = getattr(app_state, "notifications", None)
+                            for _alert, _message in notification_records:
                                 if not isinstance(_message, str) or not _message.strip():
                                     continue
-                                _channel = _notif.channel.value
-                                # Fan-out targets: one row per active human
-                                # recipient. Legacy fallback (no humans in DB):
-                                # single row owned by the alert author.
-                                _targets: list[tuple] = []
-                                for _user in _humans:
-                                    _addr = _recipient_for(_user, _channel)
-                                    if _addr:
-                                        _targets.append((_user.id, _addr))
-                                if not _targets and isinstance(_alert.user_id, _UUID):
-                                    if isinstance(_recipient, str) and _recipient.strip():
-                                        _targets.append((_alert.user_id, _recipient.strip()))
-                                for _owner_id, _addr in _targets:
-                                    if _repo.find_duplicate(
-                                        _notif_db,
-                                        _alert.id,
-                                        _channel,
-                                        _addr,
-                                    ):
-                                        continue
-                                    _send = getattr(_result, "send_result", None)
-                                    # NOTE: no notification_id reuse here: each
-                                    # fan-out row gets its own PK (the domain
-                                    # id identifies the delivery attempt, not
-                                    # the per-recipient record).
-                                    _repo.create(
-                                        _notif_db,
-                                        alert_id=_alert.id,
-                                        user_id=_owner_id,
-                                        channel=_channel,
-                                        status=_notif.status.value,
-                                        recipient=_addr,
-                                        message=_message,
-                                        detail=(
-                                            _send.detail if _send is not None
-                                            else _result.error
-                                        ),
-                                        notification_date=_notif.notification_date,
-                                    )
+                                _channels = ("dashboard", "email") if _alert.criticality >= 8 else ("dashboard",)
+                                for _channel in _channels:
+                                    for _user in _humans:
+                                        _addr = _recipient_for(_user, _channel)
+                                        if not _addr:
+                                            continue
+                                        _delivery_message = (
+                                            _critical_email_message(
+                                                _alert,
+                                                _device_codes.get(_alert.device_id, str(_alert.device_id)),
+                                            )
+                                            if _channel == "email"
+                                            else _message
+                                        )
+                                        _result, _row = notification_service.process_and_persist(
+                                            _alert,
+                                            _notif_db,
+                                            recipient=_addr,
+                                            message=_delivery_message,
+                                            user_id=_user.id,
+                                            channel_override=_channel,
+                                        )
+                                        if _result.notification is not None and _runtime_notifications is not None:
+                                            _runtime_notifications.append(_result.notification)
             except Exception:
                 logger.exception(
                     "Failed to persist notification records for message %s "

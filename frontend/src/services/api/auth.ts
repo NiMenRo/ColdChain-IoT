@@ -32,3 +32,7 @@ export async function apiLogin(email: string, password: string): Promise<LoginTo
 export async function apiGetMe(): Promise<CurrentUserResponse> {
   return apiFetch<CurrentUserResponse>('/auth/me');
 }
+
+export async function apiLogout(): Promise<void> {
+  await apiFetch<void>('/auth/logout', { method: 'POST' });
+}

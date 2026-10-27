@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.auth.schemas import LoginRequest, TokenResponse, UserResponse
+from app.auth.sessions import active_sessions
 from app.auth.service import AuthService, InvalidCredentialsError
 from app.database.infrastructure.repositories import UserRepository
 from app.database.infrastructure.session import get_db
@@ -30,7 +31,7 @@ __all__ = ["router"]
 def login(body: LoginRequest, db: Session = Depends(get_db)):
     """Authenticate with email + password and issue a JWT."""
     try:
-        _, token, expires_in = AuthService().login(
+        user, token, expires_in = AuthService().login(
             db, email=body.email, password=body.password
         )
     except InvalidCredentialsError:
@@ -39,7 +40,22 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
+    active_sessions.login(user.id, expires_in)
     return TokenResponse(access_token=token, expires_in=expires_in)
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="End the local notification session",
+)
+def logout(current: AuthenticatedUser = Depends(get_current_user)):
+    """Remove the caller from local notification recipients.
+
+    JWTs remain stateless; this endpoint affects only the in-memory local
+    recipient registry used for alert delivery.
+    """
+    active_sessions.logout(current.id)
 
 
 @router.get(
