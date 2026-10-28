@@ -19,6 +19,7 @@ from sqlalchemy.pool import StaticPool
 from app.auth.api import router as auth_router
 from app.auth.dependencies import get_current_user
 from app.auth.password import hash_password, verify_password
+from app.auth.sessions import active_sessions
 from app.auth.service import AuthService, InvalidCredentialsError
 from app.auth.tokens import create_access_token, decode_token
 from app.database.infrastructure.base import Base
@@ -242,6 +243,23 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(body["role"], "admin")
         self.assertTrue(body["is_active"])
         self.assertNotIn("password_hash", body)
+
+    def test_me_restores_active_recipient_after_backend_restart(self):
+        token = self._login().json()["access_token"]
+        user_id = uuid.UUID(decode_token(token)["sub"])
+
+        # A backend restart clears the in-memory registry while the browser
+        # still holds a valid token and revalidates it through /auth/me.
+        active_sessions.logout(user_id)
+        self.assertNotIn(user_id, active_sessions.active_user_ids())
+
+        response = self.client.get(
+            "/auth/me", headers={"Authorization": f"Bearer {token}"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(user_id, active_sessions.active_user_ids())
+        active_sessions.logout(user_id)
 
     def test_me_ignores_client_user_id(self):
         # There is no user_id field: identity always comes from the token.
