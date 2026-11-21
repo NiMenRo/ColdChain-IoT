@@ -296,7 +296,8 @@ def main():
                       "notification_channels": "disabled",
                       "warmup_cases": 2, "repetitions": REPETITIONS,
                       "policy": {"high": 4, "medium": 2, "low": 1},
-                      "flow_weights": "default 1", "cost_per_reading": 1,
+                      "wfq_policy": "criticality_bands_v1",
+                      "band_weights": {"H7": 1, "H8": 2, "H9": 3}, "cost_per_reading": 1,
                       "clock_resolution_s": {
                           "elapsed": time.get_clock_info("perf_counter").resolution,
                           "thread_cpu": time.get_clock_info("thread_time").resolution,

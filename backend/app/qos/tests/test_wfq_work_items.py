@@ -11,10 +11,10 @@ from app.qos.domain.work_item import WorkItem
 NOW = datetime(2026, 11, 19, tzinfo=timezone.utc)
 
 
-def _item(device, sequence):
+def _item(device, sequence, criticality=9):
     work_id = uuid4()
     classification = TrafficClassification(
-        id=uuid4(), reading_id=work_id, criticality=9, priority="high",
+        id=uuid4(), reading_id=work_id, criticality=criticality, priority="high",
         queue="WFQ", classification_time=NOW, timestamp=NOW,
     )
     return WorkItem.from_reading(
@@ -26,24 +26,24 @@ def _item(device, sequence):
 
 
 def test_wfq_matches_independent_oracle_for_equal_weights_and_stable_ties():
-    items = [_item("A", 0), _item("B", 1), _item("A", 2), _item("B", 3)]
-    scheduler = WFQScheduler()
+    items = [_item("A", 0, 7), _item("B", 1, 8), _item("A", 2, 7), _item("B", 3, 8)]
+    scheduler = WFQScheduler(band_weights={"H7": 1, "H8": 1, "H9": 1})
     for item in items:
         scheduler.enqueue(item)
     expected = wfq_reference_order([
-        ReferencePacket(item.flow_id, 0, item.sequence, 1, str(item.id)) for item in items
+        ReferencePacket(scheduler.band_for(item), 0, item.sequence, 1, str(item.id)) for item in items
     ])
     assert [str(scheduler.dequeue().id) for _ in items] == expected
 
 
 def test_wfq_matches_two_to_one_weight_oracle_and_preserves_flow_fifo():
-    items = [_item("A", 0), _item("B", 1), _item("A", 2), _item("A", 3), _item("B", 4)]
-    scheduler = WFQScheduler(flow_weights={("A", "temperature"): 2})
+    items = [_item("A", 0, 8), _item("B", 1, 7), _item("A", 2, 8), _item("A", 3, 8), _item("B", 4, 7)]
+    scheduler = WFQScheduler()
     for item in items:
         scheduler.enqueue(item)
     expected = wfq_reference_order([
         ReferencePacket(
-            item.flow_id, 0, item.sequence,
+            scheduler.band_for(item), 0, item.sequence,
             2 if item.device_code == "A" else 1, str(item.id),
         )
         for item in items
@@ -55,7 +55,7 @@ def test_wfq_matches_two_to_one_weight_oracle_and_preserves_flow_fifo():
 
 def test_reactivated_flow_does_not_reuse_stale_finish_tag():
     scheduler = WFQScheduler()
-    a1, b1, b2, a2 = _item("A", 0), _item("B", 1), _item("B", 2), _item("A", 3)
+    a1, b1, b2, a2 = _item("A", 0, 7), _item("B", 1, 7), _item("B", 2, 7), _item("A", 3, 7)
     scheduler.enqueue(a1)
     scheduler.enqueue(b1)
     assert scheduler.dequeue() is a1

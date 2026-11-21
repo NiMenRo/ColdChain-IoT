@@ -61,17 +61,17 @@ class TrafficPlanningServiceTests(unittest.TestCase):
         self.service.plan(second)
 
         self.assertEqual(self.service.get_queue(PriorityLevel.HIGH.value), [first, second])
-        self.assertIs(self.service.dequeue(PriorityLevel.HIGH.value), first)
         self.assertIs(self.service.dequeue(PriorityLevel.HIGH.value), second)
+        self.assertIs(self.service.dequeue(PriorityLevel.HIGH.value), first)
 
     def test_uses_custom_wfq_weight(self):
-        service = TrafficPlanningService(wfq_scheduler=__import__('app.qos.application.wfq_scheduler', fromlist=['WFQScheduler']).WFQScheduler(weight=2.5))
+        service = TrafficPlanningService(wfq_scheduler=__import__('app.qos.application.wfq_scheduler', fromlist=['WFQScheduler']).WFQScheduler(band_weights={"H7": 1, "H8": 2.5, "H9": 1}))
         first = self._make_classification(PriorityLevel.HIGH.value, criticality=8.0)
         second = self._make_classification(PriorityLevel.HIGH.value, criticality=9.0)
 
         service.plan(first)
         service.plan(second)
-        self.assertEqual(service.wfq.weight, 2.5)
+        self.assertEqual(service.wfq.band_weights["H8"], 2.5)
         self.assertIs(service.dequeue(PriorityLevel.HIGH.value), first)
         self.assertIs(service.dequeue(PriorityLevel.HIGH.value), second)
 

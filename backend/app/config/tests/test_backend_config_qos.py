@@ -11,6 +11,7 @@ QOS_ENVIRONMENT = (
     "QOS_MEDIUM_QUOTA",
     "QOS_LOW_QUOTA",
     "QOS_WFQ_FLOW_WEIGHTS",
+    "QOS_WFQ_BAND_WEIGHTS",
     "QOS_PENDING_CAPACITY",
     "QOS_RECENT_TRACE_CAPACITY",
     "QOS_RECENT_FAILURE_CAPACITY",
@@ -29,7 +30,8 @@ def test_qos_defaults_match_the_approved_policy_and_limits():
 
     assert config.effective_qos_config() == {
         "class_quotas": {"high": 4, "medium": 2, "low": 1},
-        "wfq_flow_weights": {},
+        "wfq_policy": "criticality_bands_v1",
+        "wfq_band_weights": {"H7": 1, "H8": 2, "H9": 3},
         "capacities": {
             "transport_messages": 1000,
             "pending_work_items": 3000,
@@ -38,7 +40,7 @@ def test_qos_defaults_match_the_approved_policy_and_limits():
         },
         "timeouts": {"drain_s": 30.0},
     }
-    assert config.qos_wfq_flow_weights == {}
+    assert config.qos_wfq_band_weights == {"H7": 1, "H8": 2, "H9": 3}
 
 
 def test_qos_environment_overrides_are_validated_and_serializable(monkeypatch):
@@ -51,17 +53,14 @@ def test_qos_environment_overrides_are_validated_and_serializable(monkeypatch):
     monkeypatch.setenv("QOS_RECENT_FAILURE_CAPACITY", "7")
     monkeypatch.setenv("QOS_DRAIN_TIMEOUT_S", "5.5")
     monkeypatch.setenv(
-        "QOS_WFQ_FLOW_WEIGHTS",
-        '{"CAVA-001:temperature": 2, "CAVA-002:humidity": 1.5}',
+        "QOS_WFQ_BAND_WEIGHTS",
+        '{"H7": 1, "H8": 1.5, "H9": 2}',
     )
 
     effective = BackendConfig().effective_qos_config()
 
     assert effective["class_quotas"] == {"high": 5, "medium": 3, "low": 2}
-    assert effective["wfq_flow_weights"] == {
-        "CAVA-001:temperature": 2.0,
-        "CAVA-002:humidity": 1.5,
-    }
+    assert effective["wfq_band_weights"] == {"H7": 1.0, "H8": 1.5, "H9": 2.0}
     assert effective["capacities"] == {
         "transport_messages": 11,
         "pending_work_items": 33,
@@ -105,18 +104,24 @@ def test_rejects_non_positive_or_malformed_drain_timeout(monkeypatch, value):
     [
         "not-json",
         "[]",
-        '{"CAVA-001-temperature": 1}',
-        '{"CAVA-001:unknown": 1}',
-        '{"CAVA-001:temperature": 0}',
-        '{"CAVA-001:temperature": -1}',
-        '{"CAVA-001:temperature": true}',
-        '{"CAVA-001:temperature": "2"}',
-        '{"CAVA-001:temperature": 1e999}',
+        '{"H7": 1}',
+        '{"H7": 1, "H8": 2, "H9": 3, "H10": 4}',
+        '{"H7": 0, "H8": 2, "H9": 3}',
+        '{"H7": -1, "H8": 2, "H9": 3}',
+        '{"H7": true, "H8": 2, "H9": 3}',
+        '{"H7": "2", "H8": 2, "H9": 3}',
+        '{"H7": 1e999, "H8": 2, "H9": 3}',
     ],
 )
 def test_rejects_malformed_or_non_positive_wfq_weights(monkeypatch, weights):
-    monkeypatch.setenv("QOS_WFQ_FLOW_WEIGHTS", weights)
-    with pytest.raises(ValueError, match="QOS_WFQ_FLOW_WEIGHTS"):
+    monkeypatch.setenv("QOS_WFQ_BAND_WEIGHTS", weights)
+    with pytest.raises(ValueError, match="QOS_WFQ_BAND_WEIGHTS"):
+        BackendConfig()
+
+
+def test_old_flow_weights_require_explicit_migration(monkeypatch):
+    monkeypatch.setenv("QOS_WFQ_FLOW_WEIGHTS", '{"CAVA-001:temperature": 2}')
+    with pytest.raises(ValueError, match="obsolete"):
         BackendConfig()
 
 

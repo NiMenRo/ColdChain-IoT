@@ -17,17 +17,24 @@ import logging
 import os
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
 _workers: dict[str, subprocess.Popen] = {}
+_worker_evidence: dict[str, str] = {}
 
-#: Sensor conditions accepted from the run snapshot (frontend
-#: `condicion`: 'critica' | 'normal'). Anything else (or no snapshot)
-#: omits the flag and the simulator keeps its default behavior.
-VALID_SENSOR_CONDITIONS = frozenset({"critica", "normal"})
+#: Snapshot sensor conditions and the simulator flag they map to. The UI
+#: persists ``altered`` while the simulator CLI accepts ``critica``; mapping
+#: here makes the selected condition explicit instead of silently falling
+#: back to the simulator's default (critical) behavior.
+SNAPSHOT_SENSOR_CONDITIONS = {
+    "normal": "normal",
+    "altered": "critica",
+    "critica": "critica",
+}
 
 
 def worker_enabled() -> bool:
@@ -57,7 +64,7 @@ def resolve_sensor_condition(run_id: UUID) -> str | None:
                 return None
             cond = data.get("sensor_condition") if isinstance(data, dict) else None
             cond = cond.strip().lower() if isinstance(cond, str) else None
-            return cond if cond in VALID_SENSOR_CONDITIONS else None
+            return SNAPSHOT_SENSOR_CONDITIONS.get(cond)
     except Exception:
         logger.warning("sensor_condition lookup skipped for run %s", run_id)
         return None
@@ -108,10 +115,26 @@ def start_worker(run_id: UUID) -> bool:
     if condition is not None:
         argv += ["--condition", condition]
     try:
+        env = _child_env()
+        env["COLDCHAIN_RUN_ID"] = key
+        from app.experiments.evidence import producer_environment
+        try:
+            evidence_name = producer_environment(run_id, env)
+        except (OSError, ValueError, TypeError):
+            logger.exception("Managed evidence unavailable for run %s; simulator continues", key)
+            evidence_name = None
+        if evidence_name:
+            _worker_evidence[key] = evidence_name
+        elif env.get("TELEMETRY_TRACE_FILE"):
+            # Never let different processes append to the backend's journal.
+            backend_trace = Path(env["TELEMETRY_TRACE_FILE"]).resolve()
+            env["TELEMETRY_TRACE_FILE"] = str(
+                backend_trace.with_name(f"producer-{key}-{uuid.uuid4().hex}.jsonl")
+            )
         proc = subprocess.Popen(
             argv,
             cwd=str(_simulator_cwd()),
-            env=_child_env(),
+            env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
         )
@@ -127,9 +150,29 @@ def stop_worker(run_id: UUID) -> bool:
     """Stop the simulator worker for a run. True if stopped/already gone."""
     key = str(run_id)
     proc = _workers.pop(key, None)
+    evidence_name = _worker_evidence.pop(key, None)
     if proc is None:
         return False
     if proc.poll() is not None:
+        if evidence_name:
+            from app.experiments.evidence import producer_stopped
+            producer_stopped(run_id, evidence_name, proc.poll(), False)
+        return True
+    if evidence_name:
+        from app.experiments.evidence import directory, producer_stopped
+        forced = False
+        try:
+            (directory(run_id) / f"{evidence_name}.stop").touch()
+            exit_code = proc.wait(timeout=15)
+        except Exception:
+            forced = True
+            proc.terminate()
+            try:
+                exit_code = proc.wait(timeout=3)
+            except Exception:
+                proc.kill()
+                exit_code = proc.wait(timeout=3)
+        producer_stopped(run_id, evidence_name, exit_code, forced)
         return True
     try:
         proc.terminate()

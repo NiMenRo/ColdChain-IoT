@@ -2,6 +2,7 @@
 
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -70,8 +71,16 @@ def _seed(Session):
     r1 = runs.create(s, scenario="WITH_QOS")
     r2 = runs.create(s, scenario="WITHOUT_QOS")
     s.commit()
-    metrics.append(s, run_id=r1.id, metric_type="readings_persisted", value=10.0)
-    metrics.append(s, run_id=r1.id, metric_type="alerts_generated", value=1.0)
+    # Explicit, increasing timestamps: ordering is (timestamp, id) and two
+    # metrics created in the same clock tick would tie on random UUIDs.
+    metrics.append(
+        s, run_id=r1.id, metric_type="readings_persisted", value=10.0,
+        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    metrics.append(
+        s, run_id=r1.id, metric_type="alerts_generated", value=1.0,
+        timestamp=datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+    )
     metrics.append(s, run_id=r2.id, metric_type="readings_persisted", value=10.0)
     s.commit()
     ids = (r1.id, r2.id)
@@ -150,6 +159,113 @@ def test_pagination_and_unauthenticated():
     app.dependency_overrides[get_db] = _db
     anon = TestClient(app)
     assert anon.get("/experiment-runs").status_code in (401, 403)
+    assert anon.get(f"/experiment-runs/{uuid.uuid4()}/analysis").status_code in (401, 403)
+
+
+def test_analysis_includes_more_than_ten_thousand_samples_with_bounded_series():
+    from datetime import datetime, timedelta, timezone
+    from app.database.infrastructure.models import ExperimentMetricORM
+
+    Session = _factory()
+    started = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with Session() as db:
+        run = ExperimentRunRepository().create(
+            db, scenario="WITH_QOS", started_at=started,
+            finished_at=started + timedelta(seconds=100),
+        )
+        run_id = run.id
+        rows = [
+            {"id": uuid.UUID(int=i + 1), "run_id": run_id,
+             "metric_type": "readings_persisted", "value": 1.0,
+             "timestamp": started + timedelta(seconds=i / 120)}
+            for i in range(12001)
+        ]
+        rows += [
+            {"id": uuid.uuid4(), "run_id": run_id, "metric_type": "queue_wait_ms",
+             "value": value, "timestamp": started + timedelta(seconds=5)}
+            for value in (0, 20, 40)
+        ]
+        db.bulk_insert_mappings(ExperimentMetricORM, rows)
+        other = ExperimentRunRepository().create(db, scenario="WITHOUT_QOS")
+        ExperimentMetricRepository().append(db, run_id=other.id,
+                                           metric_type="readings_persisted", value=999999)
+        db.commit()
+    response = _client(Session).get(f"/experiment-runs/{run_id}/analysis?max_points=7")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["total_samples"] == 12004
+    assert body["provisional"] is False
+    assert body["metrics"]["readings_persisted"]["sum"] == 12001
+    assert body["metrics"]["queue_wait_ms"]["mean"] == 20
+    assert body["metrics"]["queue_wait_ms"]["max"] == 40
+    assert "alerts_generated" not in body["metrics"]
+    assert len(body["series"]["readings_persisted"]) <= 7
+    assert sum(p["value"] for p in body["series"]["readings_persisted"]) == 12001
+    assert sum(p["count"] for p in body["series"]["queue_wait_ms"]) == 3
+
+
+def test_analysis_empty_zero_limits_and_missing_run():
+    Session = _factory()
+    with Session() as db:
+        run = ExperimentRunRepository().create(db, scenario="WITH_QOS")
+        run_id = run.id
+        db.commit()
+    client = _client(Session)
+    empty = client.get(f"/experiment-runs/{run_id}/analysis").json()
+    assert empty["total_samples"] == 0 and empty["metrics"] == {} and empty["series"] == {}
+    assert empty["provisional"] is True
+    with Session() as db:
+        ExperimentMetricRepository().append(db, run_id=run_id,
+                                           metric_type="queue_wait_ms", value=0)
+        db.commit()
+    zero = client.get(f"/experiment-runs/{run_id}/analysis").json()
+    assert zero["metrics"]["queue_wait_ms"] == {
+        "count": 1, "sum": 0, "mean": 0, "max": 0, "latest": 0,
+    }
+    for limit in (0, 501):
+        assert client.get(f"/experiment-runs/{run_id}/analysis?max_points={limit}").status_code == 422
+    assert client.get(f"/experiment-runs/{uuid.uuid4()}/analysis").status_code == 404
+
+
+def test_analysis_common_intervals_preserve_spikes_and_all_samples():
+    from datetime import datetime, timedelta, timezone
+
+    Session = _factory()
+    started = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    ids = []
+    with Session() as db:
+        for scenario, duration in (("WITH_QOS", 30), ("WITHOUT_QOS", 60)):
+            run = ExperimentRunRepository().create(
+                db, scenario=scenario, started_at=started,
+                finished_at=started + timedelta(seconds=duration),
+            )
+            ids.append(run.id)
+            for seconds, value in ((1, 0), (2, 0), (2, 900), (11, 2)):
+                ExperimentMetricRepository().append(
+                    db, run_id=run.id, metric_type="queue_wait_ms", value=value,
+                    timestamp=started + timedelta(seconds=seconds),
+                )
+        db.commit()
+    client = _client(Session)
+    bodies = [client.get(f"/experiment-runs/{id}/analysis?bucket_seconds=10").json() for id in ids]
+    for body in bodies:
+        assert body["bucket_seconds"] == 10
+        assert body["total_samples"] == 4
+        assert body["metrics"]["queue_wait_ms"]["mean"] == 225.5
+        points = body["series"]["queue_wait_ms"]
+        assert points[0] == {
+            "elapsedMin": 5 / 60, "start_seconds": 0, "end_seconds": 10,
+            "value": 300, "max": 900, "count": 3,
+        }
+        assert points[1]["value"] == 2 and points[1]["count"] == 1
+        assert sum(p["count"] for p in points) == 4
+    assert bodies[0]["series"] == bodies[1]["series"]
+    # A too-fine request cannot bypass the server's bounded response.
+    tiny = client.get(f"/experiment-runs/{ids[1]}/analysis?bucket_seconds=0.001&max_points=1").json()
+    assert len(tiny["series"]["queue_wait_ms"]) == 1
+    assert tiny["metrics"]["queue_wait_ms"]["mean"] == 225.5
+    for width in ("0", "-1", "nan", "inf", "1000000001"):
+        assert client.get(f"/experiment-runs/{ids[0]}/analysis?bucket_seconds={width}").status_code == 422
 
 
 def test_start_run_conflicts_while_the_previous_run_is_draining():

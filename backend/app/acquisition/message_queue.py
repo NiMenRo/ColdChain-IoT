@@ -44,6 +44,12 @@ class MessageQueue:
 
         with self._condition:
             run_id, scenario = resolve_scenario()
+            origin_run = (message.get("trace") or {}).get("run_id")
+            if origin_run is not None and str(origin_run) != str(run_id):
+                # A delayed message from another run must never acquire the
+                # currently active run's context. Its reception is journaled.
+                self._rejected += 1
+                return False
             message.update(
                 run_id=str(run_id) if run_id is not None else None,
                 scenario=scenario,

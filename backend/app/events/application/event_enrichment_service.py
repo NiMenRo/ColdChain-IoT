@@ -55,7 +55,7 @@ class EnrichedEvent:
     alert_id: UUID
     alert_type: str
     alert_message: str
-    alert_criticality: float
+    alert_criticality: float | None
     alert_acknowledged: bool
     alert_created_at: datetime
 

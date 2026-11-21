@@ -14,6 +14,7 @@ export interface AlertsQuery {
   sort?: string;
   type?: string;
   acknowledged?: boolean;
+  run_id?: string;
 }
 
 export async function apiGetAlerts(params?: AlertsQuery): Promise<HistoryAlertListResponse> {
@@ -23,5 +24,6 @@ export async function apiGetAlerts(params?: AlertsQuery): Promise<HistoryAlertLi
   qs.set('sort', params?.sort ?? 'created_at.desc');
   if (params?.type) qs.set('type', params.type);
   if (params?.acknowledged !== undefined) qs.set('acknowledged', String(params.acknowledged));
+  if (params?.run_id) qs.set('run_id', params.run_id);
   return apiFetch<HistoryAlertListResponse>(`/history/alerts?${qs.toString()}`);
 }

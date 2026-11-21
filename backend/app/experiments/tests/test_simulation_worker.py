@@ -121,6 +121,14 @@ def test_resolve_condition_from_snapshot(monkeypatch):
     )
     assert worker.resolve_sensor_condition(uuid.uuid4()) == "critica"
 
+    # The UI persists `altered`; it must reach the simulator as `critica`
+    # instead of silently omitting the flag.
+    monkeypatch.setattr(
+        session_module, "SessionLocal",
+        _session_factory(_Row('{"sensor_condition": "altered"}')),
+    )
+    assert worker.resolve_sensor_condition(uuid.uuid4()) == "critica"
+
     monkeypatch.setattr(
         session_module, "SessionLocal",
         _session_factory(_Row('{"sensor_condition": "normal"}')),
@@ -165,6 +173,23 @@ def test_start_omits_condition_flag_without_snapshot(monkeypatch):
         assert popen.call_args[0][0][-2:] == ["--cycles", "0"]
 
 
+def test_worker_separates_publication_journal_and_propagates_run_identity(monkeypatch, tmp_path):
+    _enable(monkeypatch, "true")
+    monkeypatch.setattr(worker, "resolve_sensor_condition", lambda run_id: None)
+    backend_path = tmp_path / "backend.jsonl"
+    monkeypatch.setattr(worker, "_child_env", lambda: {
+        "TELEMETRY_TRACE_FILE": str(backend_path), "TELEMETRY_CLOCK_DOMAIN": "same-host",
+    })
+    run_id = uuid.uuid4()
+    with patch("subprocess.Popen", return_value=_Proc()) as popen:
+        assert worker.start_worker(run_id)
+        env = popen.call_args.kwargs["env"]
+        assert env["COLDCHAIN_RUN_ID"] == str(run_id)
+        assert env["TELEMETRY_TRACE_FILE"] != str(backend_path)
+        assert str(run_id) in env["TELEMETRY_TRACE_FILE"]
+        assert env["TELEMETRY_CLOCK_DOMAIN"] == "same-host"
+
+
 def test_child_env_prefers_simulator_dotenv(monkeypatch, tmp_path):
     dotenv = tmp_path / ".env"
     dotenv.write_text(
@@ -179,3 +204,48 @@ def test_child_env_prefers_simulator_dotenv(monkeypatch, tmp_path):
     assert env["MQTT_PASSWORD"] == "s3cret"
     assert env["MQTT_CA_CERT"] == "ca.crt"
     assert "OTHER" not in env
+
+
+def test_managed_worker_uses_cooperative_stop_and_records_exit(monkeypatch, tmp_path):
+    from app.experiments import evidence
+    from app.experiments.tests.test_evidence import _capture
+    monkeypatch.setenv("TELEMETRY_EVIDENCE_DIR", str(tmp_path))
+    monkeypatch.delenv("TELEMETRY_TRACE_FILE", raising=False)
+    _enable(monkeypatch, "true")
+    run, _unused_name, _env = _capture()
+    monkeypatch.setattr(worker, "resolve_sensor_condition", lambda run_id: None)
+    monkeypatch.setattr(worker, "_child_env", lambda: {})
+    proc = _Proc()
+    with patch("subprocess.Popen", return_value=proc):
+        assert worker.start_worker(run.id)
+    name = evidence.manifest(run.id)["producers"][-1]["name"]
+    assert worker.stop_worker(run.id)
+    assert not proc.terminated
+    assert (evidence.directory(run.id) / f"{name}.stop").exists()
+    captured = evidence.manifest(run.id)["producers"][-1]
+    assert captured["exit_code"] == 0
+    assert captured["forced"] is False
+
+
+def test_managed_worker_timeout_is_recorded_as_forced(monkeypatch, tmp_path):
+    from app.experiments import evidence
+    from app.experiments.tests.test_evidence import _capture
+    monkeypatch.setenv("TELEMETRY_EVIDENCE_DIR", str(tmp_path))
+    monkeypatch.delenv("TELEMETRY_TRACE_FILE", raising=False)
+    _enable(monkeypatch, "true")
+    run, _unused_name, _env = _capture()
+    monkeypatch.setattr(worker, "resolve_sensor_condition", lambda run_id: None)
+    monkeypatch.setattr(worker, "_child_env", lambda: {})
+
+    class Slow(_Proc):
+        def wait(self, timeout=None):
+            if not self.terminated:
+                raise worker.subprocess.TimeoutExpired("controlled", timeout)
+            return super().wait(timeout)
+
+    proc = Slow()
+    with patch("subprocess.Popen", return_value=proc):
+        assert worker.start_worker(run.id)
+    assert worker.stop_worker(run.id)
+    assert proc.terminated
+    assert evidence.manifest(run.id)["producers"][-1]["forced"] is True

@@ -31,7 +31,7 @@ export interface DashboardAlertItem {
   type: string;
   label: string;
   deviceName: string;
-  criticality: number;
+  criticality: number | null;
   acknowledged: boolean;
   timestamp: string;
 }

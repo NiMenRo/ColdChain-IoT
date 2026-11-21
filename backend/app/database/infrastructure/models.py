@@ -286,7 +286,7 @@ class AlertORM(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
     type: Mapped[str] = mapped_column(String, nullable=False)
     message: Mapped[str] = mapped_column(String, nullable=False)
-    criticality: Mapped[float] = mapped_column(Float, nullable=False)
+    criticality: Mapped[float | None] = mapped_column(Float, nullable=True)
     acknowledged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     # TSK-059.6 — NULL means legacy alert outside any experiment run.

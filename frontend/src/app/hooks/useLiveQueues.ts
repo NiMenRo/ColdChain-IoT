@@ -62,7 +62,7 @@ export function useLiveQueues(): LiveQueuesState {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    // Initial loading is set once; polling must not collapse the panel.
     busyRef.current = true;
     apiGetLiveQueues().then(
       (res) => {

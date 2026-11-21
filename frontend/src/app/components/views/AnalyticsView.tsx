@@ -1,36 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import { LineChart, Line, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie } from 'recharts';
 import { Card, Row, Col } from '../../lib/bootstrap';
 import { useExperiments } from '../../contexts/ExperimentContext';
 import {
   ExperimentRun,
   ExperimentRunMeta,
-  COUNTER_METRICS,
-  LATENCY_METRICS,
-  METRIC_LABELS,
-  METRIC_UNITS,
-  SENSOR_CONDITION_LABELS,
-  SensorCondition,
 } from '../../types/experiments';
-import {
-  sumMetricOrNull,
-  avgMetric,
-  maxMetric,
-  seriesByElapsed,
-  mergeLineSeries,
-} from '../../lib/experimentAggregations';
-import { useQosSnapshot } from '../../hooks/useQosSnapshot';
+import { CONDITION_LABELS, runCondition, suggestedCondition, type RunCondition } from '../../lib/runSelection';
 import type { HistorySummary, QosTrendPoint } from '../../../services/api/history';
 import { RANGE_OPTIONS, useHistoricalAnalytics, type HistoryRange } from '../../hooks/useHistoricalAnalytics';
-import { alertLabel, formatTs } from '../../hooks/useAlertsData';
-import { formatMs, formatMsValue, formatThroughput, roundMax3, secondsToMs } from '../../lib/qosUnits';
-import {
-  ScenarioBadge,
-  MetricComparisonCard,
-  LineComparisonChart,
-  BacklogChart,
-  CountMetricsBarChart,
-} from '../experiments/ExperimentCharts';
+import { alertLabel } from '../../hooks/useAlertsData';
+import { formatMsValue, formatThroughput, secondsToMs } from '../../lib/qosUnits';
+import { ComparisonResults } from '../experiments/AnalysisComparison';
+import { comparisonInterval } from '../../lib/analysisSeries';
+import { RunEvidencePanel } from '../experiments/RunEvidencePanel';
 
 const CHART_MARGIN = { top: 4, right: 8, left: 0, bottom: 4 };
 const TICK_STYLE   = { fill: '#52616B', fontSize: 11 };
@@ -42,28 +26,15 @@ function runNumber(runs: ExperimentRun[], run: ExperimentRun): number {
   return sorted.findIndex(r => r.id === run.id) + 1;
 }
 
-function snapshotCondition(run: ExperimentRun): SensorCondition | null {
-  if (!run.config_snapshot) return null;
-  try {
-    const parsed = JSON.parse(run.config_snapshot) as { sensor_condition?: unknown };
-    return parsed.sensor_condition === 'altered' || parsed.sensor_condition === 'normal'
-      ? parsed.sensor_condition
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 function runLabel(runs: ExperimentRun[], run: ExperimentRun, meta: Record<string, ExperimentRunMeta>): string {
   // Prioridad: meta local de sesión; si no, condición persistida en el snapshot.
-  const cond = meta[run.id]?.sensorCondition ?? snapshotCondition(run);
-  const condLabel = cond ? SENSOR_CONDITION_LABELS[cond] : 'Condición no registrada';
+  const condLabel = CONDITION_LABELS[runCondition(run, meta)];
   // Hora local del navegador (el backend persiste UTC): nunca slice crudo del ISO.
   const d = new Date(run.started_at);
   const when = Number.isNaN(d.getTime())
     ? run.started_at
     : d.toLocaleString('es-CO', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
-  return `${condLabel} — ${run.scenario === 'WITH_QOS' ? 'Con priorización' : 'Sin priorización'} — Ejecución #${runNumber(runs, run)} (${when})`;
+  return `${condLabel} — Prueba #${runNumber(runs, run)} (${when})`;
 }
 
 // ─── Helpers de presentación histórica (TSK-052; solo formato, sin agregación) ─
@@ -107,20 +78,6 @@ function qosFormat(key: QosMetricKey, v: number): string {
   if (key === 'latency' || key === 'jitter') return formatMsValue(v);
   if (key === 'throughput') return formatThroughput(v);
   return `${v.toFixed(1)} %`;
-}
-
-// Valores opcionales del esquema QoS v2: null = no medible → «—».
-function nullableSecondsMs(v: number | null): string {
-  return v === null ? '—' : formatMs(v);
-}
-function nullableMs(v: number | null | undefined): string {
-  return v === null || v === undefined ? '—' : formatMsValue(v);
-}
-function nullablePct(v: number | null): string {
-  return v === null ? '—' : v.toFixed(1);
-}
-function nullableThroughput(v: number | null): string {
-  return v === null ? '—' : formatThroughput(v);
 }
 
 const ALERT_TYPE_COLORS: Record<string, string> = {
@@ -192,78 +149,80 @@ function summaryIndicators(summary: HistorySummary): Array<{ label: string; valu
 }
 
 export function AnalyticsView() {
-  const { runs, metrics, runMeta, fetchMetrics, status: expStatus, retry: expRetry } = useExperiments();
-  const [condition, setCondition] = useState<SensorCondition>('normal');
-  const [withQosId, setWithQosId] = useState<string | null>(null);
-  const [withoutQosId, setWithoutQosId] = useState<string | null>(null);
+  const { runs, intervalAnalyses = {}, runMeta, fetchAnalysis, status: expStatus, retry: expRetry } = useExperiments();
+  const [searchParams] = useSearchParams();
+  const requestedId = searchParams.get('run_id');
+  const requested = runs.find(run => run.id === requestedId);
+  const requestedUnknown = !!requested && runCondition(requested, runMeta) === 'unregistered';
+  const unknownRuns = runs.filter(run => runCondition(run, runMeta) === 'unregistered');
+  const [appliedId, setAppliedId] = useState(requested?.id ?? null);
+  const [conditionInitialized, setConditionInitialized] = useState(runs.length > 0);
+  const [condition, setCondition] = useState<RunCondition>(
+    () => requested && !requestedUnknown ? runCondition(requested, runMeta) : suggestedCondition(runs, runMeta),
+  );
+  const [withQosId, setWithQosId] = useState<string | null>(
+    requested?.scenario === 'WITH_QOS' ? requested.id : null,
+  );
+  const [withoutQosId, setWithoutQosId] = useState<string | null>(
+    requested?.scenario === 'WITHOUT_QOS' ? requested.id : null,
+  );
+  useEffect(() => {
+    if (!requested || appliedId === requested.id) return;
+    setCondition(requestedUnknown ? suggestedCondition(runs, runMeta) : runCondition(requested, runMeta));
+    setConditionInitialized(true);
+    if (requested.scenario === 'WITH_QOS') setWithQosId(requested.id);
+    else setWithoutQosId(requested.id);
+    setAppliedId(requested.id);
+  }, [requested, appliedId, runMeta, requestedUnknown, runs]);
+  useEffect(() => {
+    if (!conditionInitialized && runs.length && !requested) {
+      setCondition(suggestedCondition(runs, runMeta));
+      setConditionInitialized(true);
+    }
+  }, [conditionInitialized, runs, runMeta, requested]);
 
-  // Runs del backend sin meta local usan su snapshot persistido; solo los
-  // realmente desconocidos participan en cualquier filtro (no se inventa).
+  // Sin condición no participa en comparaciones normales ni alteradas.
   const runsInCondition = useMemo(
-    () => runs.filter(r => (runMeta[r.id]?.sensorCondition ?? snapshotCondition(r) ?? condition) === condition),
+    () => runs.filter(r => runCondition(r, runMeta) === condition),
     [runs, runMeta, condition],
   );
   const withQosRuns = runsInCondition.filter(r => r.scenario === 'WITH_QOS');
   const withoutQosRuns = runsInCondition.filter(r => r.scenario === 'WITHOUT_QOS');
 
   const withQosRun = withQosRuns.find(r => r.id === withQosId)
-    ?? [...withQosRuns].sort((a, b) => b.started_at.localeCompare(a.started_at))[0]
+    ?? [...withQosRuns].sort((a, b) => Number(!!b.finished_at) - Number(!!a.finished_at) || b.started_at.localeCompare(a.started_at))[0]
     ?? null;
   const withoutQosRun = withoutQosRuns.find(r => r.id === withoutQosId)
-    ?? [...withoutQosRuns].sort((a, b) => b.started_at.localeCompare(a.started_at))[0]
+    ?? [...withoutQosRuns].sort((a, b) => Number(!!b.finished_at) - Number(!!a.finished_at) || b.started_at.localeCompare(a.started_at))[0]
     ?? null;
 
-  const withQosMetrics = withQosRun ? metrics.filter(m => m.run_id === withQosRun.id) : [];
-  const withoutQosMetrics = withoutQosRun ? metrics.filter(m => m.run_id === withoutQosRun.id) : [];
-  const [metricsReady, setMetricsReady] = useState<Record<string, boolean>>({});
+  const [analysisAttempt, setAnalysisAttempt] = useState(0);
+  const bucketSeconds = useMemo(() => comparisonInterval([withQosRun, withoutQosRun]),
+    [withQosRun?.id, withoutQosRun?.id, withQosRun?.finished_at, withoutQosRun?.finished_at, analysisAttempt]);
+  // Never present a cached series on a different temporal grid as this comparison.
+  const withAnalysis = withQosRun ? intervalAnalyses[withQosRun.id]?.[bucketSeconds] : undefined;
+  const withoutAnalysis = withoutQosRun ? intervalAnalyses[withoutQosRun.id]?.[bucketSeconds] : undefined;
   const [metricsError, setMetricsError] = useState<string | null>(null);
-  const showNoMetricsNote =
-    !!withQosRun &&
-    !!withoutQosRun &&
-    (metricsReady[withQosRun.id] || metricsReady[withoutQosRun.id]) &&
-    withQosMetrics.length === 0 &&
-    withoutQosMetrics.length === 0;
 
   // Métricas reales por ejecución seleccionada (lectura bajo demanda, sin sondeo).
   useEffect(() => {
     const ids = [withQosRun?.id, withoutQosRun?.id].filter((id): id is string => !!id);
+    setMetricsError(null);
     if (ids.length === 0) return;
     let cancelled = false;
-    setMetricsError(null);
-    setMetricsReady(prev => {
-      const next = { ...prev };
-      for (const id of ids) if (!(id in next)) next[id] = false;
-      return next;
-    });
-    Promise.all(ids.map(id => fetchMetrics(id))).then(() => {
-      if (cancelled) return;
-      setMetricsReady(prev => {
-        const next = { ...prev };
-        for (const id of ids) next[id] = true;
-        return next;
-      });
-    }).catch((err: unknown) => {
-      if (!cancelled) setMetricsError(err instanceof Error ? err.message : 'No se pudieron cargar las métricas.');
+    Promise.all(ids.map(id => fetchAnalysis(id, bucketSeconds))).catch(() => {
+      if (!cancelled) setMetricsError('No se pudieron cargar las estadísticas de las pruebas seleccionadas.');
     });
     return () => {
       cancelled = true;
     };
-  }, [withQosRun?.id, withoutQosRun?.id, fetchMetrics]);
+  }, [withQosRun?.id, withoutQosRun?.id, withQosRun?.finished_at, withoutQosRun?.finished_at, fetchAnalysis, analysisAttempt, bucketSeconds]);
   // Ámbito por ejecución para las gráficas históricas (null = global).
   // La sección comparativa usa sus propios selectores (métricas por run).
   const [trafficRunId, setTrafficRunId] = useState<string | null>(null);
-  const qosLive = useQosSnapshot(trafficRunId);
   const hist = useHistoricalAnalytics(trafficRunId);
   const [qosMetric, setQosMetric] = useState<QosMetricKey>('latency');
 
-  const persistData = mergeLineSeries(
-    withQosRun ? seriesByElapsed(withQosMetrics, 'ingest_to_persist_ms', withQosRun.started_at) : [],
-    withoutQosRun ? seriesByElapsed(withoutQosMetrics, 'ingest_to_persist_ms', withoutQosRun.started_at) : [],
-  );
-  const alertData = mergeLineSeries(
-    withQosRun ? seriesByElapsed(withQosMetrics, 'ingest_to_alert_ms', withQosRun.started_at) : [],
-    withoutQosRun ? seriesByElapsed(withoutQosMetrics, 'ingest_to_alert_ms', withoutQosRun.started_at) : [],
-  );
 
   return (
     <div>
@@ -271,106 +230,6 @@ export function AnalyticsView() {
       <p className="text-muted small mb-4">
         Análisis del rendimiento y del histórico de la red de sensores.
       </p>
-
-      {/* ─── Estado actual QoS — datos en vivo (TSK-050; análisis histórico → TSK-052) ─── */}
-      <h2 className="small fw-semibold text-muted text-uppercase mb-3" style={{ letterSpacing: '0.06em' }}>
-        Métricas de demostración QoS
-      </h2>
-
-      {(qosLive.isAuthBlocked || qosLive.isConfigMissing) && !qosLive.isLoading && (
-        <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 rounded-3 px-4 py-3 mb-4"
-          style={{ background: '#FFF5E3', border: '1px solid #ffda6a', borderLeft: '4px solid #C47A00' }}>
-          <p className="mb-0 small">
-            <strong>Datos en vivo no disponibles.</strong>{' '}
-            {qosLive.isConfigMissing
-              ? 'Falta configurar VITE_API_BASE_URL en el frontend.'
-              : 'La API requiere autenticación Bearer. Inicie sesión nuevamente si su sesión expiró.'}
-          </p>
-          <button
-            onClick={qosLive.retry}
-            className="border-0 bg-transparent fw-semibold"
-            style={{ fontSize: 13, color: '#965D00', cursor: 'pointer', whiteSpace: 'nowrap' }}
-          >
-            Reintentar
-          </button>
-        </div>
-      )}
-
-      <Row className="g-3 mb-4">
-        {qosLive.status === 'loading' ? (
-          <div className="text-muted small px-3 py-4">Cargando métricas QoS…</div>
-        ) : qosLive.status === 'error' ? (
-          <div className="px-3 py-4 small" style={{ color: '#B22F2F' }}>
-            No se pudieron cargar las métricas QoS. <button onClick={qosLive.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
-          </div>
-        ) : qosLive.cells.length === 0 ? (
-          <div className="text-muted small px-3 py-4">Sin métricas QoS disponibles en la sesión actual.</div>
-        ) : (
-          qosLive.cells.map(m => (
-            <Col key={m.label} xs={12} sm={6} xl={4}>
-              <div className="cc-card p-3">
-                <div className="small text-muted">{m.label}</div>
-                <div style={{ fontSize: 22, fontWeight: 700, margin: '6px 0 4px' }}>{m.value}</div>
-                <div className="small text-muted">{m.sub}</div>
-              </div>
-            </Col>
-          ))
-        )}
-      </Row>
-
-      <Card className="cc-card mb-4">
-        <div className="cc-card-header">
-          Registros QoS recientes
-          {trafficRunId && (
-            <span className="text-muted fw-normal" style={{ fontSize: 12 }}> — ejecución seleccionada</span>
-          )}
-        </div>
-        {qosLive.recentStatus === 'loading' ? (
-          <div className="p-4 small text-muted">Cargando registros…</div>
-        ) : qosLive.recentStatus === 'error' ? (
-          <div className="p-4 small" style={{ color: '#B22F2F' }}>
-            No se pudieron cargar los registros. <button onClick={qosLive.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
-          </div>
-        ) : qosLive.recent.length === 0 ? (
-          <div className="p-4 small text-muted">Sin registros QoS persistidos.</div>
-        ) : (
-          <div className="overflow-hidden">
-            <table className="w-100" style={{ borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr style={{ background: '#F5F8FA' }}>
-                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Latencia (ms)</th>
-                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Jitter (ms)</th>
-                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Pérdida (%)</th>
-                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>PDR (%)</th>
-                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Throughput (B/s)</th>
-                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Espera cola (ms)</th>
-                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Atención (ms)</th>
-                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Fecha</th>
-                </tr>
-              </thead>
-              <tbody>
-                {qosLive.recent.map((r, i) => (
-                  <tr key={r.id} style={{ borderTop: '1px solid #EFF4F7', background: i % 2 === 1 ? '#FAFBFC' : '#fff' }}>
-                    <td className="px-4 py-3">{nullableSecondsMs(r.latency)}</td>
-                    <td className="px-4 py-3">{nullableSecondsMs(r.jitter)}</td>
-                    <td className="px-4 py-3">{nullablePct(r.packet_loss)}</td>
-                    <td className="px-4 py-3">{nullablePct(r.pdr)}</td>
-                    <td className="px-4 py-3">{nullableThroughput(r.throughput)}</td>
-                    <td className="px-4 py-3">{nullableMs(r.queue_wait_ms)}</td>
-                    <td className="px-4 py-3">{nullableMs(r.service_time_ms)}</td>
-                    <td className="px-4 py-3 text-muted font-monospace" style={{ fontSize: 12 }}>
-                      {formatTs(r.timestamp)}
-                      {r.processing_version === 1 && (
-                        <span className="text-muted" style={{ fontSize: 11 }}> · legado</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
 
       {/* ─── Comparación experimental (ejecuciones reales del backend) ─── */}
       <h2 className="small fw-semibold text-muted text-uppercase mb-3" style={{ letterSpacing: '0.06em' }}>
@@ -388,6 +247,15 @@ export function AnalyticsView() {
         </div>
       )}
       {(expStatus === 'success' || expStatus === 'empty') && <>
+      {requestedId && !requested && <p className="alert alert-warning small">
+        La ejecución solicitada no está en la lista cargada. Seleccione una ejecución; no se sustituye su evidencia.
+      </p>}
+      {unknownRuns.length > 0 && <p className="alert alert-info small">
+        Hay {unknownRuns.length} {unknownRuns.length === 1 ? 'prueba sin condición registrada' : 'pruebas sin condición registrada'}.
+        Se conservan en el histórico, pero no se mezclan con las comparaciones de sensores normales o alterados.
+      </p>}
+      {requestedUnknown && requested && <RunEvidencePanel run={requested}
+        title="Medición de la prueba enlazada — sin condición registrada" />}
       <Card className="cc-card mb-4">
         <Card.Body>
           <div className="mb-4">
@@ -402,7 +270,7 @@ export function AnalyticsView() {
                     fontWeight: condition === c ? 600 : 400,
                   }}
                   onClick={() => { setCondition(c); setWithQosId(null); setWithoutQosId(null); }}>
-                  {SENSOR_CONDITION_LABELS[c]}
+                  {CONDITION_LABELS[c]}
                 </button>
               ))}
             </div>
@@ -432,95 +300,20 @@ export function AnalyticsView() {
           </Row>
 
           <p className="small text-muted mb-0">
-            Condición: <strong>{SENSOR_CONDITION_LABELS[condition]}</strong> · comparación
+            Condición: <strong>{CONDITION_LABELS[condition]}</strong> · comparación
             {' '}<strong>Con priorización</strong> vs <strong>Sin priorización</strong>.
           </p>
         </Card.Body>
       </Card>
 
-      {metricsError && <div className="alert alert-warning">{metricsError}</div>}
-      {showNoMetricsNote && !metricsError && (
-        <div className="p-3 rounded-3 mb-4 text-center text-muted small" style={{ background: '#F5F8FA', border: '1px dashed #D9E2E8' }}>
-          Las ejecuciones seleccionadas no tienen métricas registradas.
-        </div>
-      )}
+      <Row className="g-3 mb-3">
+        <Col xs={12} xl={6}><RunEvidencePanel run={withQosRun} title="Medición real — Con priorización" /></Col>
+        <Col xs={12} xl={6}><RunEvidencePanel run={withoutQosRun} title="Medición real — Sin priorización" /></Col>
+      </Row>
 
-      {withQosRun && withoutQosRun && !metricsError ? (
-        <>
-          <div className="mb-4">
-            <h3 className="mb-3" style={{ fontSize: 14, fontWeight: 600 }}>Resumen comparativo</h3>
-            <Row className="g-3">
-              {COUNTER_METRICS.map(type => (
-                <Col key={type} xs={12} sm={6} xl={3}>
-                  <MetricComparisonCard
-                    label={METRIC_LABELS[type]}
-                    unit={METRIC_UNITS[type]}
-                    withQosValue={sumMetricOrNull(withQosMetrics, type)}
-                    withoutQosValue={sumMetricOrNull(withoutQosMetrics, type)}
-                    higherIsBetter={type === 'readings_persisted' || type === 'messages_received'}
-                  />
-                </Col>
-              ))}
-            </Row>
-          </div>
-
-          <div className="mb-4">
-            <h3 className="mb-3" style={{ fontSize: 14, fontWeight: 600 }}>Latencias</h3>
-            <Row className="g-3 mb-4">
-              {LATENCY_METRICS.map(type => (
-                <Col key={type} xs={12} sm={6}>
-                  <div className="p-3 rounded-3" style={{ background: '#fff', border: '1px solid #D9E2E8' }}>
-                    <div className="small fw-semibold text-muted mb-3">{METRIC_LABELS[type]}</div>
-                    <div className="d-flex justify-content-between mb-2">
-                      <span className="small">Con priorización</span>
-                      <span className="fw-bold">
-                        {avgMetric(withQosMetrics, type) !== null ? `${roundMax3(avgMetric(withQosMetrics, type)!).toFixed(1)} ms` : '—'}
-                        <span className="text-muted small fw-normal"> avg</span>
-                        {' · '}
-                        {maxMetric(withQosMetrics, type) !== null ? `${roundMax3(maxMetric(withQosMetrics, type)!)} ms` : '—'}
-                        <span className="text-muted small fw-normal"> máx</span>
-                      </span>
-                    </div>
-                    <div className="d-flex justify-content-between">
-                      <span className="small">Sin priorización</span>
-                      <span className="fw-bold">
-                        {avgMetric(withoutQosMetrics, type) !== null ? `${roundMax3(avgMetric(withoutQosMetrics, type)!).toFixed(1)} ms` : '—'}
-                        <span className="text-muted small fw-normal"> avg</span>
-                        {' · '}
-                        {maxMetric(withoutQosMetrics, type) !== null ? `${roundMax3(maxMetric(withoutQosMetrics, type)!)} ms` : '—'}
-                        <span className="text-muted small fw-normal"> máx</span>
-                      </span>
-                    </div>
-                  </div>
-                </Col>
-              ))}
-            </Row>
-
-            <Row className="g-4 mb-4">
-              <Col xs={12} lg={6}>
-                <LineComparisonChart title="Latencia de persistencia" data={persistData} />
-              </Col>
-              <Col xs={12} lg={6}>
-                <LineComparisonChart title="Latencia hasta alerta" data={alertData} />
-              </Col>
-            </Row>
-
-            <BacklogChart withQosRun={withQosRun} withoutQosRun={withoutQosRun} allMetrics={metrics} />
-          </div>
-
-          <CountMetricsBarChart withQosRun={withQosRun} withoutQosRun={withoutQosRun} allMetrics={metrics} />
-
-          <p className="small text-muted mt-3 mb-0">
-            Sin priorización usa una FIFO de referencia sin clasificación. Ambos escenarios miden espera y atención.
-            «—» indica ausencia de muestras; el legado no demuestra despacho v2. Una diferencia por sí sola no prueba causalidad.
-          </p>
-        </>
-      ) : (
-        <div className="p-4 rounded-3 mb-4 text-center text-muted small" style={{ background: '#F5F8FA', border: '1px dashed #D9E2E8' }}>
-          No hay suficientes ejecuciones para comparar bajo la condición <strong>{SENSOR_CONDITION_LABELS[condition]}</strong>.
-          Ejecuta simulaciones desde la pantalla de Simulación.
-        </div>
-      )}
+      <ComparisonResults hasWith={!!withQosRun} hasWithout={!!withoutQosRun}
+        conditionLabel={CONDITION_LABELS[condition]} withQos={withAnalysis} withoutQos={withoutAnalysis}
+        error={metricsError} retry={() => setAnalysisAttempt(n => n + 1)} />
       </>}
 
       {/* ─── Análisis histórico — datos reales (TSK-052) ─── */}

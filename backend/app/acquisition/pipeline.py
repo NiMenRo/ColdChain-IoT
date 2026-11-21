@@ -8,7 +8,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Optional
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
+
+from app.acquisition.telemetry_trace import emission_trace, record_trace
 
 logger = logging.getLogger(__name__)
 
@@ -170,9 +172,9 @@ def _build_coordinator(app_state):
         return existing
 
     config = getattr(app_state, "backend_config", None)
-    flow_weights = getattr(config, "qos_wfq_flow_weights", None) or {}
+    band_weights = getattr(config, "qos_wfq_band_weights", None)
     planner = TrafficPlanningService(
-        wfq_scheduler=WFQScheduler(flow_weights=flow_weights)
+        wfq_scheduler=WFQScheduler(band_weights=band_weights)
     )
     coordinator = DispatchCoordinator(
         planner,
@@ -186,6 +188,18 @@ def _build_coordinator(app_state):
     # planner stored in ``app_state.qos_service``.
     app_state.dispatch_planner = planner
     app_state.dispatch_coordinator = coordinator
+    record_trace(
+        "dispatch_config",
+        config={
+            "wfq_policy": "criticality_bands_v1", "cost_per_reading": 1,
+            "band_weights": planner.wfq.band_weights,
+            "class_quotas": {
+                priority: sum(value.value == priority for value in coordinator.class_cycle)
+                for priority in ("high", "medium", "low")
+            },
+            "pending_capacity": coordinator.capacity,
+        },
+    )
     return coordinator
 
 
@@ -273,7 +287,11 @@ def _notify_alerts(alerts: list, app_state) -> list:
                     message = notification_service.resolve_message(alert)
                     if not isinstance(message, str) or not message.strip():
                         continue
-                    channels = ("dashboard", "email") if alert.criticality >= 8 else ("dashboard",)
+                    channels = (
+                        ("dashboard", "email")
+                        if alert.criticality is not None and alert.criticality >= 8
+                        else ("dashboard",)
+                    )
                     for channel in channels:
                         for user in humans:
                             recipient = (user.email or "").strip() if channel == "email" else str(user.id)
@@ -378,6 +396,9 @@ def _process_work_item(work_item, app_state) -> datetime | None:
 
     persistence_service = getattr(app_state, "persistence_service", None)
     if persistence_service is not None and _already_persisted(work_item):
+        record_trace("replay_skipped", source_message_id=str(work_item.source_message_id),
+                     work_id=str(work_item.id), sensor_name=work_item.sensor_name,
+                     run_id=str(work_item.run_id) if work_item.run_id else None)
         logger.info(
             "Work %s (%s:%s) was already persisted; replay skipped",
             work_item.id,
@@ -427,6 +448,16 @@ def _process_work_item(work_item, app_state) -> datetime | None:
 
     # The transaction has committed: only now is persistence confirmed.
     committed_at = datetime.now(timezone.utc)
+    record_trace(
+        "persisted", source_message_id=str(work_item.source_message_id),
+        work_id=str(work_item.id), sensor_name=work_item.sensor_name,
+        device_code=work_item.device_code, run_id=str(work_item.run_id) if work_item.run_id else None,
+        committed_at=committed_at.isoformat(),
+        alerts=[{"alert_id": str(alert.id), "created_at": alert.created_at.isoformat()}
+                for alert in alerts],
+        generated_at=work_item.timestamp,
+        priority=work_item.priority,
+    )
     # Session APIs expose confirmed effects only. A rollback must not leave
     # alerts/events in memory that have no corresponding committed reading.
     events_list = getattr(app_state, "events", None)
@@ -472,6 +503,9 @@ def _attention_loop(coordinator, app_state, stop_event: threading.Event) -> None
                 committed_at = _process_work_item(work_item, app_state)
                 success = True
             except Exception:
+                record_trace("reading_failed", source_message_id=str(work_item.source_message_id),
+                             work_id=str(work_item.id), sensor_name=work_item.sensor_name,
+                             run_id=str(work_item.run_id) if work_item.run_id else None)
                 logger.exception(
                     "Attention failed for work %s (%s:%s)",
                     work_item.id,
@@ -548,7 +582,8 @@ def _ingest_message(
         _record_run_metrics(run_id, [("messages_invalid", 1.0, received_at)])
         return
 
-    source_message_id = uuid4()
+    trace = emission_trace(message.get("payload")) if isinstance(message, dict) else None
+    source_message_id = UUID(trace["message_id"]) if trace else uuid4()
     msg_received_at = (
         message.get("received_at") if isinstance(message, dict) else None
     )
@@ -588,6 +623,7 @@ def _ingest_message(
         try:
             work_item = WorkItem.from_reading(
                 reading,
+                id=uuid5(source_message_id, reading.sensor_name) if trace else None,
                 source_message_id=source_message_id,
                 sequence=next(sequence_counter),
                 scenario=scenario,
@@ -625,6 +661,13 @@ def _ingest_message(
         admitted = (
             coordinator.admit(work_item, accepted_before_drain=True)
             if accepted_before_drain else coordinator.admit(work_item)
+        )
+        record_trace(
+            "reading_admitted" if admitted else "reading_rejected",
+            source_message_id=str(source_message_id), work_id=str(work_item.id),
+            device_code=work_item.device_code, sensor_name=work_item.sensor_name,
+            priority=work_item.priority, generated_at=work_item.timestamp,
+            run_id=str(work_item.run_id) if work_item.run_id else None,
         )
         _record_run_metrics(
             run_id,
@@ -777,6 +820,9 @@ class AcquisitionPipeline:
                 coordinator = getattr(self._app_state, "dispatch_coordinator", None)
                 if coordinator is not None:
                     for item in coordinator.cancel_pending():
+                        record_trace("reading_cancelled", source_message_id=str(item.source_message_id),
+                                     work_id=str(item.id), sensor_name=item.sensor_name,
+                                     run_id=str(item.run_id) if item.run_id else None)
                         logger.warning(
                             "Cancelled pending work %s run=%s device=%s sensor=%s",
                             item.id, item.run_id, item.device_code, item.sensor_name,

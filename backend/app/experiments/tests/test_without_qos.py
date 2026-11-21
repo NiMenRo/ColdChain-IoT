@@ -39,10 +39,7 @@ from app.database.infrastructure.repositories import (
     ExperimentRunRepository,
 )
 from app.database.infrastructure.session import get_db
-from app.events.application.event_processing_service import (
-    EventProcessingService,
-    criticality_for_breaches,
-)
+from app.events.application.event_processing_service import EventProcessingService
 from app.events.domain import ThresholdConfig
 from app.experiments import active
 from app.experiments.api import router
@@ -183,20 +180,9 @@ def test_set_get_clear_and_double_set_guarded():
         active.set_active_run("not-a-uuid", "WITH_QOS")
 
 
-# --- rule-derived criticality --------------------------------------------------
+# --- no fabricated criticality -------------------------------------------------
 
-def test_criticality_for_breaches():
-    class _E:
-        def __init__(self, breached):
-            self.breached = breached
-
-    assert criticality_for_breaches([_E(True)]) == 5.0
-    assert criticality_for_breaches([_E(True), _E(True)]) == 7.0
-    assert criticality_for_breaches([_E(True)] * 5) == 9.0
-    assert criticality_for_breaches([]) == 3.0
-
-
-def test_process_without_classification_uses_rule_criticality():
+def test_process_without_classification_leaves_criticality_unset():
     svc = EventProcessingService(
         ThresholdConfig(**THRESHOLDS),
         device_mapping={"CAVA-EXP": uuid.uuid4()},
@@ -209,7 +195,7 @@ def test_process_without_classification_uses_rule_criticality():
     result = svc.process([reading], None)
     assert result["classification_id"] is None
     assert result["alert_count"] == 1
-    assert result["alerts"][0].criticality == 5.0
+    assert result["alerts"][0].criticality is None
 
 
 # --- persist_bundle without classification --------------------------------------
@@ -225,7 +211,7 @@ def test_persist_bundle_without_classification(db_factory):
     with db_factory() as db:
         alert = DomainAlert(
             id=uuid.uuid4(), device_id=reading_device_id, user_id=SYSTEM_ID,
-            type="TEMPERATURE_EXCEEDED", message="warm", criticality=5.0,
+            type="TEMPERATURE_EXCEEDED", message="warm", criticality=None,
             acknowledged=False, created_at=datetime.now(timezone.utc),
         )
         readings = [
@@ -269,7 +255,7 @@ def test_without_qos_branch_end_to_end(db_factory):
         alerts = db.query(AlertORM).all()
         assert len(alerts) == 1
         assert alerts[0].run_id == run_id
-        assert alerts[0].criticality == 5.0  # rule-derived, not QoS
+        assert alerts[0].criticality is None  # QoS criticality not calculated
         metrics = {m.metric_type: m for m in db.query(ExperimentMetricORM).filter_by(run_id=run_id).all()}
     assert state.classifications == []  # nothing classified
     assert state.qos_records == []  # scheduler never ran

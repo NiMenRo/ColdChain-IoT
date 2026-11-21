@@ -13,6 +13,9 @@ class Alert:
     records the event ``type``, a human-readable ``message`` and a numeric
     ``criticality`` score (the same C = I + U + R value used by the
     classification subsystem) so that downstream priority logic can reuse it.
+    ``criticality`` is ``None`` when the run does not calculate it
+    (WITHOUT_QOS): absence of a measurement must never be stored as 0 or as a
+    fabricated score.
     """
 
     id: UUID
@@ -20,7 +23,7 @@ class Alert:
     user_id: UUID
     type: str
     message: str
-    criticality: float
+    criticality: float | None
     acknowledged: bool
     created_at: datetime
 
@@ -59,8 +62,10 @@ class Alert:
             raise ValueError("'message' must be a non-empty string")
 
     def _validate_criticality(self) -> None:
+        if self.criticality is None:
+            return
         if isinstance(self.criticality, bool) or not isinstance(self.criticality, (int, float)):
-            raise TypeError("'criticality' must be a numeric value")
+            raise TypeError("'criticality' must be a numeric value or None")
 
     def _validate_acknowledged(self) -> None:
         if not isinstance(self.acknowledged, bool):

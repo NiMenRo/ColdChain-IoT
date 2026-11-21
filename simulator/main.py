@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if PROJECT_ROOT not in sys.path:
@@ -161,8 +162,27 @@ def select_scenarios(devices, condition=None):
     return build_scenarios(devices)
 
 
+def _stop_requested():
+    path = os.getenv("COLDCHAIN_STOP_FILE")
+    return bool(path and Path(path).exists())
+
+
+def _sampling_pause(interval):
+    if not os.getenv("COLDCHAIN_STOP_FILE"):
+        time.sleep(interval)
+        return
+    deadline = time.monotonic() + interval
+    while not _stop_requested():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(remaining, 0.1))
+
+
 def _publish_all_devices(devices, device_publisher):
     for device in devices:
+        if _stop_requested():
+            break
         print()
         print(f"  {device.code}")
         print(f"  {'-' * 30}")
@@ -203,9 +223,11 @@ def publish_cycle(devices, scenarios, critical_manager, device_publisher, sampli
     """
     if not scenarios:
         _publish_all_devices(devices, device_publisher)
-        time.sleep(sampling_interval)
+        _sampling_pause(sampling_interval)
         return
     for cycle_index, scenario in enumerate(scenarios, start=1):
+        if _stop_requested():
+            break
         critical_manager.deactivate_all()
         critical_manager.activate(scenario)
         print(f"\n  --- Ciclo {cycle_index}: {scenario.name} ---")
@@ -214,7 +236,7 @@ def publish_cycle(devices, scenarios, critical_manager, device_publisher, sampli
 
         _publish_all_devices(devices, device_publisher)
 
-        time.sleep(sampling_interval)
+        _sampling_pause(sampling_interval)
 
 
 def main(cycles: int = 1, condition: str | None = None) -> None:
@@ -257,6 +279,8 @@ def main(cycles: int = 1, condition: str | None = None) -> None:
     try:
         run_cycle = 0
         while True:
+            if _stop_requested():
+                break
             run_cycle += 1
             if cycles > 0 and run_cycle > cycles:
                 break
@@ -269,7 +293,7 @@ def main(cycles: int = 1, condition: str | None = None) -> None:
                     logging.getLogger(__name__).error("No devices available or DB unreachable — aborting simulator (DB is source of truth, no hardcoded fallback)")
                     sys.exit(1)
                 logging.getLogger(__name__).warning("No devices with sensors yet — waiting for devices")
-                time.sleep(config.sampling_interval)
+                _sampling_pause(config.sampling_interval)
                 continue
 
             publish_cycle(devices, select_scenarios(devices, condition), critical_manager, device_publisher, config.sampling_interval)

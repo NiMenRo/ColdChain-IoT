@@ -77,6 +77,7 @@ class HistoryService:
             "total_alerts": alerts.count(),
             "active_alerts": active_alerts.count(),
             "critical_active_alerts": active_alerts.filter(AlertORM.criticality >= 7).count(),
+            "alerts_without_criticality": alerts.filter(AlertORM.criticality.is_(None)).count(),
             "total_predictions": preds.count(),
             "alerts_by_type": dict(alerts.with_entities(AlertORM.type, func.count()).group_by(AlertORM.type).all()),
             "readings_by_device": dict(db.query(DeviceORM.code, func.count(SensorReadingORM.id)).join(SensorReadingORM, DeviceORM.id==SensorReadingORM.device_id).filter(SensorReadingORM.run_id == run_id if scoped else True).group_by(DeviceORM.code).all()),

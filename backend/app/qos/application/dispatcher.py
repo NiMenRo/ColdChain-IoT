@@ -11,6 +11,7 @@ from uuid import UUID
 from app.classification import PriorityLevel
 from app.qos.application.scheduler import ScheduledItem
 from app.qos.application.traffic_planning_service import TrafficPlanningService
+from app.qos.application.wfq_scheduler import WFQScheduler
 from app.qos.domain.work_item import WorkItem
 
 
@@ -109,6 +110,10 @@ class DispatchCoordinator:
     @property
     def capacity(self) -> int:
         return self._capacity
+
+    @property
+    def class_cycle(self) -> tuple[PriorityLevel, ...]:
+        return self._dispatcher.cycle
 
     def next_sequence(self) -> int:
         """Reserve the next admission sequence number."""
@@ -333,6 +338,17 @@ class DispatchCoordinator:
                 snapshot["queues"] = {
                     priority.value: self._planner.size(priority)
                     for priority in (PriorityLevel.HIGH, PriorityLevel.MEDIUM, PriorityLevel.LOW)
+                }
+                snapshot["wfq"] = {
+                    "policy": "criticality_bands_v1",
+                    "band_weights": self._planner.wfq.band_weights,
+                    "pending_by_band": {
+                        band: sum(
+                            WFQScheduler.band_for(item) == band
+                            for item in self._planner.get_queue(PriorityLevel.HIGH)
+                        )
+                        for band in ("H7", "H8", "H9")
+                    },
                 }
                 def summarize(items):
                     return [{

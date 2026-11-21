@@ -69,7 +69,7 @@ class TelemetryNormalizer:
                         device_type=device_type,
                         sensor_name=sensor_name,
                         value=self._normalize_value(field_name, value),
-                        timestamp=timestamp,
+                        timestamp=payload.get("reading_timestamps", {}).get(field_name, timestamp),
                         raw_value=value,
                     )
                 )
