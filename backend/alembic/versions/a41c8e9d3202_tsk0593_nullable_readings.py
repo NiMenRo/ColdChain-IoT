@@ -17,54 +17,50 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.alter_column(
-        "sensor_readings",
+    with op.batch_alter_table("sensor_readings") as batch_op:
+        batch_op.alter_column(
         "temperature",
         existing_type=sa.Float(),
         type_=sa.Float(),
         existing_nullable=False,
         nullable=True,
-    )
-    op.alter_column(
-        "sensor_readings",
+        )
+        batch_op.alter_column(
         "humidity",
         existing_type=sa.Float(),
         type_=sa.Float(),
         existing_nullable=False,
         nullable=True,
-    )
-    op.alter_column(
-        "sensor_readings",
+        )
+        batch_op.alter_column(
         "energy",
         existing_type=sa.String(),
         type_=sa.String(),
         existing_nullable=False,
         nullable=True,
-    )
+        )
 
 
 def downgrade() -> None:
-    op.alter_column(
-        "sensor_readings",
+    with op.batch_alter_table("sensor_readings") as batch_op:
+        batch_op.alter_column(
         "energy",
         existing_type=sa.String(),
         type_=sa.String(),
         existing_nullable=True,
         nullable=False,
-    )
-    op.alter_column(
-        "sensor_readings",
+        )
+        batch_op.alter_column(
         "humidity",
         existing_type=sa.Float(),
         type_=sa.Float(),
         existing_nullable=True,
         nullable=False,
-    )
-    op.alter_column(
-        "sensor_readings",
+        )
+        batch_op.alter_column(
         "temperature",
         existing_type=sa.Float(),
         type_=sa.Float(),
         existing_nullable=True,
         nullable=False,
-    )
+        )

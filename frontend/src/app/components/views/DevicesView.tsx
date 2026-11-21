@@ -7,7 +7,7 @@ import {
 import { Button, Form, Row, Col } from '../../lib/bootstrap';
 import {
   useDevices, Device, DeviceStatus, DeviceType, SensorType,
-  DEVICE_TYPE_LABEL, SENSOR_LABEL, DeviceFormData, DeviceReadingSnapshot,
+  DEVICE_TYPE_LABEL, SENSOR_LABEL, DeviceFormData, DeviceLatestSnapshot,
 } from '../../contexts/DeviceContext';
 import { useAuth } from '../../hooks/useAuth';
 import { hasActionPermission } from '../../config/rbac';
@@ -546,7 +546,7 @@ function ReadingRow({ device }: { device: Device }) {
 // Sensores: lista de tipos desde GET /devices/{id} (sin entidad Sensor ni sensor_id).
 function DeviceCard({ device, reading, sensors: deviceSensors, canManage, onConfigure }: {
   device: Device;
-  reading: DeviceReadingSnapshot | undefined;
+  reading: DeviceLatestSnapshot | undefined;
   sensors: SensorType[];
   canManage: boolean;
   onConfigure: () => void;
@@ -600,23 +600,25 @@ function DeviceCard({ device, reading, sensors: deviceSensors, canManage, onConf
       </div>
 
       <div className="p-3" style={{ background: '#fff' }}>
-        {device.status === 'active' && reading && reading.temperature !== null ? (
+        {device.status === 'active' && reading ? (
           <div className="d-flex flex-wrap gap-3">
             {deviceSensors.includes('temperature') && (
               <div className="d-flex align-items-center gap-2">
                 <Thermometer size={15} style={{ color: tempCritical ? '#C83B3B' : '#1F6F8B', flexShrink: 0 }} />
                 <div>
                   <div className="text-muted" style={{ fontSize: 11 }}>Temperatura</div>
-                  <div className="fw-bold" style={{ color: tempCritical ? '#C83B3B' : '#17232D' }}>{reading.temperature} °C</div>
+                  <div className="fw-bold" style={{ color: tempCritical ? '#C83B3B' : '#17232D' }}>{reading.temperature === null ? '—' : `${reading.temperature} °C`}</div>
+                  <div className="text-muted" style={{ fontSize: 10 }}>{reading.sensor_timestamps.temperature ? new Date(reading.sensor_timestamps.temperature).toLocaleString('es-CO') : 'Sin muestra'}</div>
                 </div>
               </div>
             )}
-            {deviceSensors.includes('humidity') && reading.humidity !== null && (
+            {deviceSensors.includes('humidity') && (
               <div className="d-flex align-items-center gap-2">
                 <Droplets size={15} style={{ color: humCritical ? '#C83B3B' : '#1F6F8B', flexShrink: 0 }} />
                 <div>
                   <div className="text-muted" style={{ fontSize: 11 }}>Humedad</div>
-                  <div className="fw-bold" style={{ color: humCritical ? '#C83B3B' : '#17232D' }}>{reading.humidity} %</div>
+                  <div className="fw-bold" style={{ color: humCritical ? '#C83B3B' : '#17232D' }}>{reading.humidity === null ? '—' : `${reading.humidity} %`}</div>
+                  <div className="text-muted" style={{ fontSize: 10 }}>{reading.sensor_timestamps.humidity ? new Date(reading.sensor_timestamps.humidity).toLocaleString('es-CO') : 'Sin muestra'}</div>
                 </div>
               </div>
             )}
@@ -626,8 +628,9 @@ function DeviceCard({ device, reading, sensors: deviceSensors, canManage, onConf
                 <div>
                   <div className="text-muted" style={{ fontSize: 11 }}>Energía</div>
                   <div className="fw-bold" style={{ color: reading.energy === 'on' ? '#16835B' : reading.energy === 'off' ? '#C83B3B' : '#52616B' }}>
-                    {reading.energy === 'on' ? 'ON' : reading.energy === 'off' ? 'OFF' : '—'}
+                     {reading.energy === 'on' ? 'ON' : reading.energy === 'off' ? 'OFF' : '—'}
                   </div>
+                  <div className="text-muted" style={{ fontSize: 10 }}>{reading.sensor_timestamps.energy ? new Date(reading.sensor_timestamps.energy).toLocaleString('es-CO') : 'Sin muestra'}</div>
                 </div>
               </div>
             )}

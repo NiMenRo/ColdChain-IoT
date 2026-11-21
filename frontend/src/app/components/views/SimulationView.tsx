@@ -123,7 +123,7 @@ export function SimulationView() {
   const liveValue = (v: number | null, has: boolean, digits = 0): React.ReactNode =>
     running && !has
       ? <LoaderCircle size={20} className="cc-spin" style={{ color: '#1F6F8B' }} />
-      : fmt(v, digits);
+       : has ? fmt(v, digits) : '—';
 
   const criticalDevices = devices.map(d => ({
     ...d,
@@ -258,7 +258,7 @@ export function SimulationView() {
                       <div style={{ fontSize: 12 }} className="text-muted">
                         {v === 'con'
                           ? 'Las lecturas se clasifican y atienden por prioridad automáticamente.'
-                          : 'Lecturas procesadas directamente sin clasificación ni priorización.'}
+                           : 'Lecturas atendidas por una FIFO de referencia sin clasificación ni prioridad.'}
                       </div>
                     </div>
                   </label>
@@ -347,6 +347,11 @@ export function SimulationView() {
             <Col xs={12} sm={6} xl={4}><KpiCard label="Alertas generadas" value={liveValue(sumOf('alerts_generated'), hasMetric('alerts_generated'))} Icon={AlertTriangle} accent={sumOf('alerts_generated') > 0 ? '#C83B3B' : '#52616B'} sub="durante la ejecución" /></Col>
             <Col xs={12} sm={6} xl={4}><KpiCard label="Latencia ingesta→persistencia" value={liveValue(avgOf('ingest_to_persist_ms'), hasMetric('ingest_to_persist_ms'), 1)} Icon={Clock} accent="#123B5D" sub="promedio de muestras (ms)" /></Col>
             <Col xs={12} sm={6} xl={4}><KpiCard label="Cola pendiente" value={liveValue(latestOf('backlog'), hasMetric('backlog'))} Icon={BarChart3} accent="#123B5D" sub="mensajes en espera (último valor)" /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Lecturas admitidas" value={liveValue(sumOf('readings_admitted'), hasMetric('readings_admitted'))} Icon={Layers} accent="#123B5D" sub="despacho productivo" /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Lecturas rechazadas" value={liveValue(sumOf('readings_rejected'), hasMetric('readings_rejected'))} Icon={AlertTriangle} accent={sumOf('readings_rejected') > 0 ? '#C83B3B' : '#52616B'} sub="capacidad, cierre o drenaje" /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Atenciones fallidas" value={liveValue(sumOf('readings_failed'), hasMetric('readings_failed'))} Icon={AlertTriangle} accent={sumOf('readings_failed') > 0 ? '#C83B3B' : '#52616B'} sub="no cuentan como persistidas" /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Espera en cola" value={liveValue(avgOf('queue_wait_ms'), hasMetric('queue_wait_ms'), 1)} Icon={Clock} accent="#123B5D" sub="admisión→selección, promedio (ms)" /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Tiempo de atención" value={liveValue(avgOf('service_time_ms'), hasMetric('service_time_ms'), 1)} Icon={Clock} accent="#123B5D" sub="selección→fin, promedio (ms)" /></Col>
           </Row>
           {running && (
             <p className="text-muted small mb-4">
@@ -387,7 +392,7 @@ export function SimulationView() {
               <FlowDiagram conPriorizacion={procesamiento === 'con'} />
               {procesamiento === 'sin' && (
                 <p className="text-center small text-muted mt-3">
-                  Los pasos de clasificación y priorización están omitidos. Las lecturas pasan directamente al procesamiento.
+                  Se omiten clasificación y priorización. Las lecturas esperan en una FIFO de referencia antes de su atención.
                 </p>
               )}
             </Card.Body>

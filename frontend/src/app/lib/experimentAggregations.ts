@@ -22,6 +22,17 @@ export function sumMetric(samples: ExperimentMetric[], type: ExperimentMetricTyp
   return samples.filter(m => m.metric_type === type).reduce((s, m) => s + m.value, 0);
 }
 
+/**
+ * Suma de contadores con distinción «sin muestras» (null) frente a «cero real».
+ * Usar en comparaciones experimentales: una ejecución sin muestras de un tipo
+ * no debe presentarse como un 0 medido.
+ */
+export function sumMetricOrNull(samples: ExperimentMetric[], type: ExperimentMetricType): number | null {
+  const vals = samples.filter(m => m.metric_type === type).map(m => m.value);
+  if (vals.length === 0) return null;
+  return vals.reduce((s, v) => s + v, 0);
+}
+
 export function avgMetric(samples: ExperimentMetric[], type: ExperimentMetricType): number | null {
   const vals = samples.filter(m => m.metric_type === type).map(m => m.value);
   if (vals.length === 0) return null;
@@ -68,7 +79,7 @@ export function seriesByElapsed(
     .filter(m => m.metric_type === type)
     .sort((x, y) => x.timestamp.localeCompare(y.timestamp))
     .map(m => ({
-      elapsedMin: Math.round((new Date(m.timestamp).getTime() - start) / 60000),
+      elapsedMin: (new Date(m.timestamp).getTime() - start) / 60000,
       value: m.value,
     }));
 }
@@ -78,13 +89,28 @@ export function mergeLineSeries(
   b: { elapsedMin: number; value: number }[],
 ): { elapsedMin: number; withQos: number | null; withoutQos: number | null }[] {
   const keys = Array.from(new Set([...a.map(p => p.elapsedMin), ...b.map(p => p.elapsedMin)])).sort((x, y) => x - y);
-  const mapA = new Map(a.map(p => [p.elapsedMin, p.value]));
-  const mapB = new Map(b.map(p => [p.elapsedMin, p.value]));
-  return keys.map(elapsedMin => ({
-    elapsedMin,
-    withQos: mapA.has(elapsedMin) ? mapA.get(elapsedMin)! : null,
-    withoutQos: mapB.has(elapsedMin) ? mapB.get(elapsedMin)! : null,
-  }));
+  // Preserve even simultaneous observations (e.g. sibling sensors). A Map
+  // from time to a single value silently discards all but the last sample.
+  const group = (points: typeof a) => {
+    const grouped = new Map<number, number[]>();
+    for (const p of points) {
+      const values = grouped.get(p.elapsedMin) ?? [];
+      values.push(p.value);
+      grouped.set(p.elapsedMin, values);
+    }
+    return grouped;
+  };
+  const mapA = group(a);
+  const mapB = group(b);
+  return keys.flatMap(elapsedMin => {
+    const valuesA = mapA.get(elapsedMin) ?? [];
+    const valuesB = mapB.get(elapsedMin) ?? [];
+    return Array.from({ length: Math.max(valuesA.length, valuesB.length) }, (_, i) => ({
+      elapsedMin,
+      withQos: valuesA[i] ?? null,
+      withoutQos: valuesB[i] ?? null,
+    }));
+  });
 }
 
 export { COUNTER_METRICS, LATENCY_METRICS };

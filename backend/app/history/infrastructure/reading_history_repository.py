@@ -10,12 +10,14 @@ from app.database.infrastructure.models import DeviceORM, SensorReadingORM, Traf
 
 
 class ReadingHistoryRepository:
-    def list(self, db: Session, *, device_code: str | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, run_id: UUID | None = None, sort: str = "timestamp.desc", page: int = 1, per_page: int = 20):
+    def list(self, db: Session, *, device_code: str | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, run_id: UUID | None = None, processing_version: int | None = None, sort: str = "timestamp.desc", page: int = 1, per_page: int = 20):
         q = db.query(SensorReadingORM).join(DeviceORM, SensorReadingORM.device_id == DeviceORM.id)
         if device_code:
             q = q.filter(DeviceORM.code == device_code)
         if run_id is not None:
             q = q.filter(SensorReadingORM.run_id == run_id)
+        if processing_version is not None:
+            q = q.filter(SensorReadingORM.processing_version == processing_version)
         if from_ts:
             q = q.filter(SensorReadingORM.timestamp >= from_ts)
         if to_ts:
@@ -39,10 +41,35 @@ class ReadingHistoryRepository:
         tc = db.query(TrafficClassificationORM).filter_by(reading_id=sr.id).first()
         from app.database.infrastructure.models import QoSMetricORM, AlertORM, PredictionORM
         qos = db.query(QoSMetricORM).filter_by(classification_id=tc.id).all() if tc else []
-        alerts = db.query(AlertORM).filter_by(device_id=sr.device_id).all()
+        # Dispatch-v2 alerts have an exact reading FK.  Legacy alerts have no
+        # such association and remain explicitly marked as device-level data.
+        alerts_legacy = sr.processing_version < 2
+        alerts = (
+            db.query(AlertORM).filter_by(reading_id=sr.id).all()
+            if not alerts_legacy
+            else db.query(AlertORM)
+            .filter(AlertORM.device_id == sr.device_id, AlertORM.reading_id.is_(None))
+            .all()
+        )
         preds = db.query(PredictionORM).filter_by(reading_id=sr.id).all()
         device = db.query(DeviceORM).filter_by(id=sr.device_id).first()
-        return {"device": device, "sensor_reading": sr, "traffic_classification": tc, "qos_metrics": qos, "alerts": alerts, "predictions": preds}
+        return {"device": device, "sensor_reading": sr, "traffic_classification": tc, "qos_metrics": qos, "alerts": alerts, "alerts_legacy": alerts_legacy, "predictions": preds}
+
+    def latest_values(self, db: Session, device_code: str) -> dict[str, SensorReadingORM | None]:
+        """Return the latest non-NULL value for each sensor independently."""
+        device = db.query(DeviceORM).filter_by(code=device_code).first()
+        if device is None:
+            return {"temperature": None, "humidity": None, "energy": None}
+        result = {}
+        for sensor in ("temperature", "humidity", "energy"):
+            column = getattr(SensorReadingORM, sensor)
+            result[sensor] = (
+                db.query(SensorReadingORM)
+                .filter(SensorReadingORM.device_id == device.id, column.isnot(None))
+                .order_by(SensorReadingORM.timestamp.desc(), SensorReadingORM.id.desc())
+                .first()
+            )
+        return result
 
     def trends(self, db: Session, *, device_code: str | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, run_id: UUID | None = None, interval: str = "hour"):
         # interval: minute, hour, day

@@ -52,7 +52,7 @@ class WFQSchedulerTests(SchedulerContractTests):
 
     # -- virtual time accounting --------------------------------------------
 
-    def test_virtual_time_advances_by_finish_of_served_entry(self):
+    def test_virtual_time_advances_by_gps_service_share(self):
         first = self._make_classification(PriorityLevel.HIGH.value)
         second = self._make_classification(PriorityLevel.HIGH.value)
 
@@ -61,11 +61,11 @@ class WFQSchedulerTests(SchedulerContractTests):
         self.assertEqual(self.scheduler.virtual_time, 0.0)
 
         self.scheduler.dequeue()
-        self.assertEqual(self.scheduler.virtual_time, 1.0)
+        self.assertEqual(self.scheduler.virtual_time, 0.5)
         self.scheduler.dequeue()
-        self.assertEqual(self.scheduler.virtual_time, 2.0)
+        self.assertEqual(self.scheduler.virtual_time, 1.5)
 
-    def test_custom_weight_scales_finish_times(self):
+    def test_custom_default_weight_scales_virtual_service_share(self):
         scheduler = WFQScheduler(weight=2.5)
         first = self._make_classification(PriorityLevel.HIGH.value)
         second = self._make_classification(PriorityLevel.HIGH.value)
@@ -75,9 +75,9 @@ class WFQSchedulerTests(SchedulerContractTests):
         self.assertEqual(scheduler.weight, 2.5)
 
         scheduler.dequeue()
-        self.assertEqual(scheduler.virtual_time, 2.5)
+        self.assertAlmostEqual(scheduler.virtual_time, 0.2)
         scheduler.dequeue()
-        self.assertEqual(scheduler.virtual_time, 5.0)
+        self.assertAlmostEqual(scheduler.virtual_time, 0.6)
 
     # -- weight validation ---------------------------------------------------
 

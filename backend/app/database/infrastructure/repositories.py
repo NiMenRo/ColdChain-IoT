@@ -49,6 +49,11 @@ class SensorReadingRepository:
         readings: list[NormalizedReading],
         device_id: uuid.UUID,
         run_id: uuid.UUID | None = None,
+        *,
+        reading_id: uuid.UUID | None = None,
+        source_message_id: uuid.UUID | None = None,
+        sensor_name: str | None = None,
+        processing_version: int = 1,
     ) -> SensorReadingORM:
         """TSK-059.3 — persist 1 SensorReading per bundle honoring DeviceSensor.
 
@@ -102,12 +107,16 @@ class SensorReadingRepository:
             raise ValueError("readings group has no valid sensor measurements")
         ts = _parse_timestamp(group[0].timestamp)
         obj = SensorReadingORM(
+            id=reading_id or uuid.uuid4(),
             device_id=device_id,
             temperature=values.get("temperature"),
             humidity=values.get("humidity"),
             energy=values.get("energy"),
             timestamp=ts,
             run_id=run_id,
+            source_message_id=source_message_id,
+            sensor_name=sensor_name,
+            processing_version=processing_version,
         )
         db.add(obj)
         db.flush()
@@ -152,7 +161,12 @@ class QoSMetricRepository:
 
 class AlertRepository:
     def save(
-        self, db: Session, alert: Alert, run_id: uuid.UUID | None = None
+        self,
+        db: Session,
+        alert: Alert,
+        run_id: uuid.UUID | None = None,
+        *,
+        reading_id: uuid.UUID | None = None,
     ) -> AlertORM:
         obj = AlertORM(
             id=alert.id,
@@ -164,6 +178,7 @@ class AlertRepository:
             acknowledged=alert.acknowledged,
             created_at=alert.created_at,
             run_id=run_id,
+            reading_id=reading_id,
         )
         db.add(obj)
         db.flush()

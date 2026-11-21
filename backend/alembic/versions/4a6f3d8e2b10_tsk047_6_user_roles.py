@@ -32,12 +32,13 @@ def upgrade() -> None:
             f"{invalid_roles}"
         )
 
-    op.create_check_constraint(
-        "ck_users_role",
-        "users",
-        "role IN ('admin','supervisor','operador','auditor','system')",
-    )
+    with op.batch_alter_table("users") as batch_op:
+        batch_op.create_check_constraint(
+            "ck_users_role",
+            "role IN ('admin','supervisor','operador','auditor','system')",
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint("ck_users_role", "users", type_="check")
+    with op.batch_alter_table("users") as batch_op:
+        batch_op.drop_constraint("ck_users_role", type_="check")

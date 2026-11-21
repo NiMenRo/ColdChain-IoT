@@ -22,6 +22,7 @@ import type { Device } from '../types/devices';
 import { formatMs, formatThroughput } from '../lib/qosUnits';
 import { apiGetQosMetrics, type QosMetricsResponse } from '../../services/api/qos';
 import { usePolling, DASHBOARD_POLL_MS } from './usePolling';
+import { dashboardIndicators } from '../lib/dashboardIndicators';
 
 export type SectionStatus = 'loading' | 'success' | 'empty' | 'error';
 
@@ -108,7 +109,7 @@ export interface DashboardDataState {
   activeDevices: number | null;
   errorDevices: number | null;
   totalAlerts: number | null;
-  criticalAlerts: number;
+  criticalAlerts: number | null;
 
   recentAlerts: DashboardAlertItem[];
   avgTemp: number | null;
@@ -242,8 +243,8 @@ export function useDashboardData(): DashboardDataState {
       const allFailed = fulfilled === 0;
       if (background) {
         // Error discreto sin borrar nada; el sello solo avanza con datos frescos.
-        setRefreshError(allFailed ? (firstMessage ?? 'No se pudo actualizar.') : null);
-        if (fulfilled > 0) {
+        setRefreshError(fulfilled < results.length ? (firstMessage ?? 'No se pudo actualizar alguna sección.') : null);
+        if (fulfilled === results.length) {
           setLastUpdated(new Date().toLocaleTimeString('es-CO', { hour12: false }));
         }
         setRefreshing(false);
@@ -282,9 +283,7 @@ export function useDashboardData(): DashboardDataState {
   // ─── Derivados (solo presentación; ninguna agregación propia del backend) ───
 
   const deviceById = new Map((devices ?? []).map((d) => [d.id, d]));
-  const totalDevices = devices ? devices.length : (summary ? summary.total_devices : null);
-  const activeDevices = devices ? devices.filter((d) => d.status === 'active').length : null;
-  const errorDevices = devices ? devices.filter((d) => d.status === 'error').length : null;
+  const { totalDevices, activeDevices, errorDevices, totalAlerts, criticalAlerts } = dashboardIndicators(summary);
 
   const recentAlerts: DashboardAlertItem[] = (alerts?.results ?? []).map((a) => ({
     id: a.id,
@@ -295,8 +294,6 @@ export function useDashboardData(): DashboardDataState {
     acknowledged: a.acknowledged,
     timestamp: formatClock(a.created_at),
   }));
-  const totalAlerts = summary ? summary.total_alerts : (alerts ? alerts.total : null);
-  const criticalAlerts = recentAlerts.filter((a) => a.criticality >= 7 && !a.acknowledged).length;
 
   const lastReading = [...(readingTrends ?? [])].reverse().find((p) => p.avg_temp !== null || p.avg_hum !== null);
   const avgTemp = lastReading?.avg_temp ?? null;

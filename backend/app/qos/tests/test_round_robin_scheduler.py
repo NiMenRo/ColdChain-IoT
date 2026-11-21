@@ -32,9 +32,9 @@ class RoundRobinSchedulerTests(SchedulerContractTests):
             timestamp=datetime(2026, 8, 17, 9, 59, 30),
         )
 
-    # -- rotation abstraction ------------------------------------------------
+    # -- legacy demonstration compatibility ---------------------------------
 
-    def test_single_slot_services_arrival_order(self):
+    def test_legacy_classifications_keep_arrival_order_without_default_slot(self):
         first = self._make_classification(PriorityLevel.MEDIUM.value)
         second = self._make_classification(PriorityLevel.MEDIUM.value)
         third = self._make_classification(PriorityLevel.MEDIUM.value)
@@ -47,7 +47,7 @@ class RoundRobinSchedulerTests(SchedulerContractTests):
         self.assertIs(self.scheduler.dequeue(), second)
         self.assertIs(self.scheduler.dequeue(), third)
 
-    def test_rotation_rounds_are_counted(self):
+    def test_draining_all_legacy_flows_counts_a_round(self):
         first = self._make_classification(PriorityLevel.MEDIUM.value)
         second = self._make_classification(PriorityLevel.MEDIUM.value)
 
@@ -56,9 +56,9 @@ class RoundRobinSchedulerTests(SchedulerContractTests):
         self.scheduler.enqueue(second)
 
         self.scheduler.dequeue()
-        self.assertEqual(self.scheduler.rounds, 1)
+        self.assertEqual(self.scheduler.rounds, 0)
         self.scheduler.dequeue()
-        self.assertEqual(self.scheduler.rounds, 2)
+        self.assertEqual(self.scheduler.rounds, 1)
 
     def test_empty_dequeue_does_not_advance_rounds(self):
         first = self._make_classification(PriorityLevel.MEDIUM.value)
@@ -69,8 +69,8 @@ class RoundRobinSchedulerTests(SchedulerContractTests):
         self.assertIsNone(self.scheduler.dequeue())
         self.assertEqual(self.scheduler.rounds, 1)
 
-    def test_single_default_slot_is_exposed(self):
-        self.assertEqual(self.scheduler.slot_names, ["default"])
+    def test_no_default_slot_exists_before_admission(self):
+        self.assertEqual(self.scheduler.slot_names, [])
 
 
 if __name__ == "__main__":

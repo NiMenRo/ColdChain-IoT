@@ -142,8 +142,10 @@ def test_breach_first_message_persists_whole_bundle(monkeypatch, tmp_path):
     assert state.classifications[0]["classification"].queue == "WFQ"
 
     with TestSession() as db:
-        assert db.query(SensorReadingORM).count() == 1
-        assert db.query(TrafficClassificationORM).count() == 1
+        # B1: one durable row per selected reading, not one representative
+        # bundle row per MQTT message.
+        assert db.query(SensorReadingORM).count() == 3
+        assert db.query(TrafficClassificationORM).count() == 3
         assert db.query(AlertORM).count() >= 1
         assert db.query(NotificationORM).count() >= 1
     engine.dispose()

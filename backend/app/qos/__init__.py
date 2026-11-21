@@ -1,4 +1,5 @@
 from .application.fifo_scheduler import FIFOScheduler
+from .application.dispatcher import DispatchCoordinator, QoSDispatcher
 from .application.qos_metrics_service import QoSMetricsService, QoSMetricService
 from .application.round_robin_scheduler import RoundRobinScheduler
 from .application.scheduler import Scheduler
@@ -15,6 +16,8 @@ __all__ = [
     "TrafficPlanningService",
     "Scheduler",
     "FIFOScheduler",
+    "QoSDispatcher",
+    "DispatchCoordinator",
     "RoundRobinScheduler",
     "WFQScheduler",
 ]
