@@ -15,6 +15,7 @@ asserts all three readings classify AND every durable row exists.
 from __future__ import annotations
 
 import os
+import smtplib
 import tempfile
 import threading
 import time
@@ -26,7 +27,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.acquisition.pipeline import _worker_loop
+from app.acquisition.pipeline import _critical_email_message, _notify_alerts, _worker_loop
 from app.database.infrastructure.base import Base
 from app.database.infrastructure.models import (
     AlertORM,
@@ -40,7 +41,13 @@ from app.database.infrastructure.models import (
 from app.database.application.persistence_service import PersistenceService
 from app.events.application.event_processing_service import EventProcessingService
 from app.events.domain import ThresholdConfig
-from app.notifications.application import NotificationService
+from app.history.infrastructure.alert_history_repository import AlertHistoryRepository
+from app.notifications.application import (
+    NotificationChannelRegistry,
+    NotificationService,
+    production_channels,
+)
+from app.auth.sessions import active_sessions
 from app.qos.application.qos_metrics_service import QoSMetricsService
 from app.qos.application.traffic_planning_service import TrafficPlanningService
 
@@ -62,6 +69,25 @@ class _ScriptedQueue:
         return []
 
 
+@pytest.fixture(autouse=True)
+def isolated_active_sessions(monkeypatch):
+    # No logged-in users may leak across pipeline or authentication tests.
+    monkeypatch.setattr(active_sessions, "_expires_at", {})
+
+
+def test_critical_email_formats_alert_time_in_colombia():
+    alert = types.SimpleNamespace(
+        type="TEMPERATURE_EXCEEDED",
+        message="Temperatura fuera de rango (9.5 °C) (0-4 °C)",
+        criticality=8,
+        created_at=datetime(2026, 10, 27, 18, 0, tzinfo=timezone.utc),
+    )
+
+    email = _critical_email_message(alert, "CAVA-001")
+
+    assert "Fecha y hora: 27/10/2026 – 13:00 (hora Colombia)" in email
+
+
 def test_breach_first_message_persists_whole_bundle(monkeypatch, tmp_path):
     db_file = str(tmp_path / "worker_repro.db")
     engine = create_engine(f"sqlite:///{db_file}", connect_args={"check_same_thread": False})
@@ -80,8 +106,12 @@ def test_breach_first_message_persists_whole_bundle(monkeypatch, tmp_path):
             owner = UserORM(name="sys", email="sys@example.com",
                             password_hash="h", role="system")
             db.add(owner)
+            recipient = UserORM(name="Admin", email="admin@example.com",
+                                password_hash="h", role="admin", is_active=True)
+            db.add(recipient)
             db.flush()
             dev_id, user_id = dev.id, owner.id
+            active_sessions.login(recipient.id, 3600)
 
     # The worker resolves SessionLocal at call time: point it at sqlite.
     import app.database.infrastructure.session as session_module
@@ -181,7 +211,7 @@ def _seed_fanout_db(TestSession):
     return dev_id, author_id, ids
 
 
-def _pump_one_message(TestSession, dev_id, author_id, message):
+def _pump_one_message(TestSession, dev_id, author_id, message, notification_service=None):
     import app.database.infrastructure.session as session_module
     # NOTE: caller must have monkeypatched session_module.SessionLocal already
     # for the worker thread; this helper only builds state + runs the loop.
@@ -202,7 +232,7 @@ def _pump_one_message(TestSession, dev_id, author_id, message):
         qos_records=[],
         persistence_service=PersistenceService(),
         event_processing_service=event_service,
-        notification_service=NotificationService(),
+        notification_service=notification_service or NotificationService(),
     )
     stop = threading.Event()
     worker = threading.Thread(target=_worker_loop,
@@ -234,10 +264,13 @@ def _breach_message():
     }
 
 
-def test_fanout_distributes_to_active_humans_only(monkeypatch, tmp_path):
-    """Fan-out policy: admin/operador/auditor actives get own rows.
+@pytest.mark.parametrize("logged_roles", [
+    ("admin", "operador", "auditor"), ("admin", "operador"),
+])
+def test_fanout_distributes_to_logged_in_active_humans_only(monkeypatch, tmp_path, logged_roles):
+    """Main's session policy, integrated after v2 dispatch and commit.
 
-    System, inactive and unknown users never own rows. Auditor rows are
+    System, logged-out and inactive users never own rows. Auditor rows are
     read-only by RBAC (no ack/write), but readable via `authenticated`
     endpoints — receiving rows grants no extra power.
     """
@@ -249,24 +282,32 @@ def test_fanout_distributes_to_active_humans_only(monkeypatch, tmp_path):
 
     import app.database.infrastructure.session as session_module
     monkeypatch.setattr(session_module, "SessionLocal", TestSession)
+    for role in logged_roles:
+        active_sessions.login(ids[role], 3600)
+    # Even a logged-in inactive user must be excluded.
+    active_sessions.login(ids["supervisor_off"], 3600)
     state = _pump_one_message(TestSession, dev_id, author_id, _breach_message())
 
     assert len(state.alerts) >= 1
     with TestSession() as db:
         rows = db.query(NotificationORM).all()
         owners = {r.user_id for r in rows}
-        assert owners == {ids["admin"], ids["operador"], ids["auditor"]}, owners
-        # One row per (alert × recipient): no duplicates, all unread.
-        assert len(rows) == len(state.alerts) * 3
+        assert owners == {ids[role] for role in logged_roles}, owners
+        # Critical alerts get dashboard AND email, once per logged-in user.
+        assert len(rows) == sum(2 if a.criticality >= 8 else 1 for a in state.alerts) * len(logged_roles)
         assert all(r.is_read is False for r in rows)
-        assert all(r.channel == "dashboard" and r.status == "sent" for r in rows)
+        assert all(r.status == "sent" for r in rows)
+        assert len({(r.alert_id, r.channel, r.recipient) for r in rows}) == len(rows)
         for r in rows:
-            assert r.recipient == str(r.user_id)
+            if r.channel == "dashboard":
+                assert r.recipient == str(r.user_id)
+            else:
+                assert r.channel == "email" and r.recipient.endswith("@example.com")
     engine.dispose()
 
 
-def test_fanout_falls_back_to_alert_author_without_humans(monkeypatch, tmp_path):
-    """Legacy fallback: no human recipients → single author-owned row."""
+def test_fanout_does_not_invent_recipient_without_logged_in_humans(monkeypatch, tmp_path):
+    """Main removes the legacy fallback: the system author is not a recipient."""
     db_file = str(tmp_path / "worker_fallback.db")
     engine = create_engine(f"sqlite:///{db_file}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
@@ -287,11 +328,106 @@ def test_fanout_falls_back_to_alert_author_without_humans(monkeypatch, tmp_path)
 
     import app.database.infrastructure.session as session_module
     monkeypatch.setattr(session_module, "SessionLocal", TestSession)
+    active_sessions.login(author_id, 3600)  # System role is never a recipient.
     state = _pump_one_message(TestSession, dev_id, author_id, _breach_message())
 
     assert len(state.alerts) >= 1
     with TestSession() as db:
         rows = db.query(NotificationORM).all()
-        assert len(rows) == len(state.alerts)
-        assert {r.user_id for r in rows} == {author_id}
+        assert rows == []
+        assert db.query(AlertORM).count() == len(state.alerts)
+    assert state.notifications == []
+    engine.dispose()
+
+
+def test_critical_alert_sends_email_and_is_available_to_dashboard(monkeypatch, tmp_path):
+    db_file = str(tmp_path / "worker_critical_notifications.db")
+    engine = create_engine(f"sqlite:///{db_file}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    TestSession = sessionmaker(bind=engine, autoflush=False)
+    dev_id, author_id, ids = _seed_fanout_db(TestSession)
+    import app.database.infrastructure.session as session_module
+    monkeypatch.setattr(session_module, "SessionLocal", TestSession)
+    recipient_id = ids["admin"]
+    active_sessions.login(recipient_id, 3600)
+    sent_emails = []
+
+    class _FakeSMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def starttls(self):
+            pass
+
+        def login(self, username, password):
+            pass
+
+        def send_message(self, message):
+            # SMTP can only be reached after a selected v2 reading and its
+            # alert are committed, never while siblings are merely queued.
+            with TestSession() as db:
+                assert db.query(AlertORM).count() > 0
+                assert db.query(SensorReadingORM).filter_by(processing_version=2).count() > 0
+            sent_emails.append(message)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSMTP)
+    monkeypatch.setenv("SMTP_ENABLED", "true")
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("SMTP_FROM", "alerts@example.com")
+    monkeypatch.setenv("SMTP_USERNAME", "alerts@example.com")
+    monkeypatch.setenv("SMTP_PASSWORD", "test-password")
+    notification_service = NotificationService(
+        channel_registry=NotificationChannelRegistry(channels=production_channels())
+    )
+
+    try:
+        state = _pump_one_message(
+            TestSession, dev_id, author_id, _breach_message(), notification_service
+        )
+        with TestSession() as db:
+            count_before = db.query(NotificationORM).count()
+        # A notification retry checks recipient/channel idempotency before
+        # SMTP and never duplicates runtime traces or durable delivery rows.
+        runtime_before = len(state.notifications)
+        sent_before = len(sent_emails)
+        _notify_alerts(state.alerts, state)
+        assert len(sent_emails) == sent_before
+        assert len(state.notifications) == runtime_before
+        with TestSession() as db:
+            assert db.query(NotificationORM).count() == count_before
+    finally:
+        active_sessions.logout(recipient_id)
+
+    critical_alert_ids = {
+        alert.id for alert in state.alerts if alert.criticality >= 8
+    }
+    assert critical_alert_ids
+    assert len(sent_emails) == len(critical_alert_ids)
+    assert all(email["To"] == "admin@example.com" for email in sent_emails)
+
+    with TestSession() as db:
+        rows = (
+            db.query(NotificationORM)
+            .filter(
+                NotificationORM.user_id == recipient_id,
+                NotificationORM.alert_id.in_(critical_alert_ids),
+            )
+            .all()
+        )
+        assert {(row.channel, row.status) for row in rows} == {
+            ("dashboard", "sent"),
+            ("email", "sent"),
+        }
+        total, dashboard_alerts = AlertHistoryRepository().list(
+            db, page=1, per_page=5
+        )
+        assert total >= len(critical_alert_ids)
+        assert critical_alert_ids.intersection({alert.id for alert in dashboard_alerts})
+
     engine.dispose()

@@ -16,6 +16,7 @@ import { UserManagementView }  from '../components/views/UserManagementView';
 import { AuditView }           from '../components/views/AuditView';
 import { LoginView }           from '../components/views/auth/LoginView';
 import { ForbiddenView }       from '../components/views/auth/ForbiddenView';
+import { PasswordResetView }   from '../components/views/auth/PasswordResetView';
 
 function AppLayout() {
   const location = useLocation();
@@ -49,6 +50,8 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginView />} />
+      <Route path="/forgot-password" element={<PasswordResetView mode="request" />} />
+      <Route path="/reset-password" element={<PasswordResetView mode="confirm" />} />
       <Route path="/403"   element={<ForbiddenView />} />
 
       <Route element={<ProtectedRoute />}>

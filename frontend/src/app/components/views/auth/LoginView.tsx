@@ -384,7 +384,7 @@ export function LoginView() {
                     checked={remember} onChange={e => setRemember(e.target.checked)} />
                   Mantener sesión iniciada
                 </label>
-                <button type="button" className="cc-link" onClick={() => soon('La recuperación de contraseña')}>
+                <button type="button" className="cc-link" onClick={() => navigate('/forgot-password')}>
                   ¿Olvidaste tu contraseña?
                 </button>
               </div>

@@ -1,7 +1,7 @@
 import { UserRole } from '../app/config/rbac';
 import { AUTH_TOKEN_KEY } from './api/client';
 import { ApiError } from './api/client';
-import { apiGetMe, apiLogin } from './api/auth';
+import { apiGetMe, apiLogin, apiLogout } from './api/auth';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export interface User {
@@ -71,7 +71,14 @@ export async function login(email: string, password: string): Promise<AuthResult
 }
 
 export async function logout(): Promise<void> {
-  clearLocalSession();
+  try {
+    await apiLogout();
+  } catch {
+    // Clearing the browser session is still correct when the local backend
+    // has already stopped or the JWT expired.
+  } finally {
+    clearLocalSession();
+  }
 }
 
 export function getCurrentUser(): User | null {

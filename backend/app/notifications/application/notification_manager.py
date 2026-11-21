@@ -30,9 +30,21 @@ class NotificationManager:
             for alert_type, channel in (channel_by_alert_type or {}).items()
         }
 
-    def select_channel(self, alert: Alert) -> NotificationChannel:
-        """Select the configured channel for an alert."""
+    def select_channel(
+        self,
+        alert: Alert,
+        *,
+        channel_override: NotificationChannel | str | None = None,
+    ) -> NotificationChannel:
+        """Select the configured channel for an alert.
+
+        The production attention worker explicitly overrides dashboard/email
+        for its recipient policy. Generic callers retain their configured
+        routing instead of having it silently replaced by criticality.
+        """
         self._validate_alert(alert)
+        if channel_override is not None:
+            return self._normalize_channel(channel_override)
         return self._channel_by_alert_type.get(
             self._normalize_alert_type(alert.type),
             self._default_channel,
@@ -43,12 +55,13 @@ class NotificationManager:
         alert: Alert,
         *,
         status: NotificationStatus | str = NotificationStatus.PENDING,
+        channel_override: NotificationChannel | str | None = None,
     ) -> Notification:
         """Create a pending notification request ready for a delivery adapter."""
         self._validate_alert(alert)
         return Notification.from_alert(
             alert=alert,
-            channel=self.select_channel(alert),
+            channel=self.select_channel(alert, channel_override=channel_override),
             status=status,
         )
 

@@ -700,19 +700,26 @@ class _FailingChannelService:
     def __init__(self):
         self.calls = 0
 
-    def process(self, alert):
+    def process_and_persist(self, alert, db, **kwargs):
         self.calls += 1
         raise RuntimeError("channel unavailable")
 
     def resolve_recipient(self, alert):  # pragma: no cover - never reached
         return None
 
-    def resolve_message(self, alert):  # pragma: no cover - never reached
-        return None
+    def resolve_message(self, alert):
+        return alert.message
 
 
 def test_channel_failure_keeps_confirmed_reading_and_alert(monkeypatch, db_factory):
     device_id, user_id = _seed_device(db_factory)
+    from app.auth.sessions import active_sessions
+
+    monkeypatch.setattr(active_sessions, "_expires_at", {})
+    with db_factory() as db:
+        db.get(UserORM, user_id).role = "admin"
+        db.commit()
+    active_sessions.login(user_id, 3600)
     monkeypatch.setattr(session_module, "SessionLocal", db_factory)
     alert = Alert(
         id=uuid.uuid4(),
