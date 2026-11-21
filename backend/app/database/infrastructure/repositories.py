@@ -826,7 +826,7 @@ class ExperimentRunRepository:
                     f"scenario must be one of {sorted(EXPERIMENT_SCENARIOS)}"
                 )
             q = q.filter(ExperimentRunORM.scenario == scenario)
-        q = q.order_by(ExperimentRunORM.started_at.desc())
+        q = q.order_by(ExperimentRunORM.started_at.desc(), ExperimentRunORM.id.desc())
         total = q.count()
         items = q.offset((page - 1) * per_page).limit(per_page).all()
         return total, items
@@ -907,7 +907,7 @@ class ExperimentMetricRepository:
                     f"metric_type must be one of {sorted(EXPERIMENT_METRIC_TYPES)}"
                 )
             q = q.filter(ExperimentMetricORM.metric_type == metric_type)
-        q = q.order_by(ExperimentMetricORM.timestamp.asc())
+        q = q.order_by(ExperimentMetricORM.timestamp.asc(), ExperimentMetricORM.id.asc())
         total = q.count()
         items = q.offset((page - 1) * per_page).limit(per_page).all()
         return total, items

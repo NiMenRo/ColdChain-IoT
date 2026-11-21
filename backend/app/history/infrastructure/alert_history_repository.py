@@ -23,7 +23,10 @@ class AlertHistoryRepository:
         desc = sort.endswith(".desc")
         field = sort.split(".")[0]
         col = getattr(AlertORM, field, AlertORM.created_at)
-        q = q.order_by(col.desc() if desc else col.asc())
+        q = q.order_by(
+            col.desc() if desc else col.asc(),
+            AlertORM.id.desc() if desc else AlertORM.id.asc(),
+        )
         items = q.offset((page - 1) * per_page).limit(per_page).all()
         return total, items
     def get_by_id(self, db: Session, id: UUID):

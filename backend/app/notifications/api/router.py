@@ -62,7 +62,7 @@ class AlertSummary(BaseModel):
     user_id: str
     type: str
     message: str
-    criticality: float
+    criticality: float | None
     acknowledged: bool
     created_at: str
 
@@ -169,7 +169,9 @@ def _serialize_alert(alert: Alert) -> dict[str, Any]:
         "user_id": str(alert.user_id),
         "type": alert.type,
         "message": alert.message,
-        "criticality": float(alert.criticality),
+        "criticality": (
+            float(alert.criticality) if alert.criticality is not None else None
+        ),
         "acknowledged": bool(alert.acknowledged),
         "created_at": alert.created_at.isoformat(timespec="seconds")
         if hasattr(alert.created_at, "isoformat")
@@ -225,7 +227,9 @@ def _serialize_alert_row(row: AlertORM) -> dict[str, Any]:
         "user_id": str(row.user_id),
         "type": row.type,
         "message": row.message,
-        "criticality": float(row.criticality),
+        "criticality": (
+            float(row.criticality) if row.criticality is not None else None
+        ),
         "acknowledged": bool(row.acknowledged),
         "created_at": row.created_at.isoformat(timespec="seconds")
         if hasattr(row.created_at, "isoformat")
@@ -951,7 +955,11 @@ def process_notification(
                     user_id=alert_row.user_id,
                     type=alert_row.type,
                     message=alert_row.message,
-                    criticality=float(alert_row.criticality),
+                    criticality=(
+                        float(alert_row.criticality)
+                        if alert_row.criticality is not None
+                        else None
+                    ),
                     acknowledged=bool(alert_row.acknowledged),
                     created_at=alert_row.created_at,
                 )
@@ -971,7 +979,7 @@ def process_notification(
                 user_id=usr_uuid,
                 type=body.type,
                 message=body.message or "Alert triggered",
-                criticality=body.criticality if body.criticality is not None else 5.0,
+                criticality=body.criticality,
                 acknowledged=False,
                 created_at=datetime.now(timezone.utc),
             )

@@ -1,6 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState, useRef, ReactNode } from 'react';
 import {
-  ExperimentMetric,
+  ExperimentAnalysis,
   ExperimentRun,
   ExperimentRunMeta,
   ExperimentScenario,
@@ -9,8 +9,8 @@ import {
 import { ApiError } from '../../services/api/client';
 import {
   apiFinishExperimentRun,
-  apiGetExperimentRuns,
-  apiGetRunMetrics,
+  loadExperimentRuns,
+  apiGetRunAnalysis,
   apiStartExperimentRun,
 } from '../../services/api/experiments';
 
@@ -18,7 +18,9 @@ export type SectionStatus = 'loading' | 'success' | 'empty' | 'error';
 
 interface ExperimentContextValue {
   runs: ExperimentRun[];
-  metrics: ExperimentMetric[];
+  analyses: Record<string, ExperimentAnalysis>;
+  intervalAnalyses: Record<string, Record<number, ExperimentAnalysis>>;
+  analysisErrors: Record<string, string>;
   runMeta: Record<string, ExperimentRunMeta>;
   activeRun: ExperimentRun | null;
   status: SectionStatus;
@@ -28,7 +30,7 @@ interface ExperimentContextValue {
   retry: () => void;
   startRun: (input: { scenario: ExperimentScenario; sensorCondition: SensorCondition }) => Promise<{ run: ExperimentRun | null; error?: string }>;
   finishRun: (id: string) => Promise<{ ok: boolean; error?: string }>;
-  fetchMetrics: (runId: string) => Promise<void>;
+  fetchAnalysis: (runId: string, bucketSeconds?: number) => Promise<void>;
 }
 
 const ExperimentContext = createContext<ExperimentContextValue | null>(null);
@@ -46,10 +48,15 @@ function toErrorMessage(err: unknown, fallback: string): string {
 
 export function ExperimentProvider({ children }: { children: ReactNode }) {
   const [runs, setRuns] = useState<ExperimentRun[]>([]);
-  const [metrics, setMetrics] = useState<ExperimentMetric[]>([]);
-  // sensorCondition es selección UI local (el backend no la persiste): solo
-  // existe para runs iniciados en esta sesión. Los runs del backend sin meta
-  // se muestran como condición no registrada, nunca inventada.
+  const [analyses, setAnalyses] = useState<Record<string, ExperimentAnalysis>>({});
+  const [intervalAnalyses, setIntervalAnalyses] = useState<Record<string, Record<number, ExperimentAnalysis>>>({});
+  const [analysisErrors, setAnalysisErrors] = useState<Record<string, string>>({});
+  const pending = useRef<Partial<Record<string, Promise<void>>>>({});
+  const pendingWidths = useRef<Partial<Record<string, number | undefined>>>({});
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  // Metadata local optimista; la condición también queda en config_snapshot.
+  // Si ambas fuentes faltan, la UI no inventa una condición.
   const [runMeta, setRunMeta] = useState<Record<string, ExperimentRunMeta>>({});
   const [attempt, setAttempt] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -64,10 +71,10 @@ export function ExperimentProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     setLoading(true);
 
-    apiGetExperimentRuns({ page: 1, per_page: 50 }).then(
+    loadExperimentRuns().then(
       (res) => {
         if (cancelled) return;
-        setRuns(res.results);
+        setRuns(res);
         setFailed(false);
         setAuthBlocked(false);
         setConfigMissing(false);
@@ -78,7 +85,8 @@ export function ExperimentProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
         const apiErr = err instanceof ApiError ? err : null;
         setRuns([]);
-        setMetrics([]);
+        setAnalyses({});
+        setIntervalAnalyses({});
         setFailed(true);
         setAuthBlocked(apiErr !== null && apiErr.isAuthError);
         setConfigMissing(apiErr?.code === 'NO_BASE_URL');
@@ -94,26 +102,42 @@ export function ExperimentProvider({ children }: { children: ReactNode }) {
 
   const activeRun = runs.find((r) => !r.finished_at) ?? null;
 
-  const fetchMetrics = useCallback(async (runId: string) => {
-    // Recorre todas las páginas (tope de seguridad): los totales del run
-    // deben reflejar todas las muestras, no solo las primeras 100. Desde v2
-    // cada lectura puede aportar varias métricas de despacho (admisión,
-    // espera, atención, fallo), así que el tope es más alto que el original.
-    const incoming: ExperimentMetric[] = [];
-    let page = 1;
-    for (;;) {
-      const res = await apiGetRunMetrics(runId, { page, per_page: 100 });
-      incoming.push(...res.results);
-      if (incoming.length >= res.total) break;
-      if (res.results.length === 0 || incoming.length >= 10000 || page >= 100) {
-        throw new Error('Métricas incompletas: se alcanzó el límite de paginación. No se publican totales parciales.');
-      }
-      page += 1;
+  const fetchAnalysis = useCallback(function loadAnalysis(runId: string, bucketSeconds?: number): Promise<void> {
+    const existing = pending.current[runId];
+    if (existing) {
+      if (pendingWidths.current[runId] === bucketSeconds) return existing;
+      // Serialize differing resolutions so an older response cannot overwrite
+      // the new selection. Requests at the same resolution still share work.
+      return existing.catch(() => {}).then(() => loadAnalysis(runId, bucketSeconds));
     }
-    setMetrics((prev) => {
-      const known = new Set(prev.map((m) => m.id));
-      return [...prev, ...incoming.filter((m) => !known.has(m.id))];
-    });
+    pendingWidths.current[runId] = bucketSeconds;
+    const request = apiGetRunAnalysis(runId, bucketSeconds).then(report => {
+      if (report.run_id !== runId) throw new Error('La respuesta no corresponde a la prueba seleccionada.');
+      if (bucketSeconds !== undefined && report.bucket_seconds !== bucketSeconds) {
+        throw new Error('La duración de la prueba cambió. Actualice las estadísticas para comparar el mismo intervalo.');
+      }
+      if (!mounted.current) return;
+      setAnalyses(prev => ({ ...prev, [runId]: report }));
+      if (bucketSeconds !== undefined) {
+        setIntervalAnalyses(prev => ({ ...prev, [runId]: { ...prev[runId], [bucketSeconds]: report } }));
+      }
+      setAnalysisErrors(prev => { const next = { ...prev }; delete next[runId]; return next; });
+    }).catch((err: unknown) => {
+      if (mounted.current) {
+        setAnalyses(prev => { const next = { ...prev }; delete next[runId]; return next; });
+        if (bucketSeconds !== undefined) {
+          setIntervalAnalyses(prev => {
+            const reports = { ...prev[runId] };
+            delete reports[bucketSeconds];
+            return { ...prev, [runId]: reports };
+          });
+        }
+        setAnalysisErrors(prev => ({ ...prev, [runId]: 'No se pudieron cargar las estadísticas. Intente nuevamente.' }));
+      }
+      throw err;
+    }).finally(() => { delete pending.current[runId]; delete pendingWidths.current[runId]; });
+    pending.current[runId] = request;
+    return request;
   }, []);
 
   async function startRun({ scenario, sensorCondition }: { scenario: ExperimentScenario; sensorCondition: SensorCondition }) {
@@ -137,7 +161,9 @@ export function ExperimentProvider({ children }: { children: ReactNode }) {
       const run = await apiFinishExperimentRun(id);
       setRuns((prev) => prev.map((r) => (r.id === id ? run : r)));
       try {
-        await fetchMetrics(id);
+        // A request started before closing must not replace the final snapshot.
+        await pending.current[id]?.catch(() => {});
+        await fetchAnalysis(id);
       } catch {
         // Métricas opcionales tras el cierre: el run ya quedó finalizado.
       }
@@ -151,7 +177,9 @@ export function ExperimentProvider({ children }: { children: ReactNode }) {
     <ExperimentContext.Provider
       value={{
         runs,
-        metrics,
+        analyses,
+        intervalAnalyses,
+        analysisErrors,
         runMeta,
         activeRun,
         status: loading ? 'loading' : failed ? 'error' : runs.length === 0 ? 'empty' : 'success',
@@ -161,7 +189,7 @@ export function ExperimentProvider({ children }: { children: ReactNode }) {
         retry,
         startRun,
         finishRun,
-        fetchMetrics,
+        fetchAnalysis,
       }}
     >
       {children}

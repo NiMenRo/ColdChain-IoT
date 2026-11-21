@@ -51,7 +51,7 @@ export function useQosRuntime(): QosRuntimeState {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    // Keep the previous panel mounted during background refresh.
     busyRef.current = true;
     apiGetQosRuntime().then(
       (res) => {

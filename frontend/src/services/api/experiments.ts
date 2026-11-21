@@ -16,6 +16,8 @@ import type {
   ExperimentMetricType,
   ExperimentRun,
   ExperimentScenario,
+  ExperimentEvidence,
+  ExperimentAnalysis,
 } from '../../app/types/experiments';
 import { apiFetch } from './client';
 
@@ -57,6 +59,33 @@ export async function apiFinishExperimentRun(runId: string): Promise<ExperimentR
   return apiFetch<ExperimentRun>(`/experiment-runs/${encodeURIComponent(runId)}/finish`, {
     method: 'POST',
   });
+}
+
+export async function apiGetRunEvidence(runId: string): Promise<ExperimentEvidence> {
+  return apiFetch<ExperimentEvidence>(
+    `/experiment-runs/${encodeURIComponent(runId)}/evidence`,
+    { cache: 'no-store' },
+  );
+}
+
+export async function apiGetRunAnalysis(runId: string, bucketSeconds?: number): Promise<ExperimentAnalysis> {
+  const query = bucketSeconds === undefined ? '' : `?bucket_seconds=${encodeURIComponent(bucketSeconds)}`;
+  return apiFetch<ExperimentAnalysis>(`/experiment-runs/${encodeURIComponent(runId)}/analysis${query}`,
+    { cache: 'no-store' });
+}
+
+/** Never treat a first page (or repeated page) as the complete run catalog. */
+export async function loadExperimentRuns(): Promise<ExperimentRun[]> {
+  const found = new Map<string, ExperimentRun>();
+  for (let page = 1; ; page += 1) {
+    const response = await apiGetExperimentRuns({ page, per_page: 100 });
+    const before = found.size;
+    response.results.forEach(run => found.set(run.id, run));
+    if (found.size >= response.total) return [...found.values()];
+    if (found.size === before) {
+      throw new Error('No se pudo completar la lista de pruebas. Intente actualizarla.');
+    }
+  }
 }
 
 export interface ExperimentMetricListResponse {

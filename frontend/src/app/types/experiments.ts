@@ -8,6 +8,61 @@ export interface ExperimentRun {
   config_snapshot: string | null;
 }
 
+export interface AnalysisPoint {
+  elapsedMin: number; value: number; count: number;
+  max: number; start_seconds: number; end_seconds: number;
+}
+
+export interface ExperimentAnalysis {
+  run_id: string;
+  total_samples: number;
+  provisional: boolean;
+  max_points: number;
+  bucket_seconds: number;
+  metrics: Partial<Record<ExperimentMetricType, {
+    count: number; sum: number; mean: number; max: number; latest: number;
+  }>>;
+  series: Partial<Record<ExperimentMetricType, AnalysisPoint[]>>;
+}
+
+export interface EvidenceLatency {
+  count: number;
+  mean: number | null;
+  p95: number | null;
+}
+
+export interface ExperimentEvidence {
+  run_id: string;
+  status: 'in_progress' | 'provisional' | 'final' | 'incomplete' | 'unavailable';
+  reasons: string[];
+  scope: 'managed_local_producer';
+  counts: Record<string, number | null>;
+  pending_messages: number | null;
+  pdr_percent: number | null;
+  loss_percent: number | null;
+  received_payload_bytes: number | null;
+  payload_goodput_bytes_per_second: number | null;
+  window: {
+    started_at: string;
+    emission_ended_at: string;
+    reception_deadline: string;
+    observed_until: string;
+    processing_observed_until?: string;
+    grace_seconds: number;
+    rate_interval_seconds: number;
+    closed: boolean;
+  } | null;
+  configuration: {
+    class_quotas?: Record<string, number>;
+    wfq_policy?: string;
+    wfq_band_weights?: Record<string, number>;
+  } | null;
+  device_to_persist_ms: EvidenceLatency;
+  device_to_alert_persist_ms: EvidenceLatency;
+  by_priority: Record<string, { persist: EvidenceLatency; alert: EvidenceLatency }>;
+  clock_unmeasurable: number | null;
+}
+
 export type ExperimentMetricType =
   | 'messages_received'
   | 'messages_invalid'

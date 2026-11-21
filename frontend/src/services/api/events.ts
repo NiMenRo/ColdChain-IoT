@@ -17,7 +17,7 @@ export interface SessionAlert {
   user_id: string;
   type: string;
   message: string;
-  criticality: number;
+  criticality: number | null;
   acknowledged: boolean;
   created_at: string;
 }

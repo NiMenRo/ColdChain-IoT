@@ -21,17 +21,6 @@ from app.qos.application.qos_metrics_service import MessageDeliveryRecord
 logger = logging.getLogger(__name__)
 
 
-def criticality_for_breaches(evaluations: list) -> float:
-    """Rule-derived severity for WITHOUT_QOS alerts (TSK-059.7).
-
-    Counts breached evaluations: 3.0 base + 2.0 per breach, capped at 9.0.
-    This is NOT QoS criticality (C = I + U + R); it carries no priority,
-    queue or scheduler meaning and must never feed TrafficClassification.
-    """
-    breached = sum(1 for e in evaluations if getattr(e, "breached", False))
-    return min(9.0, 3.0 + 2.0 * breached)
-
-
 class EventProcessingService:
     """Orchestrates event detection from readings, classifications, and QoS metrics.
 
@@ -89,7 +78,8 @@ class EventProcessingService:
             Normalized sensor readings to process.
         classification : TrafficClassification, optional
             Traffic classification result (WITH_QOS). None in WITHOUT_QOS,
-            where alert criticality is derived from rule evaluations instead.
+            where the alert keeps ``criticality=None`` because QoS
+            criticality is not calculated in that scenario.
         metrics : MessageDeliveryRecord, optional
             QoS metrics associated with this batch (not used in alert generation,
             but kept for future correlation and tracing).
@@ -141,8 +131,8 @@ class EventProcessingService:
         An Alert is generated for each DetectedEvent, enriched with:
         - device_id (from device_mapping, must be a real Device.id)
         - user_id (from config or placeholder)
-        - criticality (from classification in WITH_QOS; from rule
-          evaluations via criticality_for_breaches in WITHOUT_QOS)
+        - criticality (from classification in WITH_QOS; None in WITHOUT_QOS,
+          never a fabricated score)
         - type (from event)
         - message (from event)
         - created_at (now)
@@ -156,10 +146,7 @@ class EventProcessingService:
             device_id = self._resolve_device_id(event.device_code)
             if device_id is None:
                 continue
-            if classification is not None:
-                criticality = classification.criticality
-            else:
-                criticality = criticality_for_breaches(evaluations or [])
+            criticality = classification.criticality if classification is not None else None
             alert = Alert(
                 id=uuid4(),
                 device_id=device_id,

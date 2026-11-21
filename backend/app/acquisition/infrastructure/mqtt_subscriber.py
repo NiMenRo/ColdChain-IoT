@@ -6,6 +6,7 @@ from uuid import UUID
 from ..device_origin_identifier import DeviceOriginIdentifier
 from ..message_queue import MessageQueue
 from .mqtt_message_validator import MQTTMessageValidator, MessageValidationError
+from ..telemetry_trace import emission_trace, record_trace
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +28,22 @@ class MQTTSubscriber:
 
     def on_message(self, client, userdata, msg):
         payload_data = None
+        received_at = datetime.now(timezone.utc).isoformat()
 
         try:
             payload_data = json.loads(msg.payload.decode())
+            try:
+                trace = emission_trace(payload_data)
+            except (TypeError, ValueError) as exc:
+                raise MessageValidationError(f"Invalid emission trace: {exc}") from exc
+            # Reception is observed before transport admission/validation.
+            # Repeated callbacks are separate events, not additional deliveries.
+            record_trace(
+                "received", trace=trace,
+                device_code=payload_data.get("device_code") if isinstance(payload_data, dict) else None,
+                generated_at=payload_data.get("timestamp") if isinstance(payload_data, dict) else None,
+                size_bytes=len(msg.payload), received_at=received_at,
+            )
             validated_payload = self._validator.validate(payload_data)
             device_origin = self._origin_identifier.identify(validated_payload)
             # Seal the experimental context at reception.  A message that is
@@ -38,12 +52,15 @@ class MQTTSubscriber:
             message = {
                 "topic": msg.topic,
                 "payload": validated_payload,
+                "trace": trace,
                 "device_origin": {
                     "device_code": device_origin.device_code,
                     "device_type": device_origin.device_type,
                 },
             }
             if not self._queue.append_received(message):
+                record_trace("transport_rejected", trace=trace,
+                             device_code=device_origin.device_code)
                 logger.warning(
                     "Mensaje de dispositivo %s rechazado: cola llena o ejecución en drenaje "
                     "(capacidad %s)",

@@ -140,6 +140,20 @@ class PersistentReadAPITests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json(), {"unread": 0})
 
+    def test_process_recovers_unscored_alert_without_fabricating_criticality(self):
+        with self.Session() as db:
+            db.get(AlertORM, self.alert_id).criticality = None
+            db.commit()
+        self.app.state.alerts.clear()
+        response = self._dispatch()
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.json()["success"])
+        history = self.client.get("/notifications/persistent")
+        self.assertEqual(history.status_code, 200)
+        self.assertIsNone(history.json()["notifications"][0]["alert"]["criticality"])
+        with self.Session() as db:
+            self.assertIsNone(db.get(AlertORM, self.alert_id).criticality)
+
     def test_process_persists_and_counts_unread(self):
         r = self._dispatch()
         self.assertEqual(r.status_code, 201)

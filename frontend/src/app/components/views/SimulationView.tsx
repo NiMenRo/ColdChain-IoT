@@ -4,8 +4,8 @@ import { Play, Square, RotateCcw, ExternalLink, AlertTriangle, Cpu, Thermometer,
 import { Button, Card, Row, Col } from '../../lib/bootstrap';
 import { useDevices, Device, DeviceType, DeviceStatus, DEVICE_TYPE_LABEL } from '../../contexts/DeviceContext';
 import { useExperiments } from '../../contexts/ExperimentContext';
-import { sumMetric } from '../../lib/experimentAggregations';
 import type { ExperimentMetricType } from '../../types/experiments';
+import { RunEvidencePanel } from '../experiments/RunEvidencePanel';
 
 interface KpiCardProps { label: string; value: React.ReactNode; unit?: string; accent?: string; sub?: string; Icon?: any; }
 function KpiCard({ label, value, unit, accent = '#123B5D', sub, Icon }: KpiCardProps) {
@@ -71,7 +71,7 @@ function FlowDiagram({ conPriorizacion }: { conPriorizacion: boolean }) {
 export function SimulationView() {
   const navigate = useNavigate();
   const { devices, getSensors } = useDevices();
-  const { startRun, finishRun, metrics, activeRun, status: expStatus, retry: expRetry } = useExperiments();
+  const { runs, startRun, finishRun, analyses, analysisErrors, fetchAnalysis, activeRun, status: expStatus, retry: expRetry } = useExperiments();
   const [runId, setRunId] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const [frozenMs, setFrozenMs] = useState<number | null>(null);
@@ -102,21 +102,12 @@ export function SimulationView() {
   // del backend las registra mientras el run está activo y se leen al cerrar).
   // Contadores (messages_*, readings_persisted, alerts_generated) = SUMA de
   // muestras; latencias = promedio; backlog = último valor.
-  const runMetrics = runId ? metrics.filter(m => m.run_id === runId) : [];
-  const hasMetric = (type: string): boolean =>
-    runMetrics.some(m => m.metric_type === type);
+  const analysis = runId ? analyses[runId] : undefined;
+  const hasMetric = (type: ExperimentMetricType): boolean => !!analysis?.metrics[type]?.count;
   const sumOf = (type: ExperimentMetricType): number =>
-    sumMetric(runMetrics, type);
-  const latestOf = (type: string): number | null => {
-    const rows = runMetrics.filter(m => m.metric_type === type);
-    if (rows.length === 0) return null;
-    return [...rows].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))[0].value;
-  };
-  const avgOf = (type: string): number | null => {
-    const rows = runMetrics.filter(m => m.metric_type === type);
-    if (rows.length === 0) return null;
-    return rows.reduce((s, m) => s + m.value, 0) / rows.length;
-  };
+    analysis?.metrics[type]?.sum ?? 0;
+  const latestOf = (type: ExperimentMetricType): number | null => analysis?.metrics[type]?.latest ?? null;
+  const avgOf = (type: ExperimentMetricType): number | null => analysis?.metrics[type]?.mean ?? null;
   const fmt = (v: number | null, digits = 0): string =>
     v === null ? '—' : v.toLocaleString('es-CO', { maximumFractionDigits: digits, minimumFractionDigits: digits });
   /** Durante la ejecución sin datos aún: spinner; si no, el valor formateado. */
@@ -187,7 +178,7 @@ export function SimulationView() {
         <div>
           <h1 className="mb-1" style={{ fontSize: 20, fontWeight: 600 }}>Simulación — Ejecuciones experimentales</h1>
           <p className="text-muted small mb-0">
-            Inicie ejecuciones de prueba y consulte sus métricas al finalizar.
+            Observe la medición provisional durante la ejecución y consulte los resultados al cerrar.
           </p>
         </div>
         <Button variant="outline-primary" size="sm" className="d-flex align-items-center gap-2"
@@ -342,7 +333,7 @@ export function SimulationView() {
           {/* KPIs: totales reales de la ejecución (suma en contadores) */}
           <Row className="g-3 mb-4">
             <Col xs={12} sm={6} xl={4}><KpiCard label="Dispositivos" value={devices.length} Icon={Cpu} accent="#123B5D" sub={`${totalCavas} cavas · ${totalVitrinas} vitrinas`} /></Col>
-            <Col xs={12} sm={6} xl={4}><KpiCard label="Mensajes recibidos" value={liveValue(sumOf('messages_received'), hasMetric('messages_received'))} Icon={Thermometer} accent="#1F6F8B" sub={hasMetric('messages_received') ? 'total en la ejecución' : running ? 'recibiendo…' : 'sin muestras aún'} /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Mensajes recibidos (ingesta)" value={liveValue(sumOf('messages_received'), hasMetric('messages_received'))} Icon={Thermometer} accent="#1F6F8B" sub={hasMetric('messages_received') ? 'puede incluir repeticiones; ver únicos en Medición real' : running ? 'recibiendo…' : 'sin muestras aún'} /></Col>
             <Col xs={12} sm={6} xl={4}><KpiCard label="Lecturas persistidas" value={liveValue(sumOf('readings_persisted'), hasMetric('readings_persisted'))} Icon={Activity} accent="#123B5D" sub={hasMetric('readings_persisted') ? 'total en la ejecución' : running ? 'persistiendo…' : 'sin muestras aún'} /></Col>
             <Col xs={12} sm={6} xl={4}><KpiCard label="Alertas generadas" value={liveValue(sumOf('alerts_generated'), hasMetric('alerts_generated'))} Icon={AlertTriangle} accent={sumOf('alerts_generated') > 0 ? '#C83B3B' : '#52616B'} sub="durante la ejecución" /></Col>
             <Col xs={12} sm={6} xl={4}><KpiCard label="Latencia ingesta→persistencia" value={liveValue(avgOf('ingest_to_persist_ms'), hasMetric('ingest_to_persist_ms'), 1)} Icon={Clock} accent="#123B5D" sub="promedio de muestras (ms)" /></Col>
@@ -353,12 +344,22 @@ export function SimulationView() {
             <Col xs={12} sm={6} xl={4}><KpiCard label="Espera en cola" value={liveValue(avgOf('queue_wait_ms'), hasMetric('queue_wait_ms'), 1)} Icon={Clock} accent="#123B5D" sub="admisión→selección, promedio (ms)" /></Col>
             <Col xs={12} sm={6} xl={4}><KpiCard label="Tiempo de atención" value={liveValue(avgOf('service_time_ms'), hasMetric('service_time_ms'), 1)} Icon={Clock} accent="#123B5D" sub="selección→fin, promedio (ms)" /></Col>
           </Row>
+          <RunEvidencePanel run={runs.find(run => run.id === runId) ?? null} compact />
+          <Button variant="outline-primary" size="sm" className="mb-4"
+            onClick={() => navigate(`/app/qos?run_id=${encodeURIComponent(runId ?? '')}`)}>
+            Ver detalle y comparar en QoS / Analytics
+          </Button>
           {running && (
             <p className="text-muted small mb-4">
-              Ejecución en curso. Las métricas estarán disponibles al finalizar.
+              La medición real se actualiza durante la ejecución. Los contadores internos se completan al finalizar.
             </p>
           )}
-          {!running && hasRun && runMetrics.length === 0 && (
+          {runId && analysisErrors[runId] && <div className="alert alert-warning small">
+            {analysisErrors[runId]}{' '}
+            <button className="btn btn-sm btn-outline-primary"
+              onClick={() => { void fetchAnalysis(runId).catch(() => {}); }}>Reintentar</button>
+          </div>}
+          {!running && hasRun && analysis?.total_samples === 0 && (
             <p className="text-muted small mb-4">
               La ejecución finalizó sin métricas registradas (el pipeline no reportó muestras para este run).
             </p>

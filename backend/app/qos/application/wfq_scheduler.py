@@ -1,95 +1,103 @@
 from __future__ import annotations
 
+from fractions import Fraction
 from math import isfinite
-from typing import Dict, List, Mapping, Optional, Tuple
+from typing import List, Mapping, Optional, Tuple
 
 from app.classification import PriorityLevel, TrafficClassification
 from app.qos.application.scheduler import ScheduledItem, Scheduler
 from app.qos.domain.work_item import WorkItem
 
-FlowId = Tuple[str, str]
-Entry = Tuple[float, int, ScheduledItem, FlowId]
+DEFAULT_BAND_WEIGHTS = {"H7": 1.0, "H8": 2.0, "H9": 3.0}
+Entry = Tuple[Fraction, int, ScheduledItem, str]
 
 
 class WFQScheduler(Scheduler):
-    """Multiflow unit-cost WFQ for HIGH work with stable admission tie breaks."""
+    """Unit-cost WFQ between HIGH criticality bands, FIFO within each band.
+
+    Virtual time follows a fluid GPS server, including flow exhaustion within
+    a service opportunity. GPS activity must not be inferred from packet queues.
+    """
 
     priority = PriorityLevel.HIGH
 
     def __init__(
-        self, weight: float = 1.0, *, flow_weights: Mapping[FlowId, float] | None = None
+        self, *, band_weights: Mapping[str, float] | None = None
     ) -> None:
-        self._validate_weight(weight)
-        self._weight = float(weight)
-        self._flow_weights: Dict[FlowId, float] = {}
-        for flow, configured_weight in (flow_weights or {}).items():
-            self._validate_flow(flow)
+        weights = dict(DEFAULT_BAND_WEIGHTS if band_weights is None else band_weights)
+        if set(weights) != set(DEFAULT_BAND_WEIGHTS):
+            raise ValueError("band_weights must define exactly H7, H8 and H9")
+        self._weights: dict[str, Fraction] = {}
+        for band, configured_weight in weights.items():
             self._validate_weight(configured_weight)
-            self._flow_weights[flow] = float(configured_weight)
-        self._virtual_time = 0.0
-        self._last_finish: Dict[FlowId, float] = {}
+            self._weights[band] = Fraction(str(configured_weight))
+        self._virtual_time = Fraction()
+        self._last_finish: dict[str, Fraction] = {}
         self._items: List[Entry] = []
         self._arrival_counter = 0
 
     @property
-    def weight(self) -> float:
-        """Default weight for a flow without an explicit configured weight."""
-        return self._weight
-
-    @property
     def virtual_time(self) -> float:
-        return self._virtual_time
+        return float(self._virtual_time)
 
     @property
-    def flow_weights(self) -> Dict[FlowId, float]:
-        return dict(self._flow_weights)
+    def band_weights(self) -> dict[str, float]:
+        return {band: float(weight) for band, weight in self._weights.items()}
 
     def dequeue(self) -> Optional[ScheduledItem]:
         if not self._items:
             return None
-        index, (_, _, item, flow) = min(
+        index, (_, _, item, _band) = min(
             enumerate(self._items), key=lambda candidate: candidate[1][:2]
         )
-        active_weights = sum(
-            self._weight_for(active_flow) for active_flow in {entry[3] for entry in self._items}
-        )
         del self._items[index]
-        # A unit service opportunity advances the local GPS reference by its
-        # fair share among flows that were active before this selection.
-        self._virtual_time += 1.0 / active_weights
-        if not any(entry[3] == flow for entry in self._items):
-            self._last_finish.pop(flow, None)
+        self._advance_gps()
         return item
 
     def size(self) -> int:
         return len(self._items)
 
     def _store(self, item: ScheduledItem) -> None:
-        flow = self._flow_for(item)
-        start = max(self._last_finish.get(flow, 0.0), self._virtual_time)
-        finish = start + 1.0 / self._weight_for(flow)
-        self._last_finish[flow] = finish
-        self._items.append((finish, self._arrival_counter, item, flow))
+        band = self.band_for(item)
+        start = max(self._last_finish.get(band, Fraction()), self._virtual_time)
+        finish = start + 1 / self._weights[band]
+        self._last_finish[band] = finish
+        self._items.append((finish, self._arrival_counter, item, band))
         self._arrival_counter += 1
 
-    def _weight_for(self, flow: FlowId) -> float:
-        return self._flow_weights.get(flow, self._weight)
+    def _advance_gps(self) -> None:
+        remaining = Fraction(1)
+        while remaining:
+            active = {
+                band: finish for band, finish in self._last_finish.items()
+                if finish > self._virtual_time
+            }
+            if not active:
+                return
+            total_weight = sum(self._weights[band] for band in active)
+            next_finish = min(active.values())
+            cost = (next_finish - self._virtual_time) * total_weight
+            if cost <= remaining:
+                self._virtual_time = next_finish
+                remaining -= cost
+            else:
+                self._virtual_time += remaining / total_weight
+                return
 
     @staticmethod
-    def _flow_for(item: ScheduledItem) -> FlowId:
+    def band_for(item: ScheduledItem) -> str:
         if isinstance(item, WorkItem):
-            return item.flow_id
-        if isinstance(item, TrafficClassification):
-            return "__legacy__", str(item.reading_id)
-        raise TypeError("'item' must be a WorkItem or TrafficClassification instance")
-
-    @staticmethod
-    def _validate_flow(flow: object) -> None:
+            criticality = item.classification.criticality if item.classification else None
+        elif isinstance(item, TrafficClassification):
+            criticality = item.criticality
+        else:
+            raise TypeError("'item' must be a WorkItem or TrafficClassification instance")
         if (
-            not isinstance(flow, tuple) or len(flow) != 2
-            or not all(isinstance(part, str) and part for part in flow)
+            isinstance(criticality, bool) or not isinstance(criticality, (int, float))
+            or not isfinite(criticality) or not 7 <= criticality <= 9
         ):
-            raise ValueError("flow weight keys must be (device_code, sensor_name)")
+            raise ValueError("HIGH WFQ requires criticality in [7, 9]")
+        return "H7" if criticality < 8 else "H8" if criticality < 9 else "H9"
 
     @staticmethod
     def _validate_weight(weight: object) -> None:

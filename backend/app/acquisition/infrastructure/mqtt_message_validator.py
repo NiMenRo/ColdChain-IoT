@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from typing import Any, Optional
+from ..telemetry_trace import emission_trace
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,10 @@ class MQTTMessageValidator:
     def validate(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise MessageValidationError("Payload must be a JSON object")
+        try:
+            emission_trace(payload)
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise MessageValidationError(f"Invalid emission trace: {exc}") from exc
 
         missing_fields = [field for field in self.REQUIRED_FIELDS if field not in payload]
         if missing_fields:
@@ -40,6 +45,21 @@ class MQTTMessageValidator:
             datetime.fromisoformat(payload["timestamp"])
         except ValueError as exc:
             raise MessageValidationError("Field 'timestamp' must be a valid ISO-8601 datetime") from exc
+
+        if "reading_timestamps" in payload:
+            times = payload["reading_timestamps"]
+            if not isinstance(times, dict) or any(
+                name not in ("temperature", "humidity", "energy") or name not in payload
+                for name in times
+            ):
+                raise MessageValidationError("reading_timestamps must map present sensors to ISO timestamps")
+            for value in times.values():
+                try:
+                    if not isinstance(value, str):
+                        raise ValueError("timestamp must be a string")
+                    datetime.fromisoformat(value)
+                except ValueError as exc:
+                    raise MessageValidationError("Invalid per-sensor timestamp") from exc
 
         if not self._has_reading(payload):
             raise MessageValidationError(

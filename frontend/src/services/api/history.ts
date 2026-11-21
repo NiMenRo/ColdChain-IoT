@@ -36,6 +36,8 @@ export interface HistorySummary {
   qos_by_queue: Record<string, number>;
   /** Conteo de lecturas por estado energético ('on'/'off', nulos excluidos). */
   energy_by_state?: Record<string, number>;
+  /** Conteo de alertas sin criticidad calculada (p. ej. ejecuciones sin QoS). */
+  alerts_without_criticality?: number;
   /** Eco del filtro aplicado; null = ámbito global. */
   run_id?: string | null;
 }
@@ -55,7 +57,7 @@ export interface HistoryAlert {
   user_id: string;
   type: string;
   message: string;
-  criticality: number;
+  criticality: number | null;
   acknowledged: boolean;
   created_at: string;
   run_id: string | null;

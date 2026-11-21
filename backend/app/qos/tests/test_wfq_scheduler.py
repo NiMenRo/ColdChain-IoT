@@ -32,10 +32,10 @@ class WFQSchedulerTests(SchedulerContractTests):
             timestamp=datetime(2026, 8, 17, 9, 59, 30),
         )
 
-    # -- neutral weight ------------------------------------------------------
+    # -- band weights --------------------------------------------------------
 
-    def test_default_weight_is_neutral(self):
-        self.assertEqual(self.scheduler.weight, 1.0)
+    def test_default_weights_favor_criticality(self):
+        self.assertEqual(self.scheduler.band_weights, {"H7": 1, "H8": 2, "H9": 3})
 
     def test_services_high_flow_in_arrival_order_with_default_weight(self):
         first = self._make_classification(PriorityLevel.HIGH.value)
@@ -63,39 +63,39 @@ class WFQSchedulerTests(SchedulerContractTests):
         self.scheduler.dequeue()
         self.assertEqual(self.scheduler.virtual_time, 0.5)
         self.scheduler.dequeue()
-        self.assertEqual(self.scheduler.virtual_time, 1.5)
+        self.assertEqual(self.scheduler.virtual_time, 1.0)
 
     def test_custom_default_weight_scales_virtual_service_share(self):
-        scheduler = WFQScheduler(weight=2.5)
+        scheduler = WFQScheduler(band_weights={"H7": 1, "H8": 2.5, "H9": 3})
         first = self._make_classification(PriorityLevel.HIGH.value)
         second = self._make_classification(PriorityLevel.HIGH.value)
 
         scheduler.enqueue(first)
         scheduler.enqueue(second)
-        self.assertEqual(scheduler.weight, 2.5)
+        self.assertEqual(scheduler.band_weights["H8"], 2.5)
 
         scheduler.dequeue()
-        self.assertAlmostEqual(scheduler.virtual_time, 0.2)
+        self.assertAlmostEqual(scheduler.virtual_time, 0.4)
         scheduler.dequeue()
-        self.assertAlmostEqual(scheduler.virtual_time, 0.6)
+        self.assertAlmostEqual(scheduler.virtual_time, 0.8)
 
     # -- weight validation ---------------------------------------------------
 
     def test_weight_rejects_zero(self):
         with self.assertRaises(ValueError):
-            WFQScheduler(weight=0)
+            WFQScheduler(band_weights={"H7": 0, "H8": 2, "H9": 3})
 
     def test_weight_rejects_negative(self):
         with self.assertRaises(ValueError):
-            WFQScheduler(weight=-1)
+            WFQScheduler(band_weights={"H7": -1, "H8": 2, "H9": 3})
 
     def test_weight_rejects_non_numeric(self):
         with self.assertRaises(TypeError):
-            WFQScheduler(weight="heavy")
+            WFQScheduler(band_weights={"H7": "heavy", "H8": 2, "H9": 3})
 
     def test_weight_rejects_boolean(self):
         with self.assertRaises(TypeError):
-            WFQScheduler(weight=True)
+            WFQScheduler(band_weights={"H7": True, "H8": 2, "H9": 3})
 
 
 if __name__ == "__main__":

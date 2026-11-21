@@ -1,5 +1,9 @@
 import logging
+import os
+import threading
+from collections import defaultdict
 from datetime import timezone
+from uuid import uuid4
 
 from .client import MQTTClient
 
@@ -23,6 +27,9 @@ class DevicePublisher:
         self._mqtt_client = mqtt_client
         self._topic_prefix = topic_prefix
         self._qos = qos
+        self._session_id = str(uuid4())
+        self._sequences = defaultdict(int)
+        self._sequence_lock = threading.Lock()
 
     def publish_telemetry(self, device, measurements=None) -> bool:
         """Publish telemetry for a device.
@@ -35,11 +42,22 @@ class DevicePublisher:
         """
         topic = f"{self._topic_prefix}/{device.code}/telemetry"
         payload = self._build_payload(device, measurements=measurements)
+        with self._sequence_lock:
+            sequence = self._sequences[device.code]
+            self._sequences[device.code] += 1
+        payload["trace"] = {
+            "message_id": str(uuid4()),
+            "producer_session_id": self._session_id,
+            "sequence": sequence,
+            "run_id": os.getenv("COLDCHAIN_RUN_ID") or None,
+            "clock_domain": os.getenv("TELEMETRY_CLOCK_DOMAIN") or None,
+        }
         logger.debug("Publishing telemetry for %s to %s", device.code, topic)
         return self._mqtt_client.publish(topic, payload, self._qos)
 
     def _build_payload(self, device, measurements=None) -> dict:
         readings = {}
+        reading_timestamps = {}
         timestamp = None
         for sensor in device.get_sensors():
             if measurements is not None:
@@ -51,6 +69,10 @@ class DevicePublisher:
                 key, measurement = self._read_sensor(sensor)
             if key is not None and measurement is not None:
                 readings[key] = measurement.value
+                measured_at = measurement.timestamp
+                if measured_at.tzinfo is None:
+                    measured_at = measured_at.replace(tzinfo=timezone.utc)
+                reading_timestamps[key] = measured_at.isoformat(timespec="microseconds")
                 if timestamp is None:
                     timestamp = measurement.timestamp
         readings["device_code"] = device.code
@@ -60,6 +82,7 @@ class DevicePublisher:
         if timestamp is not None and timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
         readings["timestamp"] = timestamp.isoformat(timespec="milliseconds") if timestamp else ""
+        readings["reading_timestamps"] = reading_timestamps
         return readings
 
     def _sensor_key(self, sensor):

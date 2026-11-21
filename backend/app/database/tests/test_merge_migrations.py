@@ -24,7 +24,7 @@ def test_qos_password_reset_merge_has_one_head_and_preserves_data(
     # env.py's CLI logging setup must not disable loggers used by subsequent
     # application tests (e.g. assertions about unknown-device warnings).
     monkeypatch.setattr("logging.config.fileConfig", lambda *args, **kwargs: None)
-    assert ScriptDirectory.from_config(config).get_heads() == ["c5e7a9d1f203"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["a7c1e9d4b260"]
     device_id, reading_id = uuid4(), uuid4()
     if starting_revision:
         command.upgrade(config, starting_revision)
@@ -57,8 +57,12 @@ def test_qos_password_reset_merge_has_one_head_and_preserves_data(
         assert {"queue_wait_ms", "service_time_ms", "persisted_at"} <= {
             col["name"] for col in inspector.get_columns("qos_metrics")
         }
+        criticality = next(
+            col for col in inspector.get_columns("alerts") if col["name"] == "criticality"
+        )
+        assert criticality["nullable"] is True
         with Session(engine) as db:
-            assert db.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == ["c5e7a9d1f203"]
+            assert db.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == ["a7c1e9d4b260"]
             if starting_revision:
                 assert db.get(DeviceORM, device_id).code == "MERGE-001"
             if starting_revision == "b4d6e8a2c901":

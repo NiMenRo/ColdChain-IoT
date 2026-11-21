@@ -10,12 +10,13 @@
 //   No toca is_read (independencia lectura ↔ reconocimiento).
 // - Lectura: PATCH /notifications/{id}/read + POST /notifications/read-all
 //   (parche local inmediato + evento para la campana, sin refetch pesado).
-// Carga inicial al montar + polling ligero en segundo plano (10 s, página 1 =
-// registros recientes, sin duplicados por `id`). Sin realtime push.
+// Carga inicial al montar + polling en segundo plano (10 s, página seleccionada).
+// Los contadores proceden del resumen completo del ámbito, no de esta página.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '../../services/api/client';
 import { apiGetAlerts } from '../../services/api/alerts';
+import { apiGetHistorySummary, type HistorySummary } from '../../services/api/history';
 import { apiGetDevices } from '../../services/api/devices';
 import {
   apiGetCriticalAlerts,
@@ -68,9 +69,16 @@ export interface AlertItem {
   message: string;
   deviceId: string;
   deviceName: string;
-  criticality: number;
+  criticality: number | null;
   timestamp: string;
   acknowledged: boolean;
+}
+
+export interface AlertsDataOptions {
+  page?: number;
+  perPage?: number;
+  /** null/undefined = ámbito global (incluye alertas sin ejecución). */
+  runId?: string | null;
 }
 
 export function formatTs(ts: string): string {
@@ -113,9 +121,13 @@ export interface AlertsDataState {
   filter: AlertFilter;
   setFilter: (f: AlertFilter) => void;
   alerts: AlertItem[];
-  pendingCount: number;
-  criticalCount: number;
-  acknowledgedCount: number;
+  /** Total de alertas que cumplen el filtro (todas las páginas). */
+  total: number;
+  page: number;
+  perPage: number;
+  pageCount: number;
+  historySummary: HistorySummary | null;
+  summaryStatus: SectionStatus;
 
   eventsSummary: EventsSummary | null;
   criticalSessionAlerts: SessionAlert[];
@@ -134,7 +146,10 @@ export interface AlertsDataState {
   markAllRead: () => Promise<void>;
 }
 
-export function useAlertsData(): AlertsDataState {
+export function useAlertsData(options: AlertsDataOptions = {}): AlertsDataState {
+  const page = options.page ?? 1;
+  const perPage = options.perPage ?? 20;
+  const runId = options.runId ?? null;
   const [attempt, setAttempt] = useState(0);
   const [pollSeq, setPollSeq] = useState(0);
   const [filter, setFilter] = useState<AlertFilter>('all');
@@ -156,6 +171,9 @@ export function useAlertsData(): AlertsDataState {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const [alertsRaw, setAlertsRaw] = useState<AlertItem[]>([]);
+  const [alertsTotal, setAlertsTotal] = useState(0);
+  const [historySummary, setHistorySummary] = useState<HistorySummary | null>(null);
+  const [summaryFailed, setSummaryFailed] = useState(false);
   const [alertsFailed, setAlertsFailed] = useState(false);
   const [devices, setDevices] = useState<Device[]>([]);
   const [summary, setSummary] = useState<EventsSummary | null>(null);
@@ -176,7 +194,7 @@ export function useAlertsData(): AlertsDataState {
     setAttempt((n) => n + 1);
   }, []);
 
-  // Polling ligero (10 s) sobre la página 1 = registros recientes.
+  // Polling (10 s) sobre la página y el ámbito seleccionados.
   // Sin duplicados: la lista se reemplaza por `id` desde el backend.
   usePolling(true, ALERTS_POLL_MS, useCallback(() => {
     backgroundRef.current = true;
@@ -195,18 +213,32 @@ export function useAlertsData(): AlertsDataState {
     busyRef.current = true;
 
     Promise.allSettled([
-      apiGetAlerts({ page: 1, per_page: 50, type: filter === 'all' ? undefined : filter }),
+      apiGetAlerts({
+        page,
+        per_page: perPage,
+        type: filter === 'all' ? undefined : filter,
+        run_id: runId ?? undefined,
+      }),
       apiGetDevices({ page: 1, per_page: 100 }),
       apiGetEventsSummary(),
       apiGetCriticalAlerts(10),
       apiGetSessionEvents(20),
       apiGetPersistentHistory({ limit: 50 }),
+      apiGetHistorySummary(runId ? { run_id: runId } : undefined),
     ]).then((results) => {
       if (cancelled || !mountedRef.current) return;
       busyRef.current = false;
-      const [alertsRes, devRes, sumRes, critRes, evRes, notRes] = results;
+      const [alertsRes, devRes, sumRes, critRes, evRes, notRes, historyRes] = results;
       const seen = { auth: false, config: false, first: null as string | null };
 
+      if (historyRes.status === 'fulfilled') {
+        setHistorySummary(historyRes.value);
+        setSummaryFailed(false);
+      } else {
+        noteFailure(historyRes.reason, seen);
+        setSummaryFailed(true);
+        setHistorySummary(null);
+      }
       if (alertsRes.status === 'fulfilled') {
         const devMap = new Map<string, string>();
         if (devRes.status === 'fulfilled') {
@@ -229,6 +261,7 @@ export function useAlertsData(): AlertsDataState {
             acknowledged: a.acknowledged,
           })),
         );
+        setAlertsTotal(alertsRes.value.total);
         setAlertsFailed(false);
       } else {
         noteFailure(alertsRes.reason, seen);
@@ -236,6 +269,7 @@ export function useAlertsData(): AlertsDataState {
         // En segundo plano se conservan los últimos datos válidos.
         if (!background) {
           setAlertsRaw([]);
+          setAlertsTotal(0);
           setDevices([]);
           setAlertsFailed(true);
         }
@@ -299,7 +333,7 @@ export function useAlertsData(): AlertsDataState {
       cancelled = true;
       busyRef.current = false;
     };
-  }, [attempt, filter, pollSeq]);
+  }, [attempt, filter, pollSeq, page, perPage, runId]);
 
   const acknowledge = useCallback(async (id: string) => {
     setAckingId(id);
@@ -308,7 +342,12 @@ export function useAlertsData(): AlertsDataState {
       await apiAcknowledgeAlert(id);
       // Refetch del historial para reflejar el estado persistido (correctitud > optimismo).
       const [fresh, devRes] = await Promise.all([
-        apiGetAlerts({ page: 1, per_page: 50, type: filter === 'all' ? undefined : filter }),
+        apiGetAlerts({
+          page,
+          per_page: perPage,
+          type: filter === 'all' ? undefined : filter,
+          run_id: runId ?? undefined,
+        }),
         apiGetDevices({ page: 1, per_page: 100 }).catch(() => null),
       ]);
       const devMap = new Map<string, string>();
@@ -326,6 +365,7 @@ export function useAlertsData(): AlertsDataState {
           acknowledged: a.acknowledged,
         })),
       );
+      setAlertsTotal(fresh.total);
       setAlertsFailed(false);
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
@@ -340,7 +380,7 @@ export function useAlertsData(): AlertsDataState {
     } finally {
       setAckingId(null);
     }
-  }, [filter]);
+  }, [filter, page, perPage, runId]);
 
   // Lectura de notificaciones (fase C): parche local inmediato + evento
   // para la campana. No refetch: el polling de 10 s reconcilia. No toca
@@ -391,8 +431,6 @@ export function useAlertsData(): AlertsDataState {
     }
   }, []);
 
-  const pending = alertsRaw.filter((a) => !a.acknowledged);
-
   return {
     isLoading: loading,
     isRefreshing: refreshing,
@@ -409,9 +447,12 @@ export function useAlertsData(): AlertsDataState {
     filter,
     setFilter,
     alerts: alertsRaw,
-    pendingCount: pending.length,
-    criticalCount: pending.filter((a) => a.criticality >= 7).length,
-    acknowledgedCount: alertsRaw.filter((a) => a.acknowledged).length,
+    total: alertsTotal,
+    page,
+    perPage,
+    pageCount: Math.max(1, Math.ceil(alertsTotal / perPage)),
+    historySummary,
+    summaryStatus: loading ? 'loading' : summaryFailed ? 'error' : 'success',
     eventsSummary: summary,
     criticalSessionAlerts: criticalSession,
     sessionEvents: events,

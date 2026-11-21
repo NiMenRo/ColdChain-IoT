@@ -16,7 +16,8 @@ def _item(sequence: int, priority: str = "low") -> WorkItem:
     queues = {"low": "FIFO", "medium": "Round Robin", "high": "WFQ"}
     work_id = uuid4()
     classification = TrafficClassification(
-        id=uuid4(), reading_id=work_id, criticality=3.0, priority=priority,
+        id=uuid4(), reading_id=work_id,
+        criticality={"low": 3.0, "medium": 5.0, "high": 9.0}[priority], priority=priority,
         queue=queues[priority], classification_time=NOW, timestamp=NOW,
     )
     return WorkItem.from_reading(

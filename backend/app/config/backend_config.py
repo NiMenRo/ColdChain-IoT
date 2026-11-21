@@ -28,38 +28,30 @@ def _positive_float(name: str, default: float) -> float:
     return value
 
 
-def _flow_weights() -> Mapping[tuple[str, str], float]:
-    """Parse explicit WFQ flow weights without accepting ambiguous values."""
-    raw_value = os.getenv("QOS_WFQ_FLOW_WEIGHTS", "").strip()
+def _band_weights() -> Mapping[str, float]:
+    """Require an explicit migration of obsolete device/sensor flow weights."""
+    if os.getenv("QOS_WFQ_FLOW_WEIGHTS", "").strip():
+        raise ValueError("QOS_WFQ_FLOW_WEIGHTS is obsolete; use QOS_WFQ_BAND_WEIGHTS")
+    raw_value = os.getenv("QOS_WFQ_BAND_WEIGHTS", "").strip()
     if not raw_value:
-        return MappingProxyType({})
+        return MappingProxyType({"H7": 1.0, "H8": 2.0, "H9": 3.0})
     try:
         configured_weights = json.loads(raw_value)
     except json.JSONDecodeError as error:
         raise ValueError(
-            "QOS_WFQ_FLOW_WEIGHTS must be a JSON object of "
-            "'device_code:sensor_name' to positive weights"
+            "QOS_WFQ_BAND_WEIGHTS must be a JSON object of H7, H8 and H9 weights"
         ) from error
-    if not isinstance(configured_weights, dict):
-        raise ValueError("QOS_WFQ_FLOW_WEIGHTS must be a JSON object")
+    if not isinstance(configured_weights, dict) or set(configured_weights) != {"H7", "H8", "H9"}:
+        raise ValueError("QOS_WFQ_BAND_WEIGHTS must define exactly H7, H8 and H9")
 
-    weights: dict[tuple[str, str], float] = {}
-    for flow, weight in configured_weights.items():
-        if not isinstance(flow, str) or flow.count(":") != 1:
-            raise ValueError(
-                "QOS_WFQ_FLOW_WEIGHTS keys must be 'device_code:sensor_name'"
-            )
-        device_code, sensor_name = (part.strip() for part in flow.split(":"))
-        if not device_code or sensor_name not in {"temperature", "humidity", "energy"}:
-            raise ValueError(
-                "QOS_WFQ_FLOW_WEIGHTS keys need a device code and supported sensor"
-            )
+    weights: dict[str, float] = {}
+    for band, weight in configured_weights.items():
         if isinstance(weight, bool) or not isinstance(weight, (int, float)):
-            raise ValueError("QOS_WFQ_FLOW_WEIGHTS values must be positive numbers")
+            raise ValueError("QOS_WFQ_BAND_WEIGHTS values must be positive numbers")
         normalized_weight = float(weight)
         if not isfinite(normalized_weight) or normalized_weight <= 0:
-            raise ValueError("QOS_WFQ_FLOW_WEIGHTS values must be positive numbers")
-        weights[(device_code, sensor_name)] = normalized_weight
+            raise ValueError("QOS_WFQ_BAND_WEIGHTS values must be positive numbers")
+        weights[band] = normalized_weight
     return MappingProxyType(weights)
 
 
@@ -91,8 +83,8 @@ class BackendConfig:
     qos_low_quota: int = field(
         default_factory=lambda: _positive_int("QOS_LOW_QUOTA", 1)
     )
-    qos_wfq_flow_weights: Mapping[tuple[str, str], float] = field(
-        default_factory=_flow_weights
+    qos_wfq_band_weights: Mapping[str, float] = field(
+        default_factory=_band_weights
     )
     qos_pending_capacity: int = field(
         default_factory=lambda: _positive_int("QOS_PENDING_CAPACITY", 3000)
@@ -105,6 +97,12 @@ class BackendConfig:
     )
     qos_drain_timeout_s: float = field(
         default_factory=lambda: _positive_float("QOS_DRAIN_TIMEOUT_S", 30.0)
+    )
+    telemetry_evidence_enabled: bool = field(
+        default_factory=lambda: os.getenv("TELEMETRY_EVIDENCE_ENABLED", "true").strip().lower() == "true"
+    )
+    telemetry_evidence_grace_s: float = field(
+        default_factory=lambda: _positive_float("TELEMETRY_EVIDENCE_GRACE_S", 2.0)
     )
     log_level: str = "INFO"
     database_url: str = field(
@@ -169,10 +167,8 @@ class BackendConfig:
                 "medium": self.qos_medium_quota,
                 "low": self.qos_low_quota,
             },
-            "wfq_flow_weights": {
-                f"{device_code}:{sensor_name}": weight
-                for (device_code, sensor_name), weight in self.qos_wfq_flow_weights.items()
-            },
+            "wfq_policy": "criticality_bands_v1",
+            "wfq_band_weights": dict(self.qos_wfq_band_weights),
             "capacities": {
                 "transport_messages": self.max_queue_size,
                 "pending_work_items": self.qos_pending_capacity,

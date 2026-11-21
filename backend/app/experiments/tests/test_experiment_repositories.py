@@ -316,7 +316,23 @@ def test_legacy_null_run_id_valid(db):
     assert alert.criticality == 8.0
 
 
-def test_criticality_still_not_null(db):
+def test_criticality_nullable_for_runs_without_qos(db):
     from app.database.infrastructure.models import AlertORM as _AlertORM
 
-    assert not _AlertORM.__table__.c.criticality.nullable
+    # WITHOUT_QOS does not calculate QoS criticality: NULL means "not
+    # calculated" and must stay representable, distinct from a real score.
+    assert _AlertORM.__table__.c.criticality.nullable
+    device = _device_with_sensors(db)
+    user = UserORM(
+        id=uuid.uuid4(), name="op", email="op3@example.com",
+        password_hash="!", role="operador",
+    )
+    db.add(user)
+    db.commit()
+    alert = AlertORM(
+        device_id=device.id, user_id=user.id, type="TEMPERATURE_EXCEEDED",
+        message="warm", criticality=None,
+    )
+    db.add(alert)
+    db.commit()
+    assert alert.criticality is None

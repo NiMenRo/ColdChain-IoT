@@ -43,7 +43,6 @@ export function TrafficView() {
   const dispatch = runtime.runtime?.dispatch ?? null;
   const transport = runtime.runtime?.transport ?? null;
   const qosConfig = runtime.runtime?.config ?? null;
-  const quotas = qosConfig?.class_quotas;
   const runtimeQueues = dispatch?.queues ?? {};
   const critEvolution = [...hist.classSample]
     .sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1))
@@ -180,11 +179,9 @@ export function TrafficView() {
           <div className="p-4 small" style={{ color: '#B22F2F' }}>
             No se pudieron cargar las colas. <button onClick={live.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
           </div>
-        ) : live.total === 0 ? (
-          <div className="p-4 small text-muted">Colas vacías: sin mensajes pendientes en este instante.</div>
         ) : (
-          <div className="overflow-hidden">
-            <table className="w-100" style={{ borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="table-responsive">
+            <table className="w-100" style={{ borderCollapse: 'collapse', fontSize: 13, tableLayout: 'fixed', minWidth: 550 }}>
               <thead>
                 <tr style={{ background: '#F5F8FA' }}>
                   <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Cola</th>
@@ -202,7 +199,8 @@ export function TrafficView() {
                       <span className="text-muted ms-2" style={{ fontSize: 12 }}>({q.priority})</span>
                     </td>
                     <td className="px-4 py-3 fw-semibold" style={{ color: '#123B5D' }}>{q.count}</td>
-                    <td className="px-4 py-3 text-muted font-monospace" style={{ fontSize: 12 }}>
+                    <td className="px-4 py-3 text-muted font-monospace text-nowrap" style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis' }}
+                      title={q.sample.map(s => `${s.criticality} · ${formatTs(s.timestamp)}`).join(' | ')}>
                       {q.sample.length === 0 ? '—' : q.sample.map((s) => {
                         const d = new Date(s.timestamp);
                         const hhmm = Number.isNaN(d.getTime()) ? s.timestamp : d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -246,13 +244,6 @@ export function TrafficView() {
         ) : (
           <Card.Body>
             <Row className="g-3">
-              <Col xs={12} sm={6} xl={3}>
-                <RuntimeStat
-                  label="Cuotas por clase (alta:media:baja)"
-                  value={`${runtimeCount(quotas?.high)} : ${runtimeCount(quotas?.medium)} : ${runtimeCount(quotas?.low)}`}
-                  sub="oportunidades por ciclo"
-                />
-              </Col>
               <Col xs={12} sm={6} xl={3}>
                 <RuntimeStat
                   label="Capacidad de admisión"
@@ -307,9 +298,7 @@ export function TrafficView() {
                   label="Drenaje"
                   value={dispatch.draining ? 'Activo' : 'Inactivo'}
                   sub={
-                    dispatch.draining
-                      ? `${dispatch.draining_run_id ? `run ${dispatch.draining_run_id.slice(0, 8)}…` : 'run no informado'} · ${runtimeCount(qosConfig?.timeouts?.drain_s)} s`
-                      : `espera máxima ${runtimeCount(qosConfig?.timeouts?.drain_s)} s`
+                    `espera máxima ${runtimeCount(qosConfig?.timeouts?.drain_s)} s`
                   }
                 />
               </Col>
@@ -332,7 +321,8 @@ export function TrafficView() {
               <strong>Muestra de pendientes productivos</strong>
               <span className="text-muted"> · hasta cinco por cola; no indica el orden de selección</span>
               {(['high', 'medium', 'low', 'without_qos'] as const).map(key => (
-                <div key={key} className="mt-1 text-muted">
+                <div key={key} className="mt-1 text-muted text-truncate"
+                  title={dispatch.pending_sample?.[key]?.map(item => `${item.device_code}/${item.sensor_name} · #${item.sequence}`).join(' | ')}>
                   {key === 'without_qos' ? 'Sin QoS' : key}: {dispatch.pending_sample?.[key]?.map(
                     item => `${item.device_code}/${item.sensor_name} · #${item.sequence}`,
                   ).join(' | ') || '—'}

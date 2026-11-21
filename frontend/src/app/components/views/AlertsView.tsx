@@ -4,6 +4,8 @@ import { AlertTriangle, CheckCircle, Bell, Mail, MessageSquare, Smartphone, Moni
 import { Button } from '../../lib/bootstrap';
 import { useAuth } from '../../hooks/useAuth';
 import { hasActionPermission } from '../../config/rbac';
+import { useExperiments } from '../../contexts/ExperimentContext';
+import { runCondition, CONDITION_LABELS } from '../../lib/runSelection';
 import {
   ALERT_TYPES,
   alertLabel,
@@ -11,7 +13,6 @@ import {
   useAlertsData,
   type AlertFilter,
 } from '../../hooks/useAlertsData';
-import { useHistoricalAnalytics } from '../../hooks/useHistoricalAnalytics';
 
 // ─── Notification channel/status visuals (backend enums; fallback neutro) ────
 const CHANNEL_ICON: Record<string, React.ElementType> = {
@@ -49,13 +50,28 @@ export function AlertsView() {
     initialTab === 'notifications' || initialTab === 'events' ? initialTab : 'alerts',
   );
   const [unreadOnly, setUnreadOnly] = useState(false);
-  const data = useAlertsData();
-  // Análisis histórico mínimo (TSK-052): acumulado por tipo desde /history/summary.
-  const hist = useHistoricalAnalytics();
-  const typeEntries = Object.entries(hist.summary?.alerts_by_type ?? {});
+  const [runId, setRunId] = useState('');
+  const [page, setPage] = useState(1);
+  const { runs, runMeta } = useExperiments();
+  const data = useAlertsData({ page, perPage: 20, runId: runId || null });
+  // Resumen completo del ámbito seleccionado (todas las páginas, no la visible).
+  const selectedRun = runs.find((run) => run.id === runId) ?? null;
+  const selectedCondition = selectedRun ? runCondition(selectedRun, runMeta) : null;
+  const withoutQos = selectedRun?.scenario === 'WITHOUT_QOS';
+  const summary = data.summaryStatus === 'success' ? data.historySummary : null;
+  const countValue = (value: number | null | undefined) => {
+    if (data.summaryStatus === 'loading') return '…';
+    return value ?? '—';
+  };
+  const pendingTotal = countValue(summary?.active_alerts);
+  const acknowledgedTotal = countValue(
+    summary ? Math.max(0, summary.total_alerts - summary.active_alerts) : null,
+  );
+  const criticalTotal = withoutQos ? 'No aplica' : countValue(summary?.critical_active_alerts);
+  const typeEntries = Object.entries(summary?.alerts_by_type ?? {});
   const typeEntriesTotal = typeEntries.reduce((s, [, v]) => s + v, 0);
   const {
-    alerts, pendingCount, criticalCount, acknowledgedCount,
+    alerts,
     eventsSummary, criticalSessionAlerts, sessionEvents,
     notifications, unreadCount, ackingId, ackError, acknowledge,
     readingId, readError, markRead, markAllRead,
@@ -64,6 +80,11 @@ export function AlertsView() {
   const visibleNotifications = unreadOnly
     ? notifications.filter((n) => !n.is_read)
     : notifications;
+
+  async function acknowledgeAndRefresh(id: string) {
+    await acknowledge(id);
+    data.refresh();
+  }
 
   const tabStyle = (active: boolean) => ({
     padding: '8px 20px', fontSize: 13, fontWeight: active ? 600 : 400, cursor: 'pointer', border: 'none',
@@ -122,17 +143,23 @@ export function AlertsView() {
       {/* Summary cards (fuente: GET /history/alerts) */}
       <div className="row g-3 mb-4">
         {[
-          { label: 'Sin reconocer',   value: data.isLoading ? '…' : pendingCount,      bg: '#FFF5E3', color: '#965D00', border: '#ffda6a', Icon: AlertTriangle },
-          { label: 'Críticas activas',value: data.isLoading ? '…' : criticalCount,     bg: '#FCEEEE', color: '#B22F2F', border: '#f1aeb5', Icon: AlertTriangle },
-          { label: 'Reconocidas',     value: data.isLoading ? '…' : acknowledgedCount, bg: '#EAF6EF', color: '#16835B', border: '#a3cfbb', Icon: CheckCircle   },
+          { label: 'Sin reconocer',   value: pendingTotal,      bg: '#FFF5E3', color: '#965D00', border: '#ffda6a', Icon: AlertTriangle },
+          { label: 'Críticas activas',value: criticalTotal,     bg: '#FCEEEE', color: '#B22F2F', border: '#f1aeb5', Icon: AlertTriangle },
+          { label: 'Reconocidas',     value: acknowledgedTotal, bg: '#EAF6EF', color: '#16835B', border: '#a3cfbb', Icon: CheckCircle   },
         ].map(s => (
           <div key={s.label} className="col-12 col-sm-4">
             <div className="rounded-3 p-3 d-flex align-items-center gap-3"
-              style={{ background: s.bg, border: `1px solid ${s.border}` }}>
+              style={{ background: s.bg, border: `1px solid ${s.border}` }}
+              title={s.label === 'Críticas activas' && withoutQos
+                ? 'Esta ejecución no calcula la criticidad QoS. Las alertas se generan por incumplir los límites configurados.'
+                : undefined}>
               <s.Icon size={26} color={s.color} />
               <div>
                 <div style={{ fontSize: 28, fontWeight: 700, lineHeight: 1, color: s.color }}>{s.value}</div>
                 <div style={{ fontSize: 13, marginTop: 2, color: s.color }}>{s.label}</div>
+                {s.label === 'Críticas activas' && withoutQos && (
+                  <div style={{ fontSize: 11, color: '#52616B' }}>Criticidad QoS no calculada</div>
+                )}
               </div>
             </div>
           </div>
@@ -158,11 +185,11 @@ export function AlertsView() {
           {/* Acumulado por tipo (GET /history/summary.alerts_by_type) */}
           <div className="cc-card px-4 py-3 mb-4">
             <div className="small fw-semibold text-muted mb-2">Alertas por tipo</div>
-            {hist.summaryStatus === 'loading' ? (
+            {data.summaryStatus === 'loading' ? (
               <div className="small text-muted">Cargando…</div>
-            ) : hist.summaryStatus === 'error' ? (
+            ) : data.summaryStatus === 'error' ? (
               <div className="small" style={{ color: '#B22F2F' }}>
-                No se pudo cargar. <button onClick={hist.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+                No se pudo cargar. <button onClick={data.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
               </div>
             ) : typeEntries.length === 0 ? (
               <div className="small text-muted">Sin alertas registradas.</div>
@@ -177,10 +204,58 @@ export function AlertsView() {
               </div>
             )}
           </div>
+          {/* Ámbito opcional por ejecución (server-side vía `run_id`). */}
+          <div className="d-flex flex-wrap align-items-center gap-2 mb-3">
+            <label htmlFor="alerts-run-scope" className="small fw-semibold text-muted mb-0">
+              Ejecución
+            </label>
+            <select
+              id="alerts-run-scope"
+              className="form-select form-select-sm"
+              style={{ maxWidth: 420 }}
+              value={runId}
+              onChange={(e) => { setRunId(e.target.value); setPage(1); }}
+            >
+              <option value="">Todas las ejecuciones</option>
+              {runs.map((run) => (
+                <option key={run.id} value={run.id}>
+                  {run.scenario === 'WITH_QOS' ? 'Con priorización' : 'Sin priorización'}
+                  {' · '}{CONDITION_LABELS[runCondition(run, runMeta)]}
+                  {' · '}{formatTs(run.started_at)}
+                </option>
+              ))}
+            </select>
+            {selectedRun && (
+              <span className="small text-muted">
+                {selectedCondition === 'unregistered'
+                  ? 'Esta prueba no registró la condición de los sensores.'
+                  : 'Filtro aplicado solo a esta ejecución.'}
+              </span>
+            )}
+          </div>
+
+          {withoutQos && (
+            <div className="rounded-3 px-3 py-2 mb-3 small"
+              style={{ background: '#E8F3F7', border: '1px solid #9fc5d5', color: '#123B5D' }}>
+              <strong>Esta ejecución no calcula la criticidad QoS.</strong>{' '}
+              Las alertas se generan al incumplir los límites configurados. El mensaje de cada alerta
+              muestra el valor observado y el rango permitido; la ausencia de una puntuación no significa
+              que el evento sea leve.
+            </div>
+          )}
+          {!withoutQos && (summary?.alerts_without_criticality ?? 0) > 0 && (
+            <div className="rounded-3 px-3 py-2 mb-3 small"
+              style={{ background: '#EFF4F7', border: '1px solid #D9E2E8', color: '#52616B' }}>
+              {summary?.alerts_without_criticality} alerta
+              {(summary?.alerts_without_criticality ?? 0) === 1 ? '' : 's'} de ejecuciones sin priorización
+              no tienen criticidad QoS. Se conservan y se pueden consultar, pero no se cuentan como críticas.
+            </div>
+          )}
+
           {/* Type filter (server-side vía query `type`) */}
           <div className="d-flex flex-wrap gap-2 mb-4">
             {(['all', ...ALERT_TYPES] as AlertFilter[]).map(f => (
-              <button key={f} onClick={() => setFilter(f)}
+              <button key={f} onClick={() => { setFilter(f); setPage(1); }}
                 className="rounded-2 border px-3 py-1"
                 style={{ fontSize: 12, fontWeight: filter === f ? 600 : 400, cursor: 'pointer',
                   background: filter === f ? '#123B5D' : '#fff',
@@ -210,9 +285,14 @@ export function AlertsView() {
                 Sin alertas registradas en el periodo seleccionado.
               </div>
             ) : alerts.map(alert => {
-              const isCritical = alert.criticality >= 7;
-              const borderColor = isCritical && !alert.acknowledged ? '#C83B3B' : alert.acknowledged ? '#a3cfbb' : '#ffda6a';
-              const bgColor     = isCritical && !alert.acknowledged ? '#FCEEEE' : alert.acknowledged ? '#f8fdfb' : '#FFF5E3';
+              const unscored = alert.criticality === null;
+              const isCritical = alert.criticality !== null && alert.criticality >= 7;
+              const borderColor = unscored
+                ? (alert.acknowledged ? '#a3cfbb' : '#9fc5d5')
+                : isCritical && !alert.acknowledged ? '#C83B3B' : alert.acknowledged ? '#a3cfbb' : '#ffda6a';
+              const bgColor = unscored
+                ? (alert.acknowledged ? '#f8fdfb' : '#E8F3F7')
+                : isCritical && !alert.acknowledged ? '#FCEEEE' : alert.acknowledged ? '#f8fdfb' : '#FFF5E3';
               return (
                 <div key={alert.id} className="rounded-3 p-3"
                   style={{
@@ -223,7 +303,10 @@ export function AlertsView() {
                   }}>
                   <div className="d-flex align-items-start gap-3">
                     <div className="rounded-3 p-2 flex-shrink-0"
-                      style={{ background: isCritical && !alert.acknowledged ? '#FCEEEE' : '#fff', color: isCritical ? '#B22F2F' : '#965D00' }}>
+                      style={{
+                        background: unscored ? '#fff' : isCritical && !alert.acknowledged ? '#FCEEEE' : '#fff',
+                        color: unscored ? '#1F6F8B' : isCritical ? '#B22F2F' : '#965D00',
+                      }}>
                       <AlertTriangle size={17} />
                     </div>
                     <div className="flex-grow-1">
@@ -238,16 +321,28 @@ export function AlertsView() {
                               Crítica · {alert.criticality}
                             </span>
                           )}
-                          {!isCritical && !alert.acknowledged && (
+                          {!unscored && !isCritical && !alert.acknowledged && (
                             <span className="rounded-pill px-2"
                               style={{ fontSize: 11, background: '#FFF5E3', color: '#965D00', border: '1px solid #ffda6a' }}>
                               Criticidad · {alert.criticality}
+                            </span>
+                          )}
+                          {unscored && (
+                            <span className="rounded-pill px-2"
+                              style={{ fontSize: 11, background: '#E8F3F7', color: '#1F6F8B', border: '1px solid #9fc5d5' }}>
+                              Sin priorización · criticidad no calculada
                             </span>
                           )}
                         </div>
                         <span className="small text-muted text-nowrap">{formatTs(alert.timestamp)}</span>
                       </div>
                       <div style={{ fontSize: 13, margin: '4px 0 6px' }}>{alert.message}</div>
+                      {unscored && (
+                        <div className="text-muted" style={{ fontSize: 12, marginBottom: 6 }}>
+                          Valor observado y límite incumplido según el mensaje. Esta ejecución no asigna
+                          una puntuación de criticidad QoS.
+                        </div>
+                      )}
                       <div className="d-flex justify-content-between align-items-center flex-wrap gap-2">
                         <span style={{ fontSize: 12, fontWeight: 500, color: '#52616B' }}>
                           Dispositivo: <strong>{alert.deviceName}</strong> <span className="font-monospace">({alert.deviceId.slice(0, 8)})</span>
@@ -256,7 +351,7 @@ export function AlertsView() {
                           <Button variant="outline-secondary" size="sm"
                             className="d-flex align-items-center gap-1" style={{ fontSize: 12 }}
                             disabled={ackingId === alert.id}
-                            onClick={() => acknowledge(alert.id)}>
+                            onClick={() => { void acknowledgeAndRefresh(alert.id); }}>
                             <CheckCircle size={13} />{ackingId === alert.id ? 'Reconociendo…' : 'Reconocer alerta'}
                           </Button>
                         ) : alert.acknowledged ? (
@@ -271,6 +366,28 @@ export function AlertsView() {
               );
             })}
           </div>
+
+          {data.alertsStatus !== 'loading' && data.alertsStatus !== 'error' && data.total > 0 && (
+            <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mt-3 small text-muted">
+              <span>
+                Mostrando {(data.page - 1) * data.perPage + 1}–
+                {Math.min(data.page * data.perPage, data.total)} de {data.total} alertas
+              </span>
+              <div className="d-flex align-items-center gap-2">
+                <Button variant="outline-secondary" size="sm"
+                  disabled={data.page <= 1}
+                  onClick={() => setPage((value) => Math.max(1, value - 1))}>
+                  Anterior
+                </Button>
+                <span>Página {data.page} de {data.pageCount}</span>
+                <Button variant="outline-secondary" size="sm"
+                  disabled={data.page >= data.pageCount}
+                  onClick={() => setPage((value) => Math.min(data.pageCount, value + 1))}>
+                  Siguiente
+                </Button>
+              </div>
+            </div>
+          )}
         </>
       )}
 
@@ -311,7 +428,7 @@ export function AlertsView() {
                   {criticalSessionAlerts.map(a => (
                     <div key={a.id} className="rounded-3 p-3" style={{ border: '1px solid #f1aeb5', borderLeft: '4px solid #C83B3B', background: '#FCEEEE' }}>
                       <div className="d-flex justify-content-between gap-2 flex-wrap">
-                        <span className="fw-bold" style={{ fontSize: 13 }}>{alertLabel(a.type)} · {a.criticality}</span>
+                        <span className="fw-bold" style={{ fontSize: 13 }}>{alertLabel(a.type)} · {a.criticality ?? 'sin criticidad QoS'}</span>
                         <span className="small text-muted">{formatTs(a.created_at)}</span>
                       </div>
                       <div className="text-muted" style={{ fontSize: 12 }}>{a.message}</div>
@@ -458,7 +575,9 @@ export function AlertsView() {
                           {formatTs(n.notification_date)}
                         </td>
                         <td className="px-4 py-3 text-muted" style={{ fontSize: 12 }}>
-                          {n.alert ? `${alertLabel(n.alert.type)} · Criticidad ${n.alert.criticality}` : n.alert_id.slice(0, 8)}
+                          {n.alert
+                            ? `${alertLabel(n.alert.type)} · ${n.alert.criticality === null ? 'sin criticidad QoS' : `Criticidad ${n.alert.criticality}`}`
+                            : n.alert_id.slice(0, 8)}
                         </td>
                         <td className="px-4 py-3 text-end">
                           {isUnread && (

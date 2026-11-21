@@ -24,7 +24,7 @@ class AlertResponse(BaseModel):
     user_id: str
     type: str
     message: str
-    criticality: float
+    criticality: float | None
     acknowledged: bool
     created_at: str
 
@@ -47,7 +47,7 @@ class EnrichedEventResponse(BaseModel):
     alert_id: str
     alert_type: str
     alert_message: str
-    alert_criticality: float
+    alert_criticality: float | None
     alert_acknowledged: bool
     alert_created_at: str
     device_id: str
@@ -174,7 +174,11 @@ def get_critical_alerts(request: Request, limit: Optional[int] = None):
     except HTTPException:
         raise
 
-    alerts_list = [alert for alert in getattr(request.app.state, "alerts", []) if alert.criticality >= 7.0]
+    alerts_list = [
+        alert
+        for alert in getattr(request.app.state, "alerts", [])
+        if alert.criticality is not None and alert.criticality >= 7.0
+    ]
     if normalized_limit is not None:
         alerts_list = alerts_list[-normalized_limit:]
 

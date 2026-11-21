@@ -280,12 +280,16 @@ export function DashboardView() {
               ) : recentAlerts.length === 0 ? (
                 <div className="text-center text-muted py-5 small">Sin alertas registradas.</div>
               ) : recentAlerts.map(alert => {
-                const isCritical = alert.criticality >= 7;
+                const isCritical = alert.criticality !== null && alert.criticality >= 7;
+                const unscored = alert.criticality === null;
                 return (
                   <div key={alert.id} className="d-flex align-items-start gap-3 py-3 px-2 border-bottom"
                     style={{ opacity: alert.acknowledged ? 0.6 : 1 }}>
                     <div className="rounded-3 p-2 flex-shrink-0"
-                      style={{ background: isCritical ? '#FCEEEE' : '#FFF5E3', color: isCritical ? '#B22F2F' : '#965D00' }}>
+                      style={{
+                        background: isCritical ? '#FCEEEE' : unscored ? '#E8F3F7' : '#FFF5E3',
+                        color: isCritical ? '#B22F2F' : unscored ? '#1F6F8B' : '#965D00',
+                      }}>
                       <AlertTriangle size={16} />
                     </div>
                     <div className="flex-grow-1">
@@ -295,6 +299,11 @@ export function DashboardView() {
                           {isCritical && !alert.acknowledged && (
                             <span className="rounded-pill px-2" style={{ fontSize: 11, fontWeight: 700, background: '#C83B3B', color: '#fff' }}>
                               Crítica · {alert.criticality}
+                            </span>
+                          )}
+                          {unscored && (
+                            <span className="rounded-pill px-2" style={{ fontSize: 11, background: '#E8F3F7', color: '#1F6F8B', border: '1px solid #9fc5d5' }}>
+                              Sin criticidad QoS
                             </span>
                           )}
                           {alert.acknowledged && (

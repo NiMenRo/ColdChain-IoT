@@ -30,6 +30,8 @@ from app.experiments.schemas import (
     ExperimentMetricResponse,
     ExperimentRunListResponse,
     ExperimentRunResponse,
+    ExperimentEvidenceResponse,
+    ExperimentAnalysisResponse,
 )
 from app.security.dependencies import require_admin
 
@@ -145,11 +147,18 @@ def start_run(
         "wfq_cost": 1,
         "effective_config": effective() if callable(effective) else None,
     }
+    snapshot["telemetry_evidence"] = {
+        "version": 1,
+        "enabled": bool(getattr(backend_config, "telemetry_evidence_enabled", False)),
+        "grace_seconds": getattr(backend_config, "telemetry_evidence_grace_s", None),
+    }
     try:
         run = _runs.create(db, scenario=body.scenario, config_snapshot=snapshot)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     db.commit()
+    from app.experiments.evidence import start_capture
+    start_capture(run, backend_config)
     try:
         set_active_run(run.id, run.scenario)
     except RuntimeError as exc:
@@ -197,6 +206,19 @@ def _finish_run_locked(run_id: UUID, request: Request, db: Session):
         raise HTTPException(409, "A different experiment run is active")
     if message_queue is not None and coordinator is None:
         raise HTTPException(409, "Cannot drain transport without a dispatch coordinator")
+    # Managed runs stop their producer cooperatively, then keep receiving over
+    # the fixed grace window BEFORE closing admission. Legacy semantics remain.
+    from app.experiments import evidence
+    try:
+        managed = evidence.manifest(run.id)
+        if managed is not None:
+            stop_worker(run.id)
+            reception_deadline = evidence.request_close(run.id)
+            remaining = (reception_deadline - datetime.now(timezone.utc)).total_seconds()
+            if remaining > 0:
+                time.sleep(remaining)
+    except (OSError, ValueError, TypeError):
+        logger.exception("Capture closure failed for run %s; rates remain unavailable", run.id)
     if coordinator is not None:
         config = getattr(request.app.state, "backend_config", None)
         timeout = getattr(config, "qos_drain_timeout_s", 30.0)
@@ -222,6 +244,10 @@ def _finish_run_locked(run_id: UUID, request: Request, db: Session):
         raise HTTPException(409, "Experiment is still draining; retry finish")
     run.finished_at = datetime.now(timezone.utc)
     db.commit()
+    try:
+        evidence.seal_capture(run.id)
+    except (OSError, ValueError, TypeError):
+        logger.exception("Capture seal failed for run %s", run.id)
     active = get_active_run()
     if active is not None and active[0] == run.id:
         clear_active_run()
@@ -230,6 +256,48 @@ def _finish_run_locked(run_id: UUID, request: Request, db: Session):
     if message_queue is not None:
         message_queue.end_drain(run.id)
     return _serialize_run(run)
+
+
+@router.get("/{run_id}/evidence", response_model=ExperimentEvidenceResponse)
+def get_run_evidence(run_id: UUID, db: Session = Depends(get_db)):
+    """Measured evidence only; no client paths, imported campaign data or writes."""
+    from app.experiments.evidence import report_for_run
+    from app.database.infrastructure.models import SensorReadingORM, TrafficClassificationORM
+    from app.acquisition.normalizer import NormalizedReading
+    from app.classification.application.risk_matrix_evaluator import RiskMatrixEvaluator
+    from app.classification.application.priority_assigner import PriorityAssigner
+
+    run = _runs.get_by_id(db, run_id)
+    if run is None:
+        raise HTTPException(404, "Experiment run not found")
+    readings = db.query(SensorReadingORM, TrafficClassificationORM.priority).outerjoin(
+        TrafficClassificationORM, TrafficClassificationORM.reading_id == SensorReadingORM.id,
+    ).filter(SensorReadingORM.run_id == run_id).all()
+    priority_labels = {}
+    for reading, priority in readings:
+        if priority is not None:
+            priority_labels[str(reading.id)] = priority
+        elif run.scenario == "WITHOUT_QOS" and reading.sensor_name:
+            # Analysis only, on the saved values. Never classify/plan/persist
+            # FIFO work or trust a device-provided priority.
+            raw = getattr(reading, reading.sensor_name, None)
+            if raw is None:
+                continue
+            try:
+                normalized = NormalizedReading(
+                    "", "", reading.sensor_name,
+                    float(raw == "on") if reading.sensor_name == "energy" else float(raw),
+                    reading.timestamp.isoformat(), raw,
+                )
+                criteria = RiskMatrixEvaluator().evaluate(normalized)
+                priority_labels[str(reading.id)] = PriorityAssigner().assign(
+                    criteria.impact + criteria.urgency + criteria.risk,
+                ).value
+            except (TypeError, ValueError):
+                continue
+    report = report_for_run(run, priority_labels)
+    report["counts"]["database_readings_persisted"] = len(readings)
+    return report
 
 
 @router.get("/{run_id}/metrics", response_model=ExperimentMetricListResponse)
@@ -256,3 +324,20 @@ def list_run_metrics(
         count=len(items),
         results=[_serialize_metric(i) for i in items],
     )
+
+
+@router.get("/{run_id}/analysis", response_model=ExperimentAnalysisResponse)
+def get_run_analysis(
+    run_id: UUID,
+    max_points: int = Query(300, ge=1, le=500),
+    bucket_seconds: float | None = Query(None, ge=0.001, le=1e9, allow_inf_nan=False),
+    db: Session = Depends(get_db),
+):
+    from app.experiments.analysis import analyze_run
+    run = _runs.get_by_id(db, run_id)
+    if run is None:
+        raise HTTPException(404, "Experiment run not found")
+    try:
+        return analyze_run(db, run, max_points, bucket_seconds)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc

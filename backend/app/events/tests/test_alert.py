@@ -100,12 +100,17 @@ class TestAlert(unittest.TestCase):
                     Alert(**kwargs)
 
     def test_rejects_non_numeric_criticality(self) -> None:
-        for value in ("high", None, [8]):
+        for value in ("high", [8]):
             with self.subTest(value=value):
                 kwargs = self._make_valid_kwargs()
                 kwargs["criticality"] = value
                 with self.assertRaises(TypeError):
                     Alert(**kwargs)
+
+    def test_accepts_none_criticality_when_not_calculated(self) -> None:
+        kwargs = self._make_valid_kwargs()
+        kwargs["criticality"] = None
+        self.assertIsNone(Alert(**kwargs).criticality)
 
     def test_rejects_boolean_criticality(self) -> None:
         for value in (True, False):

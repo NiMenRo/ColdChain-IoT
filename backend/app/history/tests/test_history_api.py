@@ -174,6 +174,62 @@ def test_dashboard_summary_counts_all_devices_and_only_unacknowledged_alerts(
     assert sum(a["criticality"] >= 7 and not a["acknowledged"] for a in recent) < 8
 
 
+def test_summary_distinguishes_uncalculated_criticality(client, session_factory):
+    with session_factory() as db:
+        device = db.query(DeviceORM).first()
+        user = db.query(UserORM).first()
+        db.add_all([
+            AlertORM(device_id=device.id, user_id=user.id,
+                     type="TEMPERATURE_EXCEEDED", message="sin qos",
+                     criticality=None, acknowledged=False),
+            AlertORM(device_id=device.id, user_id=user.id,
+                     type="TEMPERATURE_EXCEEDED", message="con qos",
+                     criticality=9.0, acknowledged=False),
+        ])
+        db.commit()
+
+    summary = client.get("/history/summary").json()
+    assert summary["alerts_without_criticality"] == 1
+    assert summary["active_alerts"] == 5
+    # NULL is not counted as a critical measurement; only the real 9.0 is.
+    assert summary["critical_active_alerts"] == 1
+
+
+def test_alert_pages_preserve_null_scores_and_timestamp_ties(client, session_factory):
+    with session_factory() as db:
+        device = db.query(DeviceORM).first()
+        user = db.query(UserORM).first()
+        db.add_all([
+            AlertORM(
+                device_id=device.id, user_id=user.id,
+                type="ENERGY_STATE_ANOMALY", message="Energy state (off)",
+                criticality=None, acknowledged=False,
+                created_at=datetime(2026, 11, 21, tzinfo=timezone.utc),
+            )
+            for _ in range(65)
+        ])
+        db.commit()
+
+    pages = [
+        client.get(
+            "/history/alerts",
+            params={"type": "ENERGY_STATE_ANOMALY", "page": page, "per_page": 20},
+        ).json()
+        for page in range(1, 5)
+    ]
+    assert all(page["total"] == 65 for page in pages)
+    assert [len(page["results"]) for page in pages] == [20, 20, 20, 5]
+    rows = [row for page in pages for row in page["results"]]
+    assert len({row["id"] for row in rows}) == 65
+    assert all(row["criticality"] is None for row in rows)
+    assert [row["id"] for row in rows] == sorted(
+        (row["id"] for row in rows), reverse=True
+    )
+    summary = client.get("/history/summary").json()
+    assert summary["alerts_without_criticality"] == 65
+    assert summary["active_alerts"] == 68
+
+
 def test_filter_device(client):
     r = client.get("/history/readings?device_code=CAVA-001&page=1&per_page=10")
     assert r.json()["total"] == 3
