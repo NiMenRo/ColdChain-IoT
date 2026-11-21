@@ -27,7 +27,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.acquisition.pipeline import _critical_email_message, _worker_loop
+from app.acquisition.pipeline import _critical_email_message, _notify_alerts, _worker_loop
 from app.database.infrastructure.base import Base
 from app.database.infrastructure.models import (
     AlertORM,
@@ -69,6 +69,12 @@ class _ScriptedQueue:
         return []
 
 
+@pytest.fixture(autouse=True)
+def isolated_active_sessions(monkeypatch):
+    # No logged-in users may leak across pipeline or authentication tests.
+    monkeypatch.setattr(active_sessions, "_expires_at", {})
+
+
 def test_critical_email_formats_alert_time_in_colombia():
     alert = types.SimpleNamespace(
         type="TEMPERATURE_EXCEEDED",
@@ -100,8 +106,12 @@ def test_breach_first_message_persists_whole_bundle(monkeypatch, tmp_path):
             owner = UserORM(name="sys", email="sys@example.com",
                             password_hash="h", role="system")
             db.add(owner)
+            recipient = UserORM(name="Admin", email="admin@example.com",
+                                password_hash="h", role="admin", is_active=True)
+            db.add(recipient)
             db.flush()
             dev_id, user_id = dev.id, owner.id
+            active_sessions.login(recipient.id, 3600)
 
     # The worker resolves SessionLocal at call time: point it at sqlite.
     import app.database.infrastructure.session as session_module
@@ -162,8 +172,10 @@ def test_breach_first_message_persists_whole_bundle(monkeypatch, tmp_path):
     assert state.classifications[0]["classification"].queue == "WFQ"
 
     with TestSession() as db:
-        assert db.query(SensorReadingORM).count() == 1
-        assert db.query(TrafficClassificationORM).count() == 1
+        # B1: one durable row per selected reading, not one representative
+        # bundle row per MQTT message.
+        assert db.query(SensorReadingORM).count() == 3
+        assert db.query(TrafficClassificationORM).count() == 3
         assert db.query(AlertORM).count() >= 1
         assert db.query(NotificationORM).count() >= 1
     engine.dispose()
@@ -252,10 +264,13 @@ def _breach_message():
     }
 
 
-def test_fanout_distributes_to_active_humans_only(monkeypatch, tmp_path):
-    """Fan-out policy: admin/operador/auditor actives get own rows.
+@pytest.mark.parametrize("logged_roles", [
+    ("admin", "operador", "auditor"), ("admin", "operador"),
+])
+def test_fanout_distributes_to_logged_in_active_humans_only(monkeypatch, tmp_path, logged_roles):
+    """Main's session policy, integrated after v2 dispatch and commit.
 
-    System, inactive and unknown users never own rows. Auditor rows are
+    System, logged-out and inactive users never own rows. Auditor rows are
     read-only by RBAC (no ack/write), but readable via `authenticated`
     endpoints — receiving rows grants no extra power.
     """
@@ -267,24 +282,32 @@ def test_fanout_distributes_to_active_humans_only(monkeypatch, tmp_path):
 
     import app.database.infrastructure.session as session_module
     monkeypatch.setattr(session_module, "SessionLocal", TestSession)
+    for role in logged_roles:
+        active_sessions.login(ids[role], 3600)
+    # Even a logged-in inactive user must be excluded.
+    active_sessions.login(ids["supervisor_off"], 3600)
     state = _pump_one_message(TestSession, dev_id, author_id, _breach_message())
 
     assert len(state.alerts) >= 1
     with TestSession() as db:
         rows = db.query(NotificationORM).all()
         owners = {r.user_id for r in rows}
-        assert owners == {ids["admin"], ids["operador"], ids["auditor"]}, owners
-        # One row per (alert × recipient): no duplicates, all unread.
-        assert len(rows) == len(state.alerts) * 3
+        assert owners == {ids[role] for role in logged_roles}, owners
+        # Critical alerts get dashboard AND email, once per logged-in user.
+        assert len(rows) == sum(2 if a.criticality >= 8 else 1 for a in state.alerts) * len(logged_roles)
         assert all(r.is_read is False for r in rows)
-        assert all(r.channel == "dashboard" and r.status == "sent" for r in rows)
+        assert all(r.status == "sent" for r in rows)
+        assert len({(r.alert_id, r.channel, r.recipient) for r in rows}) == len(rows)
         for r in rows:
-            assert r.recipient == str(r.user_id)
+            if r.channel == "dashboard":
+                assert r.recipient == str(r.user_id)
+            else:
+                assert r.channel == "email" and r.recipient.endswith("@example.com")
     engine.dispose()
 
 
-def test_fanout_falls_back_to_alert_author_without_humans(monkeypatch, tmp_path):
-    """Legacy fallback: no human recipients → single author-owned row."""
+def test_fanout_does_not_invent_recipient_without_logged_in_humans(monkeypatch, tmp_path):
+    """Main removes the legacy fallback: the system author is not a recipient."""
     db_file = str(tmp_path / "worker_fallback.db")
     engine = create_engine(f"sqlite:///{db_file}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
@@ -305,13 +328,15 @@ def test_fanout_falls_back_to_alert_author_without_humans(monkeypatch, tmp_path)
 
     import app.database.infrastructure.session as session_module
     monkeypatch.setattr(session_module, "SessionLocal", TestSession)
+    active_sessions.login(author_id, 3600)  # System role is never a recipient.
     state = _pump_one_message(TestSession, dev_id, author_id, _breach_message())
 
     assert len(state.alerts) >= 1
     with TestSession() as db:
         rows = db.query(NotificationORM).all()
-        assert len(rows) == len(state.alerts)
-        assert {r.user_id for r in rows} == {author_id}
+        assert rows == []
+        assert db.query(AlertORM).count() == len(state.alerts)
+    assert state.notifications == []
     engine.dispose()
 
 
@@ -338,6 +363,11 @@ def test_critical_alert_sends_email_and_is_available_to_dashboard(monkeypatch, t
             pass
 
         def send_message(self, message):
+            # SMTP can only be reached after a selected v2 reading and its
+            # alert are committed, never while siblings are merely queued.
+            with TestSession() as db:
+                assert db.query(AlertORM).count() > 0
+                assert db.query(SensorReadingORM).filter_by(processing_version=2).count() > 0
             sent_emails.append(message)
 
         def __enter__(self):
@@ -360,6 +390,17 @@ def test_critical_alert_sends_email_and_is_available_to_dashboard(monkeypatch, t
         state = _pump_one_message(
             TestSession, dev_id, author_id, _breach_message(), notification_service
         )
+        with TestSession() as db:
+            count_before = db.query(NotificationORM).count()
+        # A notification retry checks recipient/channel idempotency before
+        # SMTP and never duplicates runtime traces or durable delivery rows.
+        runtime_before = len(state.notifications)
+        sent_before = len(sent_emails)
+        _notify_alerts(state.alerts, state)
+        assert len(sent_emails) == sent_before
+        assert len(state.notifications) == runtime_before
+        with TestSession() as db:
+            assert db.query(NotificationORM).count() == count_before
     finally:
         active_sessions.logout(recipient_id)
 

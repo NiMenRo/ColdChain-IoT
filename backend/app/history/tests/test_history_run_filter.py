@@ -144,6 +144,8 @@ def test_run_filter_isolates_distinct_distributions(db):
     assert a["traffic_by_priority"] == {"high": 2, "medium": 1}
     assert a["total_readings"] == 3
     assert a["total_alerts"] == 1
+    assert a["active_alerts"] == 1
+    assert a["critical_active_alerts"] == 0
     assert a["total_qos_metrics"] == 3
 
     b = svc.summary(db, run_id=run_b)
@@ -156,6 +158,10 @@ def test_run_filter_isolates_distinct_distributions(db):
     empty = svc.summary(db, run_id=unknown)
     assert empty["traffic_by_priority"] == {}
     assert empty["total_readings"] == 0
+    assert empty["active_alerts"] == 0
+    assert empty["critical_active_alerts"] == 0
+    assert empty["total_devices"] == glob["total_devices"]
+    assert empty["active_devices"] == glob["active_devices"]
 
 
 def test_list_endpoints_accept_run_id(db):
@@ -184,8 +190,9 @@ def test_list_endpoints_accept_run_id(db):
     total, _ = svc.readings.list(db, run_id=run_a)
     assert total == 2
 
-    rows = svc.qos.trends(db, run_id=run_a)
+    rows = svc.qos.trends(db, run_id=run_a, processing_version=1)
     assert len(rows) >= 1
+    assert svc.qos.trends(db, run_id=run_a, processing_version=2) == []
     rows = svc.readings.trends(db, run_id=run_b)
     assert len(rows) >= 1
 

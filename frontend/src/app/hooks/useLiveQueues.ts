@@ -1,8 +1,7 @@
-// Colas QoS en vivo (FIFO / Round Robin / WFQ).
+// Colas QoS de demostración (FIFO / Round Robin / WFQ), no productivas.
 //
 // Fuente única: GET /qos/queues — snapshot del contenido actual de los
-// schedulers en memoria del backend. Es GLOBAL (todas las ejecuciones y
-// tráfico manual), INSTANTÁNEO (cambia con cada mensaje) y VOLÁTIL (se
+// schedulers del planner de /qos/plan. Es GLOBAL, INSTANTÁNEO y VOLÁTIL (se
 // vacía al reiniciar el backend). No admite filtro run_id: presentarlo
 // como dato de una ejecución sería falso.
 // Polling ligero reutilizando usePolling (pausa con pestaña oculta).

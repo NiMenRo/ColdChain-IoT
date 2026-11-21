@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections import deque
 from typing import Deque, Optional
 
-from app.classification import PriorityLevel, TrafficClassification
-from app.qos.application.scheduler import Scheduler
+from app.classification import PriorityLevel
+from app.qos.application.scheduler import ScheduledItem, Scheduler
 
 
 class FIFOScheduler(Scheduler):
@@ -17,13 +17,13 @@ class FIFOScheduler(Scheduler):
     priority = PriorityLevel.LOW
 
     def __init__(self) -> None:
-        self._items: Deque[TrafficClassification] = deque()
+        self._items: Deque[ScheduledItem] = deque()
 
-    def dequeue(self) -> Optional[TrafficClassification]:
+    def dequeue(self) -> Optional[ScheduledItem]:
         return self._items.popleft() if self._items else None
 
     def size(self) -> int:
         return len(self._items)
 
-    def _store(self, classification: TrafficClassification) -> None:
-        self._items.append(classification)
+    def _store(self, item: ScheduledItem) -> None:
+        self._items.append(item)

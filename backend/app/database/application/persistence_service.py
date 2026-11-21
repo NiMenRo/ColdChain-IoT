@@ -14,8 +14,15 @@ from app.database.infrastructure.repositories import (
     SensorReadingRepository,
     TrafficClassificationRepository,
 )
+from app.database.infrastructure.models import (
+    AlertORM,
+    QoSMetricORM,
+    SensorReadingORM,
+    TrafficClassificationORM,
+)
 from app.events.domain import Alert
 from app.qos.domain import QoSMetric
+from app.qos.domain.work_item import WorkItem
 
 
 class PersistenceService:
@@ -46,6 +53,10 @@ class PersistenceService:
         alerts: list[Alert] | None = None,
         predictions: list[dict] | None = None,
         run_id: uuid.UUID | None = None,
+        reading_id: uuid.UUID | None = None,
+        source_message_id: uuid.UUID | None = None,
+        sensor_name: str | None = None,
+        processing_version: int = 1,
     ) -> dict:
         """Persiste un bundle coherente SensorReading [1:1 TrafficClassification -> QoSMetric]/Alert/Prediction.
 
@@ -54,7 +65,16 @@ class PersistenceService:
         """
         was_in_transaction = db.in_transaction()
         try:
-            sensor_row = self.sensor_repo.save(db, readings, device_id, run_id=run_id)
+            sensor_row = self.sensor_repo.save(
+                db,
+                readings,
+                device_id,
+                run_id=run_id,
+                reading_id=reading_id,
+                source_message_id=source_message_id,
+                sensor_name=sensor_name,
+                processing_version=processing_version,
+            )
             tc_row = None
             if classification is not None:
                 tc_row = self.tc_repo.save(db, classification, sensor_row.id)
@@ -87,7 +107,16 @@ class PersistenceService:
                         acknowledged=a.acknowledged,
                         created_at=a.created_at,
                     )
-                    alert_rows.append(self.alert_repo.save(db, remapped, run_id=run_id))
+                    alert_rows.append(
+                        self.alert_repo.save(
+                            db,
+                            remapped,
+                            run_id=run_id,
+                            reading_id=(
+                                sensor_row.id if processing_version >= 2 else None
+                            ),
+                        )
+                    )
             pred_rows = []
             if predictions:
                 for p in predictions:
@@ -114,3 +143,68 @@ class PersistenceService:
             "alerts": alert_rows,
             "predictions": pred_rows,
         }
+
+    def persist_work_item(
+        self,
+        db: Session,
+        *,
+        work_item: WorkItem,
+        device_id: uuid.UUID,
+        qos_metric: QoSMetric | None = None,
+        alerts: list[Alert] | None = None,
+        predictions: list[dict] | None = None,
+    ) -> dict:
+        """Persist one dispatched sensor reading with stable v2 traceability.
+
+        Replaying a completed work item returns its already committed rows and
+        does not create a second reading, classification, or alert.  A caller
+        must use the same work UUID for a retry; unrelated readings are never
+        collapsed by device/timestamp.
+        """
+        existing = db.get(SensorReadingORM, work_item.id)
+        if existing is not None:
+            if (
+                existing.device_id != device_id
+                or existing.sensor_name != work_item.sensor_name
+                or existing.source_message_id != work_item.source_message_id
+            ):
+                raise ValueError("work item UUID conflicts with persisted reading context")
+            classification = (
+                db.query(TrafficClassificationORM)
+                .filter_by(reading_id=existing.id)
+                .first()
+            )
+            qos = (
+                db.query(QoSMetricORM)
+                .filter_by(classification_id=classification.id)
+                .first()
+                if classification is not None
+                else None
+            )
+            return {
+                "sensor_reading": existing,
+                "traffic_classification": classification,
+                "qos_metric": qos,
+                "alerts": db.query(AlertORM).filter_by(reading_id=existing.id).all(),
+                "predictions": list(existing.predictions),
+            }
+
+        classification = (
+            work_item.classification.to_classification()
+            if work_item.classification is not None
+            else None
+        )
+        return self.persist_bundle(
+            db,
+            readings=[work_item.to_reading()],
+            device_id=device_id,
+            classification=classification,
+            qos_metric=qos_metric,
+            alerts=alerts,
+            predictions=predictions,
+            run_id=work_item.run_id,
+            reading_id=work_item.id,
+            source_message_id=work_item.source_message_id,
+            sensor_name=work_item.sensor_name,
+            processing_version=2,
+        )

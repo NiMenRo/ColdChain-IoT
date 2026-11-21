@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { useAuth } from '../hooks/useAuth';
 import { useUnreadCount } from '../hooks/useUnreadCount';
+import { useMqttStatus } from '../hooks/useMqttStatus';
 import { ROLE_LABELS } from '../config/rbac';
 
 const sections: Record<string, string> = {
@@ -12,7 +13,12 @@ const sections: Record<string, string> = {
 };
 
 export function TopNav() {
-  const [isConnected, setIsConnected] = useState(true);
+  const mqttStatus = useMqttStatus();
+  const isConnected = mqttStatus === 'connected';
+  const mqttLabel = mqttStatus === 'loading' ? 'Consultando MQTT…'
+    : isConnected ? 'MQTT conectado'
+    : mqttStatus === 'disconnected' ? 'MQTT desconectado'
+    : mqttStatus === 'error' ? 'Estado MQTT no disponible' : 'Estado MQTT desconocido';
   const [menuOpen, setMenuOpen] = useState(false);
   const [bellHover, setBellHover] = useState(false);
   const [bellActive, setBellActive] = useState(false);
@@ -24,11 +30,6 @@ export function TopNav() {
   const navigate = useNavigate();
   const location = useLocation();
   const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const interval = setInterval(() => setIsConnected(prev => Math.random() > 0.1 ? true : prev), 5000);
-    return () => clearInterval(interval);
-  }, []);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -50,9 +51,9 @@ export function TopNav() {
       </div>
 
       <div className="d-flex align-items-center gap-3">
-        <div className="d-none d-sm-flex align-items-center gap-2 small" style={{ color: isConnected ? '#16835B' : '#C83B3B' }}>
+        <div role="status" className="d-none d-sm-flex align-items-center gap-2 small" style={{ color: isConnected ? '#16835B' : mqttStatus === 'disconnected' ? '#C83B3B' : '#52616B' }}>
           {isConnected ? <Wifi size={16} /> : <WifiOff size={16} />}
-          <span>{isConnected ? 'MQTT conectado' : 'Desconectado'}</span>
+          <span>{mqttLabel}</span>
         </div>
 
         {/* Bell button + punto rojo de no leídas (fase C).

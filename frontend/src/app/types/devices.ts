@@ -43,8 +43,8 @@ export const ALL_SENSORS: SensorType[] = ['temperature', 'humidity', 'energy'];
 /**
  * Lectura de un dispositivo tal como la expone el backend
  * (SensorReadingORM vía /history/readings o /history/devices/{code}/history).
- * `energy` es 'on' | 'off' | null (NULL = sensor no habilitado); nunca se
- * deriva de `device.status`.
+ * NULL significa sin valor en esta fila, no sensor deshabilitado (en v2
+ * solo un sensor tiene valor). Nunca se deriva de `device.status`.
  */
 export interface DeviceReadingSnapshot {
   id: string;
@@ -53,4 +53,13 @@ export interface DeviceReadingSnapshot {
   humidity: number | null;
   energy: 'on' | 'off' | null;
   timestamp: string;
+}
+
+/** Presentación de últimos valores independientes; NO es una fila/bundle. */
+export interface DeviceLatestSnapshot {
+  temperature: number | null;
+  humidity: number | null;
+  energy: 'on' | 'off' | null;
+  timestamp: string;
+  sensor_timestamps: Record<SensorType, string | null>;
 }

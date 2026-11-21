@@ -6,6 +6,8 @@ from app.classification import PriorityLevel, TrafficClassification
 from app.qos.application.fifo_scheduler import FIFOScheduler
 from app.qos.application.round_robin_scheduler import RoundRobinScheduler
 from app.qos.application.wfq_scheduler import WFQScheduler
+from app.qos.application.scheduler import ScheduledItem
+from app.qos.domain.work_item import WorkItem
 
 
 class TrafficPlanningService:
@@ -38,38 +40,42 @@ class TrafficPlanningService:
     def wfq(self) -> WFQScheduler:
         return self._wfq_scheduler
 
-    def plan(self, classification: TrafficClassification) -> TrafficClassification:
-        """Queue a classification using the strategy corresponding to its priority."""
-        self._require_classification(classification)
-        priority = self._normalize_priority(classification.priority)
+    def plan(self, item: ScheduledItem) -> ScheduledItem:
+        """Queue one work item using its already assigned priority.
+
+        The classification-only branch is retained solely for the explicit
+        demonstration API until T20 separates that API's backing storage.
+        """
+        self._require_scheduled_item(item)
+        priority = self._normalize_priority(item.priority)
 
         if priority is PriorityLevel.LOW:
-            self._fifo_scheduler.enqueue(classification)
+            self._fifo_scheduler.enqueue(item)
         elif priority is PriorityLevel.MEDIUM:
-            self._round_robin_scheduler.enqueue(classification)
+            self._round_robin_scheduler.enqueue(item)
         elif priority is PriorityLevel.HIGH:
-            self._wfq_scheduler.enqueue(classification)
+            self._wfq_scheduler.enqueue(item)
         else:
-            raise ValueError(f"Unsupported priority for planning: {classification.priority!r}")
+            raise ValueError(f"Unsupported priority for planning: {item.priority!r}")
 
-        return classification
+        return item
 
-    def plan_many(self, classifications: Iterable[TrafficClassification]) -> List[TrafficClassification]:
-        planned: List[TrafficClassification] = []
-        for classification in classifications:
-            planned.append(self.plan(classification))
+    def plan_many(self, items: Iterable[ScheduledItem]) -> List[ScheduledItem]:
+        planned: List[ScheduledItem] = []
+        for item in items:
+            planned.append(self.plan(item))
         return planned
 
-    def dequeue(self, priority: Union[str, PriorityLevel]) -> Optional[TrafficClassification]:
+    def dequeue(self, priority: Union[str, PriorityLevel]) -> Optional[ScheduledItem]:
         scheduler = self._scheduler_for(priority)
         return scheduler.dequeue()
 
-    def get_queue(self, priority: Union[str, PriorityLevel]) -> List[TrafficClassification]:
+    def get_queue(self, priority: Union[str, PriorityLevel]) -> List[ScheduledItem]:
         scheduler = self._scheduler_for(priority)
         if isinstance(scheduler, FIFOScheduler):
             return list(scheduler._items)
         if isinstance(scheduler, RoundRobinScheduler):
-            items: List[TrafficClassification] = []
+            items: List[ScheduledItem] = []
             for slot in scheduler._slots.values():
                 items.extend(slot)
             return items
@@ -96,9 +102,9 @@ class TrafficPlanningService:
         raise ValueError(f"Unsupported priority: {priority!r}")
 
     @staticmethod
-    def _require_classification(classification: object) -> None:
-        if not isinstance(classification, TrafficClassification):
-            raise TypeError("'classification' must be a TrafficClassification instance")
+    def _require_scheduled_item(item: object) -> None:
+        if not isinstance(item, (WorkItem, TrafficClassification)):
+            raise TypeError("'item' must be a WorkItem or TrafficClassification instance")
 
     @staticmethod
     def _normalize_priority(priority: Union[str, PriorityLevel]) -> PriorityLevel:

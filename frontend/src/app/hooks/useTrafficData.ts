@@ -30,15 +30,15 @@ export interface TrafficRow {
 const ROW_META: Array<Omit<TrafficRow, 'count' | 'pct'>> = [
   {
     priority: 'HIGH', queue: 'WFQ', color: '#C83B3B', bg: '#FCEEEE', border: '#f1aeb5',
-    description: 'Alertas críticas y lecturas fuera de rango. Procesamiento prioritario garantizado.',
+    description: 'WFQ por flujo; recibe cuatro oportunidades por ciclo cuando las tres clases están pendientes.',
   },
   {
     priority: 'MEDIUM', queue: 'Round Robin', color: '#C47A00', bg: '#FFF5E3', border: '#ffda6a',
-    description: 'Telemetría periódica estándar. Distribución equitativa entre dispositivos.',
+    description: 'Round Robin entre flujos activos de dispositivo y sensor.',
   },
   {
     priority: 'LOW', queue: 'FIFO', color: '#16835B', bg: '#EAF6EF', border: '#a3cfbb',
-    description: 'Datos de diagnóstico, logs y lecturas de baja frecuencia.',
+    description: 'FIFO por orden de admisión dentro de la clase baja.',
   },
 ];
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Union
 
 from app.classification import PriorityLevel, TrafficClassification
+from app.qos.domain.work_item import WorkItem
+
+ScheduledItem = Union[WorkItem, TrafficClassification]
 
 
 class Scheduler(ABC):
@@ -21,15 +24,21 @@ class Scheduler(ABC):
 
     priority: PriorityLevel
 
-    def enqueue(self, classification: TrafficClassification) -> None:
-        """Store a classification matching this scheduler's priority."""
-        self._require_classification(classification)
-        self._require_matching_priority(classification)
-        self._store(classification)
+    def enqueue(self, item: ScheduledItem) -> None:
+        """Store an item matching this scheduler's priority.
+
+        ``TrafficClassification`` remains accepted temporarily for the
+        `/qos/plan` demonstration endpoint. Runtime scheduling must provide a
+        ``WorkItem``; T13 will remove the legacy admission path from pipeline
+        processing without changing that isolated demonstration operation.
+        """
+        self._require_scheduled_item(item)
+        self._require_matching_priority(item)
+        self._store(item)
 
     @abstractmethod
-    def dequeue(self) -> Optional[TrafficClassification]:
-        """Remove and return the next classification per this discipline.
+    def dequeue(self) -> Optional[ScheduledItem]:
+        """Remove and return the next item per this discipline.
 
         Returns ``None`` when there is nothing left to process.
         """
@@ -43,19 +52,20 @@ class Scheduler(ABC):
         return self.size() == 0
 
     @abstractmethod
-    def _store(self, classification: TrafficClassification) -> None:
-        """Append a validated classification to the internal buffer."""
+    def _store(self, item: ScheduledItem) -> None:
+        """Append a validated item to the internal buffer."""
 
     # -- validation ----------------------------------------------------------
 
     @staticmethod
-    def _require_classification(classification: object) -> None:
-        if not isinstance(classification, TrafficClassification):
-            raise TypeError("'classification' must be a TrafficClassification instance")
+    def _require_scheduled_item(item: object) -> None:
+        if not isinstance(item, (WorkItem, TrafficClassification)):
+            raise TypeError("'item' must be a WorkItem or TrafficClassification instance")
 
-    def _require_matching_priority(self, classification: TrafficClassification) -> None:
-        if classification.priority != self.priority.value:
+    def _require_matching_priority(self, item: ScheduledItem) -> None:
+        priority = item.priority
+        if priority != self.priority.value:
             raise ValueError(
-                f"priority {classification.priority!r} does not match "
+                f"priority {priority!r} does not match "
                 f"scheduler priority {self.priority.value!r}"
             )

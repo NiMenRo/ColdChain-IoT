@@ -1,6 +1,11 @@
 context/
 graphify-out/
 
+# Planificacion SDD y documentos generados (solo locales)
+/sdd/
+/docs/qos-dispatch.md
+/docs/qos-dispatch-validation.md
+
 # Python
 __pycache__/
 *.pyc

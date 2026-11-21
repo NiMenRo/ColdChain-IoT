@@ -13,7 +13,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
@@ -61,11 +60,14 @@ THRESHOLDS = dict(
 
 
 @pytest.fixture()
-def db_factory():
+def db_factory(tmp_path):
+    # A file-backed database lets the ingestion and attention threads use
+    # independent connections (the production layout).  A single in-memory
+    # StaticPool connection would interleave transactions between threads.
+    db_file = str(tmp_path / "without_qos.db")
     engine = create_engine(
-        "sqlite:///:memory:",
+        f"sqlite:///{db_file}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
         future=True,
     )
 
@@ -261,8 +263,9 @@ def test_without_qos_branch_end_to_end(db_factory):
         assert db.query(TrafficClassificationORM).count() == 0
         assert db.query(QoSMetricORM).count() == 0
         readings = db.query(SensorReadingORM).all()
-        assert len(readings) == 1
-        assert readings[0].run_id == run_id
+        assert len(readings) == 3
+        assert {r.sensor_name for r in readings} == {"temperature", "humidity", "energy"}
+        assert all(r.run_id == run_id for r in readings)
         alerts = db.query(AlertORM).all()
         assert len(alerts) == 1
         assert alerts[0].run_id == run_id
@@ -286,16 +289,18 @@ def test_with_qos_branch_unchanged(db_factory):
     active.set_active_run(run_id, "WITH_QOS")
     state = _run_worker(db_factory, [_message()])
     with db_factory() as db:
-        assert db.query(TrafficClassificationORM).count() == 1
-        assert db.query(QoSMetricORM).count() == 1
+        assert db.query(TrafficClassificationORM).count() == 3
+        assert db.query(QoSMetricORM).count() == 3
         readings = db.query(SensorReadingORM).all()
-        assert len(readings) == 1 and readings[0].run_id == run_id
+        assert len(readings) == 3
+        assert all(r.run_id == run_id for r in readings)
         alerts = db.query(AlertORM).all()
         assert len(alerts) == 1 and alerts[0].run_id == run_id
-        tc = db.query(TrafficClassificationORM).first()
-        assert alerts[0].criticality == tc.criticality == 9.0
+        assert alerts[0].criticality == 9.0
+        criticalities = {tc.criticality for tc in db.query(TrafficClassificationORM).all()}
+        assert 9.0 in criticalities
     assert len(state.classifications) == 3  # one per reading
-    assert len(state.qos_records) == 3  # planning executed
+    assert state.qos_records == []  # no synthetic network-delivery samples
 
 
 def test_no_run_legacy_behavior(db_factory):
@@ -303,10 +308,13 @@ def test_no_run_legacy_behavior(db_factory):
         _seed_device(db)
     state = _run_worker(db_factory, [_message()])
     with db_factory() as db:
-        assert db.query(TrafficClassificationORM).count() == 1
-        assert db.query(QoSMetricORM).count() == 1
-        assert db.query(SensorReadingORM).first().run_id is None
-        assert db.query(AlertORM).first().run_id is None
+        assert db.query(TrafficClassificationORM).count() == 3
+        assert db.query(QoSMetricORM).count() == 3
+        readings = db.query(SensorReadingORM).all()
+        assert len(readings) == 3
+        assert all(r.run_id is None for r in readings)
+        alerts = db.query(AlertORM).all()
+        assert len(alerts) == 1 and alerts[0].run_id is None
         assert db.query(ExperimentMetricORM).count() == 0
     assert len(state.classifications) == 3
 

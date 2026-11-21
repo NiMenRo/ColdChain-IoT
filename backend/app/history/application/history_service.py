@@ -62,13 +62,21 @@ class HistoryService:
                 .join(SensorReadingORM, TrafficClassificationORM.reading_id == SensorReadingORM.id)
                 .filter(SensorReadingORM.run_id == run_id)
             )
+        device_statuses = dict(
+            db.query(DeviceORM.status, func.count()).group_by(DeviceORM.status).all()
+        )
+        active_alerts = alerts.filter(AlertORM.acknowledged.is_(False))
         return {
             "total_devices": db.query(DeviceORM).count(),
+            "active_devices": device_statuses.get("active", 0),
+            "error_devices": device_statuses.get("error", 0),
             "run_id": str(run_id) if scoped else None,
             "total_readings": readings.count(),
             "total_classifications": tc.count(),
             "total_qos_metrics": qos_total.count(),
             "total_alerts": alerts.count(),
+            "active_alerts": active_alerts.count(),
+            "critical_active_alerts": active_alerts.filter(AlertORM.criticality >= 7).count(),
             "total_predictions": preds.count(),
             "alerts_by_type": dict(alerts.with_entities(AlertORM.type, func.count()).group_by(AlertORM.type).all()),
             "readings_by_device": dict(db.query(DeviceORM.code, func.count(SensorReadingORM.id)).join(SensorReadingORM, DeviceORM.id==SensorReadingORM.device_id).filter(SensorReadingORM.run_id == run_id if scoped else True).group_by(DeviceORM.code).all()),
@@ -77,4 +85,9 @@ class HistoryService:
             # Conteo de lecturas por estado energético ('on'/'off'). Los nulos se
             # excluyen: null significa sensor de energía no habilitado, no apagado.
             "energy_by_state": dict(readings.with_entities(SensorReadingORM.energy, func.count()).filter(SensorReadingORM.energy.isnot(None)).group_by(SensorReadingORM.energy).all()),
+            "readings_by_processing_version": dict(
+                readings.with_entities(
+                    SensorReadingORM.processing_version, func.count()
+                ).group_by(SensorReadingORM.processing_version).all()
+            ),
         }

@@ -119,7 +119,7 @@ export function DashboardView() {
           <div className="d-flex align-items-center gap-2">
             <AlertTriangle size={18} color="#B22F2F" style={{ flexShrink: 0 }} />
             <p className="mb-0 small">
-              <strong>{errored} dispositivo{errored > 1 ? 's' : ''} en estado de error</strong> — Se requiere atención. Hay {criticalAlerts} alerta{criticalAlerts !== 1 ? 's' : ''} crítica{criticalAlerts !== 1 ? 's' : ''} sin reconocer.
+               <strong>{errored} dispositivo{errored > 1 ? 's' : ''} en estado de error</strong> — Se requiere atención. Alertas críticas sin reconocer: {criticalAlerts ?? '—'}.
             </p>
           </div>
           <button
@@ -138,7 +138,7 @@ export function DashboardView() {
           { icon: Cpu,           label: 'Total dispositivos',   value: dash.isLoading ? '…' : total ?? '—',         suffix: '',              color: '#123B5D' },
           { icon: Snowflake,     label: 'Dispositivos activos', value: dash.isLoading ? '…' : active ?? '—',        suffix: total !== null && active !== null ? `/ ${total}` : '',   color: '#16835B' },
           { icon: AlertTriangle, label: 'Alertas activas',      value: dash.isLoading ? '…' : totalAlerts ?? '—',   suffix: '',              color: '#C47A00' },
-          { icon: AlertTriangle, label: 'Alertas críticas',     value: dash.isLoading ? '…' : criticalAlerts,       suffix: '',              color: '#C83B3B' },
+           { icon: AlertTriangle, label: 'Alertas críticas',     value: dash.isLoading ? '…' : criticalAlerts ?? '—', suffix: '',              color: '#C83B3B' },
         ].map(m => (
           <Col key={m.label} xs={6} xl={3}>
             <Card className="cc-stat-card h-100 p-1">
@@ -382,7 +382,7 @@ export function DashboardView() {
         <div className="d-flex justify-content-between align-items-center border-bottom px-4 py-3">
           <div className="d-flex align-items-center gap-2">
             <Activity size={17} style={{ color: '#1F6F8B' }} />
-            <h2 className="mb-0 fw-semibold" style={{ fontSize: 15 }}>Estado QoS</h2>
+            <h2 className="mb-0 fw-semibold" style={{ fontSize: 15 }}>Métricas QoS de demostración</h2>
           </div>
           <button
             onClick={() => navigate('/app/qos')}

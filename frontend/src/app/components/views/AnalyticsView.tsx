@@ -13,7 +13,7 @@ import {
   SensorCondition,
 } from '../../types/experiments';
 import {
-  sumMetric,
+  sumMetricOrNull,
   avgMetric,
   maxMetric,
   seriesByElapsed,
@@ -92,10 +92,12 @@ function qosLabel(key: QosMetricKey): string {
   return QOS_METRIC_OPTIONS.find(o => o.key === key)?.label ?? key;
 }
 
-function qosValue(p: QosTrendPoint, key: QosMetricKey): number {
+function qosValue(p: QosTrendPoint, key: QosMetricKey): number | null {
   // Latencia/jitter se grafican en ms (el backend los persiste en segundos).
-  if (key === 'latency') return secondsToMs(p.avg_latency);
-  if (key === 'jitter') return secondsToMs(p.avg_jitter);
+  // Un agregado NULL significa «sin muestras medibles»: se conserva como null
+  // para que la serie deje un hueco, en vez de convertir null*1000 en 0.
+  if (key === 'latency') return p.avg_latency === null ? null : secondsToMs(p.avg_latency);
+  if (key === 'jitter') return p.avg_jitter === null ? null : secondsToMs(p.avg_jitter);
   if (key === 'packet_loss') return p.avg_packet_loss;
   if (key === 'throughput') return p.avg_throughput;
   return p.avg_pdr;
@@ -105,6 +107,20 @@ function qosFormat(key: QosMetricKey, v: number): string {
   if (key === 'latency' || key === 'jitter') return formatMsValue(v);
   if (key === 'throughput') return formatThroughput(v);
   return `${v.toFixed(1)} %`;
+}
+
+// Valores opcionales del esquema QoS v2: null = no medible → «—».
+function nullableSecondsMs(v: number | null): string {
+  return v === null ? '—' : formatMs(v);
+}
+function nullableMs(v: number | null | undefined): string {
+  return v === null || v === undefined ? '—' : formatMsValue(v);
+}
+function nullablePct(v: number | null): string {
+  return v === null ? '—' : v.toFixed(1);
+}
+function nullableThroughput(v: number | null): string {
+  return v === null ? '—' : formatThroughput(v);
 }
 
 const ALERT_TYPE_COLORS: Record<string, string> = {
@@ -200,6 +216,7 @@ export function AnalyticsView() {
   const withQosMetrics = withQosRun ? metrics.filter(m => m.run_id === withQosRun.id) : [];
   const withoutQosMetrics = withoutQosRun ? metrics.filter(m => m.run_id === withoutQosRun.id) : [];
   const [metricsReady, setMetricsReady] = useState<Record<string, boolean>>({});
+  const [metricsError, setMetricsError] = useState<string | null>(null);
   const showNoMetricsNote =
     !!withQosRun &&
     !!withoutQosRun &&
@@ -212,18 +229,21 @@ export function AnalyticsView() {
     const ids = [withQosRun?.id, withoutQosRun?.id].filter((id): id is string => !!id);
     if (ids.length === 0) return;
     let cancelled = false;
+    setMetricsError(null);
     setMetricsReady(prev => {
       const next = { ...prev };
       for (const id of ids) if (!(id in next)) next[id] = false;
       return next;
     });
-    Promise.all(ids.map(id => fetchMetrics(id).catch(() => undefined))).then(() => {
+    Promise.all(ids.map(id => fetchMetrics(id))).then(() => {
       if (cancelled) return;
       setMetricsReady(prev => {
         const next = { ...prev };
         for (const id of ids) next[id] = true;
         return next;
       });
+    }).catch((err: unknown) => {
+      if (!cancelled) setMetricsError(err instanceof Error ? err.message : 'No se pudieron cargar las métricas.');
     });
     return () => {
       cancelled = true;
@@ -237,12 +257,12 @@ export function AnalyticsView() {
   const [qosMetric, setQosMetric] = useState<QosMetricKey>('latency');
 
   const persistData = mergeLineSeries(
-    withQosRun ? seriesByElapsed(metrics, 'ingest_to_persist_ms', withQosRun.started_at) : [],
-    withoutQosRun ? seriesByElapsed(metrics, 'ingest_to_persist_ms', withoutQosRun.started_at) : [],
+    withQosRun ? seriesByElapsed(withQosMetrics, 'ingest_to_persist_ms', withQosRun.started_at) : [],
+    withoutQosRun ? seriesByElapsed(withoutQosMetrics, 'ingest_to_persist_ms', withoutQosRun.started_at) : [],
   );
   const alertData = mergeLineSeries(
-    withQosRun ? seriesByElapsed(metrics, 'ingest_to_alert_ms', withQosRun.started_at) : [],
-    withoutQosRun ? seriesByElapsed(metrics, 'ingest_to_alert_ms', withoutQosRun.started_at) : [],
+    withQosRun ? seriesByElapsed(withQosMetrics, 'ingest_to_alert_ms', withQosRun.started_at) : [],
+    withoutQosRun ? seriesByElapsed(withoutQosMetrics, 'ingest_to_alert_ms', withoutQosRun.started_at) : [],
   );
 
   return (
@@ -254,7 +274,7 @@ export function AnalyticsView() {
 
       {/* ─── Estado actual QoS — datos en vivo (TSK-050; análisis histórico → TSK-052) ─── */}
       <h2 className="small fw-semibold text-muted text-uppercase mb-3" style={{ letterSpacing: '0.06em' }}>
-        Estado actual QoS
+        Métricas de demostración QoS
       </h2>
 
       {(qosLive.isAuthBlocked || qosLive.isConfigMissing) && !qosLive.isLoading && (
@@ -323,18 +343,27 @@ export function AnalyticsView() {
                   <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Pérdida (%)</th>
                   <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>PDR (%)</th>
                   <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Throughput (B/s)</th>
+                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Espera cola (ms)</th>
+                  <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Atención (ms)</th>
                   <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Fecha</th>
                 </tr>
               </thead>
               <tbody>
                 {qosLive.recent.map((r, i) => (
                   <tr key={r.id} style={{ borderTop: '1px solid #EFF4F7', background: i % 2 === 1 ? '#FAFBFC' : '#fff' }}>
-                    <td className="px-4 py-3">{formatMs(r.latency)}</td>
-                    <td className="px-4 py-3">{formatMs(r.jitter)}</td>
-                    <td className="px-4 py-3">{r.packet_loss.toFixed(1)}</td>
-                    <td className="px-4 py-3">{r.pdr.toFixed(1)}</td>
-                    <td className="px-4 py-3">{formatThroughput(r.throughput)}</td>
-                    <td className="px-4 py-3 text-muted font-monospace" style={{ fontSize: 12 }}>{formatTs(r.timestamp)}</td>
+                    <td className="px-4 py-3">{nullableSecondsMs(r.latency)}</td>
+                    <td className="px-4 py-3">{nullableSecondsMs(r.jitter)}</td>
+                    <td className="px-4 py-3">{nullablePct(r.packet_loss)}</td>
+                    <td className="px-4 py-3">{nullablePct(r.pdr)}</td>
+                    <td className="px-4 py-3">{nullableThroughput(r.throughput)}</td>
+                    <td className="px-4 py-3">{nullableMs(r.queue_wait_ms)}</td>
+                    <td className="px-4 py-3">{nullableMs(r.service_time_ms)}</td>
+                    <td className="px-4 py-3 text-muted font-monospace" style={{ fontSize: 12 }}>
+                      {formatTs(r.timestamp)}
+                      {r.processing_version === 1 && (
+                        <span className="text-muted" style={{ fontSize: 11 }}> · legado</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -409,13 +438,14 @@ export function AnalyticsView() {
         </Card.Body>
       </Card>
 
-      {showNoMetricsNote && (
+      {metricsError && <div className="alert alert-warning">{metricsError}</div>}
+      {showNoMetricsNote && !metricsError && (
         <div className="p-3 rounded-3 mb-4 text-center text-muted small" style={{ background: '#F5F8FA', border: '1px dashed #D9E2E8' }}>
           Las ejecuciones seleccionadas no tienen métricas registradas.
         </div>
       )}
 
-      {withQosRun && withoutQosRun ? (
+      {withQosRun && withoutQosRun && !metricsError ? (
         <>
           <div className="mb-4">
             <h3 className="mb-3" style={{ fontSize: 14, fontWeight: 600 }}>Resumen comparativo</h3>
@@ -425,8 +455,8 @@ export function AnalyticsView() {
                   <MetricComparisonCard
                     label={METRIC_LABELS[type]}
                     unit={METRIC_UNITS[type]}
-                    withQosValue={sumMetric(withQosMetrics, type)}
-                    withoutQosValue={sumMetric(withoutQosMetrics, type)}
+                    withQosValue={sumMetricOrNull(withQosMetrics, type)}
+                    withoutQosValue={sumMetricOrNull(withoutQosMetrics, type)}
                     higherIsBetter={type === 'readings_persisted' || type === 'messages_received'}
                   />
                 </Col>
@@ -481,7 +511,8 @@ export function AnalyticsView() {
           <CountMetricsBarChart withQosRun={withQosRun} withoutQosRun={withoutQosRun} allMetrics={metrics} />
 
           <p className="small text-muted mt-3 mb-0">
-            Nota: Sin priorización no utiliza clasificación, colas FIFO/RR/WFQ ni métricas QoS; las diferencias reflejan el impacto de la priorización en el procesamiento.
+            Sin priorización usa una FIFO de referencia sin clasificación. Ambos escenarios miden espera y atención.
+            «—» indica ausencia de muestras; el legado no demuestra despacho v2. Una diferencia por sí sola no prueba causalidad.
           </p>
         </>
       ) : (
@@ -627,7 +658,7 @@ export function AnalyticsView() {
 
       {/* Evolución QoS (GET /history/qos/trends) */}
       <Card className="cc-card mb-4">
-        <div className="cc-card-header">Evolución QoS — {hist.rangeLabel.toLowerCase()}</div>
+        <div className="cc-card-header">Evolución QoS v2 — {hist.rangeLabel.toLowerCase()}</div>
         <Card.Body>
           <div className="d-flex flex-wrap gap-2 mb-3">
             {QOS_METRIC_OPTIONS.map(o => (
@@ -659,7 +690,7 @@ export function AnalyticsView() {
                 <XAxis dataKey="t" tick={TICK_STYLE} interval="preserveStartEnd" minTickGap={48} />
                 <YAxis tick={TICK_STYLE} />
                 <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => v === null || v === undefined ? '—' : qosFormat(qosMetric, Number(v))} />
-                <Line type="monotone" dataKey="v" name={qosLabel(qosMetric)} stroke="#123B5D" strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
+                <Line type="monotone" dataKey="v" name={qosLabel(qosMetric)} stroke="#123B5D" strokeWidth={2} dot={{ r: 2 }} connectNulls={false} isAnimationActive={false} />
               </LineChart>
             </ResponsiveContainer>
           )}
@@ -784,7 +815,7 @@ export function AnalyticsView() {
                     ))}
                   </div>
                   <p className="text-muted mt-4 mb-0" style={{ fontSize: 11 }}>
-                    Total: {priorityEntries(hist.summary).reduce((s, p) => s + p.value, 0)} mensajes clasificados
+                    Total: {priorityEntries(hist.summary).reduce((s, p) => s + p.value, 0)} clasificaciones (incluye legado)
                   </p>
                 </>
               )}
@@ -816,7 +847,7 @@ export function AnalyticsView() {
                     </BarChart>
                   </ResponsiveContainer>
                   <p className="text-muted mt-2 mb-0" style={{ fontSize: 11 }}>
-                    Total: {queueEntries(hist.summary).reduce((s, p) => s + p.value, 0)} mensajes clasificados
+                    Total: {queueEntries(hist.summary).reduce((s, p) => s + p.value, 0)} clasificaciones (incluye legado)
                   </p>
                 </>
               )}

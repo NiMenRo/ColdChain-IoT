@@ -20,10 +20,14 @@ import { apiFetch } from './client';
 
 export interface HistorySummary {
   total_devices: number;
+  active_devices: number;
+  error_devices: number;
   total_readings: number;
   total_classifications: number;
   total_qos_metrics: number;
   total_alerts: number;
+  active_alerts: number;
+  critical_active_alerts: number;
   total_predictions: number;
   alerts_by_type: Record<string, number>;
   readings_by_device: Record<string, number>;
@@ -123,10 +127,13 @@ export interface HistoryReading {
   device_id: string;
   temperature: number | null;
   humidity: number | null;
-  /** 'on' | 'off' | null (NULL = sensor no habilitado). Nunca se deriva de status. */
+  /** NULL = sin valor en esta fila (también sensores hermanos en v2), no sensor deshabilitado. */
   energy: 'on' | 'off' | null;
   timestamp: string;
   run_id: string | null;
+  processing_version: 1 | 2;
+  source_message_id: string | null;
+  sensor_name: 'temperature' | 'humidity' | 'energy' | null;
 }
 
 export interface HistoryReadingListResponse {
@@ -143,10 +150,12 @@ export async function apiGetReadings(params?: {
   page?: number;
   per_page?: number;
   run_id?: string;
+  processing_version?: 1 | 2;
 }): Promise<HistoryReadingListResponse> {
   const qs = new URLSearchParams();
   if (params?.device_code) qs.set('device_code', params.device_code);
   if (params?.run_id) qs.set('run_id', params.run_id);
+  if (params?.processing_version) qs.set('processing_version', String(params.processing_version));
   qs.set('sort', params?.sort ?? 'timestamp.desc');
   qs.set('page', String(params?.page ?? 1));
   qs.set('per_page', String(params?.per_page ?? 20));
@@ -182,17 +191,27 @@ export async function apiGetDeviceHistory(
   return apiFetch<DeviceHistoryResponse>(`/history/devices/${encodeURIComponent(deviceCode)}/history?${qs.toString()}`);
 }
 
+export type DeviceLatestValues = Record<'temperature' | 'humidity' | 'energy', HistoryReading | null>;
+
+/** Última fila no NULL por sensor, sin limitarse a la página de historial. */
+export async function apiGetDeviceLatestValues(deviceCode: string): Promise<DeviceLatestValues> {
+  return apiFetch<DeviceLatestValues>(`/history/devices/${encodeURIComponent(deviceCode)}/latest-values`);
+}
+
 // ─── Tendencias QoS (promedios calculados por el backend) ────────────────────
+// v2 permite métricas no medibles: avg sobre un bucket con todos los valores
+// NULL devuelve NULL. El consumidor debe tratar null como «no disponible»,
+// nunca multiplicarlo/convertirlo en 0.
 
 export interface QosTrendPoint {
   bucket: string;
-  avg_latency: number;
-  min_latency: number;
-  max_latency: number;
-  avg_packet_loss: number;
-  avg_throughput: number;
-  avg_pdr: number;
-  avg_jitter: number;
+  avg_latency: number | null;
+  min_latency: number | null;
+  max_latency: number | null;
+  avg_packet_loss: number | null;
+  avg_throughput: number | null;
+  avg_pdr: number | null;
+  avg_jitter: number | null;
 }
 
 export async function apiGetQosTrends(
@@ -209,16 +228,25 @@ export async function apiGetQosTrends(
 }
 
 // ─── Métricas QoS persistidas (listado crudo; agregados → TSK-052) ──────────
+// Desde el esquema v2 las métricas de calidad pueden ser NULL (no medibles) y
+// se añaden marcas temporales y duraciones de despacho. `processing_version=1`
+// identifica filas legadas; en ellas los campos de despacho son NULL.
 
 export interface QosRecord {
   id: string;
   classification_id: string;
-  latency: number;
-  packet_loss: number;
-  throughput: number;
-  pdr: number;
-  jitter: number;
+  latency: number | null;
+  packet_loss: number | null;
+  throughput: number | null;
+  pdr: number | null;
+  jitter: number | null;
   timestamp: string;
+  processing_version?: number;
+  selected_at?: string | null;
+  persisted_at?: string | null;
+  finished_at?: string | null;
+  queue_wait_ms?: number | null;
+  service_time_ms?: number | null;
 }
 
 export interface QosRecordListResponse {

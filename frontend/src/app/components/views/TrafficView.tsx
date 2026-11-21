@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Cell, Tooltip, ResponsiveContainer, PieChart, Pie, LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { Info } from 'lucide-react';
 import { Card, Row, Col } from '../../lib/bootstrap';
@@ -6,11 +6,27 @@ import { formatTs } from '../../hooks/useAlertsData';
 import { useTrafficData } from '../../hooks/useTrafficData';
 import { useHistoricalAnalytics } from '../../hooks/useHistoricalAnalytics';
 import { useLiveQueues } from '../../hooks/useLiveQueues';
+import { useQosRuntime } from '../../hooks/useQosRuntime';
 import { useExperiments } from '../../contexts/ExperimentContext';
 import { RunScopeSelector } from '../RunScopeSelector';
 
 const TICK_STYLE   = { fill: '#52616B', fontSize: 11 };
 const TOOLTIP_STYLE = { border: '1px solid #D9E2E8', borderRadius: '4px', fontSize: '12px' };
+
+function RuntimeStat({ label, value, sub }: { label: string; value: ReactNode; sub?: string }) {
+  return (
+    <div className="p-3 rounded-3 h-100" style={{ background: '#fff', border: '1px solid #EFF4F7' }}>
+      <div className="text-muted" style={{ fontSize: 11 }}>{label}</div>
+      <div className="fw-bold" style={{ fontSize: 20, color: '#123B5D', margin: '2px 0' }}>{value}</div>
+      {sub && <div className="text-muted" style={{ fontSize: 11 }}>{sub}</div>}
+    </div>
+  );
+}
+
+/** Contador opcional: null/undefined = no disponible, nunca cero inventado. */
+function runtimeCount(value: number | null | undefined): string {
+  return value === null || value === undefined ? '—' : String(value);
+}
 
 export function TrafficView() {
   // Ámbito por ejecución (null = global, incluye legado). El backend filtra
@@ -23,6 +39,12 @@ export function TrafficView() {
   // muestra paginada acotada; los agregados vienen de /history/summary.
   const hist = useHistoricalAnalytics(runId);
   const live = useLiveQueues();
+  const runtime = useQosRuntime();
+  const dispatch = runtime.runtime?.dispatch ?? null;
+  const transport = runtime.runtime?.transport ?? null;
+  const qosConfig = runtime.runtime?.config ?? null;
+  const quotas = qosConfig?.class_quotas;
+  const runtimeQueues = dispatch?.queues ?? {};
   const critEvolution = [...hist.classSample]
     .sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1))
     .map(c => {
@@ -37,8 +59,8 @@ export function TrafficView() {
     <div>
       <h1 className="mb-1" style={{ fontSize: 20, fontWeight: 600 }}>Clasificación de Tráfico</h1>
       <p className="text-muted small mb-1">
-        Distribución y análisis de mensajes por prioridad y cola de procesamiento.
-        Cada mensaje persiste una sola clasificación (representante).
+        Distribución y análisis por prioridad y cola de procesamiento.
+        En v2 cada lectura de sensor se clasifica y atiende independientemente; el histórico puede incluir legado.
       </p>
       <div className="mb-3">
         <RunScopeSelector id="traffic-run-scope" runs={runs} value={runId} onChange={setRunId} />
@@ -90,7 +112,7 @@ export function TrafficView() {
                 <code style={{ fontSize: 12, color: row.color }}>{row.queue}</code>
               </div>
               <div style={{ fontSize: 28, fontWeight: 700, color: row.color }}>{row.count}</div>
-              <div style={{ fontSize: 12, color: row.color }}>mensajes ({row.pct.toFixed(1)}%)</div>
+              <div style={{ fontSize: 12, color: row.color }}>clasificaciones ({row.pct.toFixed(1)}%)</div>
             </div>
           </Col>
         ))}
@@ -105,7 +127,7 @@ export function TrafficView() {
               <tr style={{ background: '#F5F8FA' }}>
                 <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Prioridad</th>
                 <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Cola</th>
-                    <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Mensajes</th>
+                    <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Clasificaciones</th>
                 <th className="px-4 py-3 text-start fw-semibold" style={{ color: '#52616B', fontSize: 12 }}>Descripción</th>
               </tr>
             </thead>
@@ -136,7 +158,7 @@ export function TrafficView() {
             </tbody>
           </table>
           <div className="px-4 py-2 border-top small text-muted">
-            Total: {data.isLoading ? '…' : total} mensajes clasificados{runId ? ' en la ejecución seleccionada' : ' (todas las ejecuciones)'}.
+            Total: {data.isLoading ? '…' : total} clasificaciones{runId ? ' en la ejecución seleccionada' : ' (todas las ejecuciones, incluye legado)'}.
           </div>
         </div>
       </Card>
@@ -145,11 +167,11 @@ export function TrafficView() {
           schedulers en memoria. No pertenece a ninguna ejecución: se vacía al
           reiniciar el backend. Se actualiza cada 10 s. */}
       <Card className="cc-card mb-4">
-        <div className="cc-card-header">Colas en vivo — FIFO / Round Robin / WFQ</div>
+        <div className="cc-card-header">Colas de demostración — FIFO / Round Robin / WFQ</div>
         <div className="px-4 pt-2">
           <p className="text-muted mb-2" style={{ fontSize: 11 }}>
-            Contenido actual de las colas en memoria (todas las ejecuciones y tráfico manual).
-            No es histórico: al reiniciar el backend vuelve a cero.
+            Planner demostrativo de /qos/plan y /qos/queues: no son los pendientes de telemetría.
+            No determina la atención productiva. Al reiniciar el backend vuelve a cero.
           </p>
         </div>
         {live.isLoading ? (
@@ -195,6 +217,129 @@ export function TrafficView() {
               Total encolado ahora: {live.total} mensajes.
             </div>
           </div>
+        )}
+      </Card>
+
+      {/* Despacho productivo (GET /qos/runtime): estado real del coordinador
+          que admite y atiende lecturas. No es la misma fuente que las colas de
+          demostración de arriba; se muestran por separado para no mezclar
+          semánticas. «—» significa no disponible, nunca cero inventado. */}
+      <Card className="cc-card mb-4">
+        <div className="cc-card-header">Despacho productivo — runtime</div>
+        <div className="px-4 pt-2">
+          <p className="text-muted mb-2" style={{ fontSize: 11 }}>
+            Estado del coordinador que admite y atiende lecturas (GET /qos/runtime).
+            Es independiente de las colas de demostración anteriores; los valores
+            volátiles se reinician al reiniciar el backend.
+          </p>
+        </div>
+        {runtime.status === 'loading' ? (
+          <div className="p-4 small text-muted">Cargando estado del despacho…</div>
+        ) : runtime.status === 'error' ? (
+          <div className="p-4 small" style={{ color: '#B22F2F' }}>
+            {runtime.errorMessage ?? 'No se pudo cargar el estado del despacho.'} <button onClick={runtime.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+          </div>
+        ) : runtime.status === 'stopped' || !dispatch ? (
+          <div className="p-4 small text-muted">
+            El despacho productivo no está activo en este backend. <button onClick={runtime.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#1F6F8B', cursor: 'pointer' }}>Reintentar</button>
+          </div>
+        ) : (
+          <Card.Body>
+            <Row className="g-3">
+              <Col xs={12} sm={6} xl={3}>
+                <RuntimeStat
+                  label="Cuotas por clase (alta:media:baja)"
+                  value={`${runtimeCount(quotas?.high)} : ${runtimeCount(quotas?.medium)} : ${runtimeCount(quotas?.low)}`}
+                  sub="oportunidades por ciclo"
+                />
+              </Col>
+              <Col xs={12} sm={6} xl={3}>
+                <RuntimeStat
+                  label="Capacidad de admisión"
+                  value={runtimeCount(dispatch.capacity)}
+                  sub="lecturas pendientes máximas"
+                />
+              </Col>
+              <Col xs={12} sm={6} xl={3}>
+                <RuntimeStat
+                  label="Pendientes / en atención"
+                  value={`${runtimeCount(dispatch.pending)} / ${runtimeCount(dispatch.in_flight)}`}
+                  sub="cola de admisión productiva"
+                />
+              </Col>
+              <Col xs={12} sm={6} xl={3}>
+                <RuntimeStat
+                  label="Admitidas / rechazadas"
+                  value={`${runtimeCount(dispatch.admitted)} / ${runtimeCount(dispatch.rejected)}`}
+                  sub="rechazo observable por capacidad, cierre o drenaje"
+                />
+              </Col>
+              <Col xs={12} sm={6} xl={3}>
+                <RuntimeStat
+                  label="Completadas / fallidas"
+                  value={`${runtimeCount(dispatch.completed)} / ${runtimeCount(dispatch.failed)}`}
+                  sub="las fallidas no cuentan como persistidas"
+                />
+              </Col>
+              <Col xs={12} sm={6} xl={3}>
+                <RuntimeStat
+                  label="Colas de runtime (alta · media · baja)"
+                  value={`${runtimeCount(runtimeQueues.high)} · ${runtimeCount(runtimeQueues.medium)} · ${runtimeCount(runtimeQueues.low)}`}
+                  sub="pendientes por clase en el despacho real"
+                />
+              </Col>
+              <Col xs={12} sm={6} xl={3}>
+                <RuntimeStat
+                  label="Sin QoS pendientes"
+                  value={runtimeCount(dispatch.without_qos_pending)}
+                  sub="referencia FIFO, sin prioridad inventada"
+                />
+              </Col>
+              <Col xs={12} sm={6} xl={3}>
+                <RuntimeStat
+                  label="Cierre de admisión"
+                  value={dispatch.closed ? 'Cerrada' : 'Abierta'}
+                  sub="se cierra al apagar el pipeline"
+                />
+              </Col>
+              <Col xs={12} sm={6} xl={3}>
+                <RuntimeStat
+                  label="Drenaje"
+                  value={dispatch.draining ? 'Activo' : 'Inactivo'}
+                  sub={
+                    dispatch.draining
+                      ? `${dispatch.draining_run_id ? `run ${dispatch.draining_run_id.slice(0, 8)}…` : 'run no informado'} · ${runtimeCount(qosConfig?.timeouts?.drain_s)} s`
+                      : `espera máxima ${runtimeCount(qosConfig?.timeouts?.drain_s)} s`
+                  }
+                />
+              </Col>
+              <Col xs={12} sm={6} xl={3}>
+                <RuntimeStat
+                  label="Transporte (pendientes / capacidad)"
+                  value={`${runtimeCount(transport?.pending)} / ${runtimeCount(transport?.capacity)}`}
+                  sub="cola MQTT de ingreso"
+                />
+              </Col>
+              <Col xs={12} sm={6} xl={3}>
+                <RuntimeStat
+                  label="Rechazos de transporte"
+                  value={runtimeCount(transport?.rejected)}
+                  sub="mensajes rechazados por capacidad o drenaje"
+                />
+              </Col>
+            </Row>
+            <div className="mt-3 small">
+              <strong>Muestra de pendientes productivos</strong>
+              <span className="text-muted"> · hasta cinco por cola; no indica el orden de selección</span>
+              {(['high', 'medium', 'low', 'without_qos'] as const).map(key => (
+                <div key={key} className="mt-1 text-muted">
+                  {key === 'without_qos' ? 'Sin QoS' : key}: {dispatch.pending_sample?.[key]?.map(
+                    item => `${item.device_code}/${item.sensor_name} · #${item.sequence}`,
+                  ).join(' | ') || '—'}
+                </div>
+              ))}
+            </div>
+          </Card.Body>
         )}
       </Card>
 

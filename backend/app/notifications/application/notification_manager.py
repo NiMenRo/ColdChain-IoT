@@ -38,15 +38,13 @@ class NotificationManager:
     ) -> NotificationChannel:
         """Select the configured channel for an alert.
 
-        Local policy: high-priority alerts (criticality 8 or 9) are sent by
-        email to users with an active local session. Lower severities remain
-        in the in-app dashboard channel.
+        The production attention worker explicitly overrides dashboard/email
+        for its recipient policy. Generic callers retain their configured
+        routing instead of having it silently replaced by criticality.
         """
         self._validate_alert(alert)
         if channel_override is not None:
             return self._normalize_channel(channel_override)
-        if alert.criticality >= 8:
-            return NotificationChannel.EMAIL
         return self._channel_by_alert_type.get(
             self._normalize_alert_type(alert.type),
             self._default_channel,

@@ -3,6 +3,7 @@ import {
   Device,
   DeviceFormData,
   DeviceReadingSnapshot,
+  DeviceLatestSnapshot,
   SensorType,
   DEVICE_TYPE_LABEL,
   SENSOR_LABEL,
@@ -22,13 +23,15 @@ import {
 } from '../../services/api/bulkDevices';
 import {
   apiGetDeviceHistory,
+  apiGetDeviceLatestValues,
   apiGetReadingTrends,
   type HistoryReading,
   type ReadingTrendPoint,
 } from '../../services/api/history';
 import { usePolling, DEVICES_POLL_MS } from '../hooks/usePolling';
+import { deviceLatestSnapshot } from '../lib/deviceLatestValues';
 
-export type { Device, DeviceFormData, SensorType, DeviceReadingSnapshot };
+export type { Device, DeviceFormData, SensorType, DeviceReadingSnapshot, DeviceLatestSnapshot };
 export { DEVICE_TYPE_LABEL, SENSOR_LABEL, ALL_SENSORS };
 export type { DeviceType, DeviceStatus } from '../types/devices';
 
@@ -73,7 +76,7 @@ interface DeviceContextValue {
   /** Actualización manual inmediata (recarga completa). */
   refresh: () => void;
   getSensors: (deviceId: string) => SensorType[];
-  getReading: (deviceId: string) => DeviceReadingSnapshot | undefined;
+  getReading: (deviceId: string) => DeviceLatestSnapshot | undefined;
   getHistory: (deviceId: string) => DeviceReadingSnapshot[];
   getTrends: (deviceId: string) => ReadingTrendPoint[];
   fetchTrends: (deviceId: string) => Promise<void>;
@@ -103,6 +106,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [sensorsByDevice, setSensorsByDevice] = useState<Record<string, SensorType[]>>({});
   const [historyByDevice, setHistoryByDevice] = useState<Record<string, DeviceReadingSnapshot[]>>({});
+  const [latestByDevice, setLatestByDevice] = useState<Record<string, DeviceLatestSnapshot | undefined>>({});
   const [trendsByDevice, setTrendsByDevice] = useState<Record<string, ReadingTrendPoint[]>>({});
   const [devicesStatus, setDevicesStatus] = useState<DeviceSectionStatus>('loading');
   const [readingsStatus, setReadingsStatus] = useState<DeviceSectionStatus>('loading');
@@ -168,6 +172,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
         setDevices([]);
         setSensorsByDevice({});
         setHistoryByDevice({});
+        setLatestByDevice({});
         setDevicesStatus('error');
         setReadingsStatus('error');
         setIsAuthBlocked(apiErr?.isAuthError ?? false);
@@ -186,17 +191,19 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
       // GET /devices/{id} y GET /history/devices/{code}/history existen en el backend.
       const settled = await Promise.allSettled(
         list.map(async (d) => {
-          const [detail, history] = await Promise.all([
+          const [detail, history, latest] = await Promise.all([
             apiGetDeviceDetail(d.id),
             apiGetDeviceHistory(d.code, { page: 1, per_page: HISTORY_PER_DEVICE }),
+            apiGetDeviceLatestValues(d.code),
           ]);
-          return { device: d, sensors: detail.sensors, readings: history.results.map((r) => toSnapshot(d.id, r)) };
+          return { device: d, sensors: detail.sensors, readings: history.results.map((r) => toSnapshot(d.id, r)), latest: deviceLatestSnapshot(latest) };
         }),
       );
       if (cancelled || !mountedRef.current) return;
       busyRef.current = false;
       const sensors: Record<string, SensorType[]> = {};
       const history: Record<string, DeviceReadingSnapshot[]> = {};
+      const latest: Record<string, DeviceLatestSnapshot | undefined> = {};
       let anyOk = false;
       let sawAuth = false;
       for (const r of settled) {
@@ -204,12 +211,14 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
           anyOk = true;
           sensors[r.value.device.id] = r.value.sensors;
           history[r.value.device.id] = r.value.readings;
+          latest[r.value.device.id] = r.value.latest;
         } else if (r.reason instanceof ApiError && r.reason.isAuthError) {
           sawAuth = true;
         }
       }
       setSensorsByDevice(sensors);
       setHistoryByDevice(history);
+      setLatestByDevice(latest);
       if (!anyOk && list.length > 0) {
         if (background) {
           setRefreshError('No se pudieron actualizar las lecturas.');
@@ -243,8 +252,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
   }
 
   function getReading(deviceId: string) {
-    // results ya vienen ordenados por timestamp desc desde el backend.
-    return getHistory(deviceId)[0];
+    return latestByDevice[deviceId];
   }
 
   function getTrends(deviceId: string): ReadingTrendPoint[] {

@@ -11,7 +11,7 @@ import {
   SCENARIO_LABELS,
 } from '../../types/experiments';
 import {
-  sumMetric,
+  sumMetricOrNull,
   delta,
   deltaPercent,
   seriesByElapsed,
@@ -115,12 +115,14 @@ export function LineComparisonChart({
         <ResponsiveContainer width="100%" height={280}>
           <LineChart data={data} margin={CHART_MARGIN}>
             <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" />
-            <XAxis dataKey="elapsedMin" tick={TICK_STYLE} label={{ value: 'Minutos transcurridos', position: 'insideBottom', offset: -18, fill: '#52616B', fontSize: 11 }} />
+            <XAxis dataKey="elapsedMin" type="number" domain={['dataMin', 'dataMax']} tickFormatter={v => Number(v).toFixed(2)} tick={TICK_STYLE} label={{ value: 'Minutos transcurridos', position: 'insideBottom', offset: -18, fill: '#52616B', fontSize: 11 }} />
             <YAxis tick={TICK_STYLE} />
-            <Tooltip contentStyle={TOOLTIP_STYLE} labelFormatter={(v: number) => `${v} min`} />
+            <Tooltip contentStyle={TOOLTIP_STYLE} labelFormatter={(v: number) => `${Number(v).toFixed(4)} min`} />
             <Legend {...LEGEND_TOP_STYLE} />
-            <Line type="monotone" dataKey="withQos" name="Con priorización" stroke={SCENARIO_COLORS.WITH_QOS} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={true} />
-            <Line type="monotone" dataKey="withoutQos" name="Sin priorización" stroke={SCENARIO_COLORS.WITHOUT_QOS} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={true} />
+            {/* Runs sample at independent instants: a null from the other run
+                must not break this run's line. Only measured points have dots. */}
+            <Line type="monotone" dataKey="withQos" name="Con priorización" stroke={SCENARIO_COLORS.WITH_QOS} strokeWidth={2} dot={{ r: 2 }} isAnimationActive={false} connectNulls />
+            <Line type="monotone" dataKey="withoutQos" name="Sin priorización" stroke={SCENARIO_COLORS.WITHOUT_QOS} strokeWidth={2} dot={{ r: 2 }} isAnimationActive={false} connectNulls />
           </LineChart>
         </ResponsiveContainer>
       </Card.Body>
@@ -129,8 +131,8 @@ export function LineComparisonChart({
 }
 
 export function BacklogChart({ withQosRun, withoutQosRun, allMetrics }: { withQosRun: ExperimentRun | null; withoutQosRun: ExperimentRun | null; allMetrics: ExperimentMetric[] }) {
-  const withQosSeries = withQosRun ? seriesByElapsed(allMetrics, 'backlog', withQosRun.started_at) : [];
-  const withoutQosSeries = withoutQosRun ? seriesByElapsed(allMetrics, 'backlog', withoutQosRun.started_at) : [];
+  const withQosSeries = withQosRun ? seriesByElapsed(allMetrics.filter(m => m.run_id === withQosRun.id), 'backlog', withQosRun.started_at) : [];
+  const withoutQosSeries = withoutQosRun ? seriesByElapsed(allMetrics.filter(m => m.run_id === withoutQosRun.id), 'backlog', withoutQosRun.started_at) : [];
   const merged = mergeLineSeries(withQosSeries, withoutQosSeries);
 
   return (
@@ -140,12 +142,12 @@ export function BacklogChart({ withQosRun, withoutQosRun, allMetrics }: { withQo
         <ResponsiveContainer width="100%" height={280}>
           <LineChart data={merged} margin={CHART_MARGIN}>
             <CartesianGrid strokeDasharray="3 3" stroke="#D9E2E8" />
-            <XAxis dataKey="elapsedMin" tick={TICK_STYLE} label={{ value: 'Minutos transcurridos', position: 'insideBottom', offset: -18, fill: '#52616B', fontSize: 11 }} />
+            <XAxis dataKey="elapsedMin" type="number" domain={['dataMin', 'dataMax']} tickFormatter={v => Number(v).toFixed(2)} tick={TICK_STYLE} label={{ value: 'Minutos transcurridos', position: 'insideBottom', offset: -18, fill: '#52616B', fontSize: 11 }} />
             <YAxis tick={TICK_STYLE} />
-            <Tooltip contentStyle={TOOLTIP_STYLE} labelFormatter={(v: number) => `${v} min`} />
+            <Tooltip contentStyle={TOOLTIP_STYLE} labelFormatter={(v: number) => `${Number(v).toFixed(4)} min`} />
             <Legend {...LEGEND_TOP_STYLE} />
-            <Line type="monotone" dataKey="withQos" name="Con priorización" stroke={SCENARIO_COLORS.WITH_QOS} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={true} />
-            <Line type="monotone" dataKey="withoutQos" name="Sin priorización" stroke={SCENARIO_COLORS.WITHOUT_QOS} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={true} />
+            <Line type="monotone" dataKey="withQos" name="Con priorización" stroke={SCENARIO_COLORS.WITH_QOS} strokeWidth={2} dot={{ r: 2 }} isAnimationActive={false} connectNulls />
+            <Line type="monotone" dataKey="withoutQos" name="Sin priorización" stroke={SCENARIO_COLORS.WITHOUT_QOS} strokeWidth={2} dot={{ r: 2 }} isAnimationActive={false} connectNulls />
           </LineChart>
         </ResponsiveContainer>
       </Card.Body>
@@ -156,8 +158,8 @@ export function BacklogChart({ withQosRun, withoutQosRun, allMetrics }: { withQo
 export function CountMetricsBarChart({ withQosRun, withoutQosRun, allMetrics }: { withQosRun: ExperimentRun | null; withoutQosRun: ExperimentRun | null; allMetrics: ExperimentMetric[] }) {
   const chartData = COUNTER_METRICS.map(type => ({
     metric: METRIC_LABELS[type],
-    withQos: withQosRun ? sumMetric(allMetrics.filter(m => m.run_id === withQosRun.id), type) : 0,
-    withoutQos: withoutQosRun ? sumMetric(allMetrics.filter(m => m.run_id === withoutQosRun.id), type) : 0,
+    withQos: withQosRun ? sumMetricOrNull(allMetrics.filter(m => m.run_id === withQosRun.id), type) : null,
+    withoutQos: withoutQosRun ? sumMetricOrNull(allMetrics.filter(m => m.run_id === withoutQosRun.id), type) : null,
   }));
 
   return (

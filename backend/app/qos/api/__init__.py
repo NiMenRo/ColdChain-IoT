@@ -155,6 +155,42 @@ def get_queues(request: Request):
     return {"count": sum(len(items) for items in snapshot.values()), "queues": snapshot}
 
 
+@router.get("/runtime")
+def get_runtime(request: Request):
+    """Production dispatch state, separate from the demonstration planner.
+
+    ``/qos/plan`` and ``/qos/queues`` keep illustrating the planning
+    algorithms; this endpoint reads the live coordinator that actually
+    admits and selects telemetry.  It never consumes pending work.
+    """
+    coordinator = getattr(request.app.state, "dispatch_coordinator", None)
+    if coordinator is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Production dispatch is not running",
+        )
+
+    transport = None
+    message_queue = getattr(request.app.state, "message_queue", None)
+    if message_queue is not None:
+        try:
+            transport = {
+                "pending": len(message_queue),
+                "capacity": getattr(message_queue, "capacity", None),
+                "rejected": getattr(message_queue, "rejected", None),
+            }
+        except Exception:
+            transport = {"pending": None, "capacity": None, "rejected": None}
+
+    config = getattr(request.app.state, "backend_config", None)
+    effective_config = config.effective_qos_config() if config is not None else None
+    return {
+        "dispatch": coordinator.snapshot(),
+        "transport": transport,
+        "config": effective_config,
+    }
+
+
 @router.get("/metrics")
 def get_metrics(request: Request):
     metrics_service: QoSMetricsService = getattr(request.app.state, "qos_metrics_service", QoSMetricsService())

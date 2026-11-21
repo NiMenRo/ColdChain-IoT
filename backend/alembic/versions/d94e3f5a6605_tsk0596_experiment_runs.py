@@ -49,11 +49,15 @@ def upgrade() -> None:
     )
     op.create_index("ix_experiment_metrics_run_id", "experiment_metrics", ["run_id"])
     op.create_index("ix_experiment_metrics_timestamp", "experiment_metrics", ["timestamp"])
-    op.add_column("sensor_readings", sa.Column("run_id", sa.UUID(), nullable=True))
-    op.create_foreign_key("fk_sensor_readings_run_id", "sensor_readings", "experiment_runs", ["run_id"], ["id"])
+    with op.batch_alter_table("sensor_readings") as batch_op:
+        batch_op.add_column(sa.Column("run_id", sa.UUID(), nullable=True))
+        batch_op.create_foreign_key(
+            "fk_sensor_readings_run_id", "experiment_runs", ["run_id"], ["id"]
+        )
     op.create_index("ix_sensor_readings_run_id", "sensor_readings", ["run_id"])
-    op.add_column("alerts", sa.Column("run_id", sa.UUID(), nullable=True))
-    op.create_foreign_key("fk_alerts_run_id", "alerts", "experiment_runs", ["run_id"], ["id"])
+    with op.batch_alter_table("alerts") as batch_op:
+        batch_op.add_column(sa.Column("run_id", sa.UUID(), nullable=True))
+        batch_op.create_foreign_key("fk_alerts_run_id", "experiment_runs", ["run_id"], ["id"])
     op.create_index("ix_alerts_run_id", "alerts", ["run_id"])
 
 

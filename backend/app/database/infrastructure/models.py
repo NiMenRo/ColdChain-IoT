@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.database.infrastructure.base import Base
@@ -15,11 +15,17 @@ EXPERIMENT_METRIC_TYPES = frozenset(
     {
         "messages_received",
         "messages_invalid",
+        "messages_rejected_transport",
         "readings_persisted",
         "alerts_generated",
         "backlog",
         "ingest_to_persist_ms",
         "ingest_to_alert_ms",
+        "readings_admitted",
+        "readings_rejected",
+        "readings_failed",
+        "queue_wait_ms",
+        "service_time_ms",
     }
 )
 VALID_USER_ROLES = HUMAN_USER_ROLES | {TECHNICAL_USER_ROLE}
@@ -107,6 +113,11 @@ class SensorReadingORM(Base):
     run_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("experiment_runs.id"), nullable=True, index=True
     )
+    # Dispatch v2 fields. Legacy aggregated rows remain version 1 with these
+    # per-sensor identifiers absent.
+    source_message_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    sensor_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    processing_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     device: Mapped[DeviceORM] = relationship(back_populates="sensor_readings")
     traffic_classification: Mapped[TrafficClassificationORM | None] = relationship(
@@ -164,12 +175,18 @@ class QoSMetricORM(Base):
     classification_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("traffic_classifications.id"), nullable=False
     )
-    latency: Mapped[float] = mapped_column(Float, nullable=False)
-    packet_loss: Mapped[float] = mapped_column(Float, nullable=False)
-    throughput: Mapped[float] = mapped_column(Float, nullable=False)
-    pdr: Mapped[float] = mapped_column(Float, nullable=False)
-    jitter: Mapped[float] = mapped_column(Float, nullable=False)
+    latency: Mapped[float | None] = mapped_column(Float, nullable=True)
+    packet_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    throughput: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pdr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    jitter: Mapped[float | None] = mapped_column(Float, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    processing_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    persisted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    queue_wait_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    service_time_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     classification: Mapped[TrafficClassificationORM] = relationship(back_populates="qos_metrics")
 
@@ -275,6 +292,9 @@ class AlertORM(Base):
     # TSK-059.6 — NULL means legacy alert outside any experiment run.
     run_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("experiment_runs.id"), nullable=True, index=True
+    )
+    reading_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("sensor_readings.id"), nullable=True, index=True
     )
 
     device: Mapped[DeviceORM] = relationship(back_populates="alerts")
@@ -451,7 +471,9 @@ class ExperimentMetricORM(Base):
     __table_args__ = (
         CheckConstraint(
             "metric_type IN ('messages_received','messages_invalid','readings_persisted',"
-            "'alerts_generated','backlog','ingest_to_persist_ms','ingest_to_alert_ms')",
+            "'alerts_generated','backlog','ingest_to_persist_ms','ingest_to_alert_ms',"
+            "'readings_admitted','readings_rejected','readings_failed','queue_wait_ms',"
+            "'service_time_ms','messages_rejected_transport')",
             name="ck_experiment_metrics_type",
         ),
     )

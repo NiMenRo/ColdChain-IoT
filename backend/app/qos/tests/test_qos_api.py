@@ -2,6 +2,7 @@ import sys
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -12,8 +13,10 @@ from app.auth.dependencies import AuthenticatedUser, get_current_user
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from app.qos.api import router
+from app.qos.application.dispatcher import DispatchCoordinator
 from app.qos.application.qos_metrics_service import QoSMetricsService
 from app.qos.application.traffic_planning_service import TrafficPlanningService
+from app.acquisition.message_queue import MessageQueue
 
 
 class QoSApiTests(unittest.TestCase):
@@ -93,6 +96,47 @@ class QoSApiTests(unittest.TestCase):
         }
         response = self.client.post("/qos/plan", json=payload)
         self.assertEqual(response.status_code, 422)
+
+    def test_runtime_endpoint_requires_a_running_dispatch(self):
+        response = self.client.get("/qos/runtime")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("not running", response.json()["detail"])
+
+    def test_runtime_endpoint_reports_dispatch_transport_and_config(self):
+        queue = MessageQueue(1)
+        self.assertTrue(queue.append({"n": 1}))
+        self.assertFalse(queue.append({"n": 2}))
+        self.app.state.message_queue = queue
+        self.app.state.backend_config = SimpleNamespace(
+            effective_qos_config=lambda: {
+                "class_quotas": {"high": 4, "medium": 2, "low": 1},
+                "timeouts": {"drain_s": 30.0},
+            }
+        )
+        self.app.state.dispatch_coordinator = DispatchCoordinator(
+            TrafficPlanningService(), capacity=7
+        )
+
+        response = self.client.get("/qos/runtime")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["dispatch"]["capacity"], 7)
+        self.assertEqual(body["dispatch"]["pending"], 0)
+        self.assertEqual(body["dispatch"]["rejected"], 0)
+        self.assertEqual(body["dispatch"]["draining"], False)
+        self.assertEqual(body["transport"], {"pending": 1, "capacity": 1, "rejected": 1})
+        self.assertEqual(body["config"]["class_quotas"], {"high": 4, "medium": 2, "low": 1})
+        self.assertEqual(body["config"]["timeouts"], {"drain_s": 30.0})
+
+    def test_runtime_endpoint_does_not_consume_pending_work(self):
+        self.app.state.dispatch_coordinator = DispatchCoordinator(
+            TrafficPlanningService(), capacity=7
+        )
+        first = self.client.get("/qos/runtime").json()["dispatch"]["pending"]
+        second = self.client.get("/qos/runtime").json()["dispatch"]["pending"]
+        self.assertEqual(first, 0)
+        self.assertEqual(second, 0)
 
 
 if __name__ == "__main__":

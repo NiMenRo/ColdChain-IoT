@@ -108,9 +108,11 @@ def upgrade() -> None:
                         f"'{condition}'; fix data manually before upgrading"
                     )
     for table, name, expression in _CHECKS:
-        op.create_check_constraint(name, table, expression)
+        with op.batch_alter_table(table) as batch_op:
+            batch_op.create_check_constraint(name, expression)
 
 
 def downgrade() -> None:
     for table, name, _expression in reversed(_CHECKS):
-        op.drop_constraint(name, table, type_="check")
+        with op.batch_alter_table(table) as batch_op:
+            batch_op.drop_constraint(name, type_="check")

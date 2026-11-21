@@ -49,24 +49,27 @@ def upgrade() -> None:
                     "Please fix manually before retrying."
                 )
 
-    # — Constraints (UNIQUE already creates btree index in PG, do not create extra index) —
-    op.create_unique_constraint("uq_devices_code", "devices", ["code"])
-    op.create_unique_constraint("uq_users_email", "users", ["email"])
-    op.create_check_constraint(
-        "ck_devices_status",
-        "devices",
-        "status IN ('active','inactive','maintenance','error')",
-    )
-    op.create_check_constraint(
-        "ck_devices_device_type",
-        "devices",
-        "device_type IN ('cold_room','refrigerated_showcase')",
-    )
+    # Batch mode uses SQLite's copy-and-move strategy while retaining normal
+    # ALTER behavior on PostgreSQL.
+    with op.batch_alter_table("devices") as batch_op:
+        batch_op.create_unique_constraint("uq_devices_code", ["code"])
+        batch_op.create_check_constraint(
+            "ck_devices_status",
+            "status IN ('active','inactive','maintenance','error')",
+        )
+        batch_op.create_check_constraint(
+            "ck_devices_device_type",
+            "device_type IN ('cold_room','refrigerated_showcase')",
+        )
+    with op.batch_alter_table("users") as batch_op:
+        batch_op.create_unique_constraint("uq_users_email", ["email"])
 
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_constraint("ck_devices_device_type", "devices", type_="check")
-    op.drop_constraint("ck_devices_status", "devices", type_="check")
-    op.drop_constraint("uq_users_email", "users", type_="unique")
-    op.drop_constraint("uq_devices_code", "devices", type_="unique")
+    with op.batch_alter_table("devices") as batch_op:
+        batch_op.drop_constraint("ck_devices_device_type", type_="check")
+        batch_op.drop_constraint("ck_devices_status", type_="check")
+        batch_op.drop_constraint("uq_devices_code", type_="unique")
+    with op.batch_alter_table("users") as batch_op:
+        batch_op.drop_constraint("uq_users_email", type_="unique")

@@ -35,7 +35,7 @@ const ExperimentContext = createContext<ExperimentContextValue | null>(null);
 
 function toErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
-    if (err.status === 409) return 'Ya hay una ejecución activa en el backend. Finalícela antes de iniciar otra.';
+    if (err.status === 409) return 'Hay una ejecución activa o un drenaje en curso en el backend. Espere a que termine antes de iniciar otra.';
     if (err.status === 403) return 'Sin permiso: iniciar/finalizar ejecuciones requiere rol administrador.';
     if (err.status === 404) return 'La ejecución ya no existe en el backend.';
     if (err.status === 400) return 'Escenario inválido para el backend.';
@@ -96,13 +96,18 @@ export function ExperimentProvider({ children }: { children: ReactNode }) {
 
   const fetchMetrics = useCallback(async (runId: string) => {
     // Recorre todas las páginas (tope de seguridad): los totales del run
-    // deben reflejar todas las muestras, no solo las primeras 100.
+    // deben reflejar todas las muestras, no solo las primeras 100. Desde v2
+    // cada lectura puede aportar varias métricas de despacho (admisión,
+    // espera, atención, fallo), así que el tope es más alto que el original.
     const incoming: ExperimentMetric[] = [];
     let page = 1;
     for (;;) {
       const res = await apiGetRunMetrics(runId, { page, per_page: 100 });
       incoming.push(...res.results);
-      if (res.results.length === 0 || incoming.length >= res.total || incoming.length >= 1000 || page >= 10) break;
+      if (incoming.length >= res.total) break;
+      if (res.results.length === 0 || incoming.length >= 10000 || page >= 100) {
+        throw new Error('Métricas incompletas: se alcanzó el límite de paginación. No se publican totales parciales.');
+      }
       page += 1;
     }
     setMetrics((prev) => {

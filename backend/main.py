@@ -1,4 +1,5 @@
 import logging
+from collections import deque
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
@@ -65,11 +66,22 @@ async def lifespan(app: FastAPI):
 
     app.state.mqtt_client = mqtt_client
     app.state.message_queue = message_queue
+    # Effective runtime policy (quotas, capacities, WFQ weights) consumed by
+    # the production dispatch coordinator.
+    app.state.backend_config = config
+    # Build the production coordinator eagerly so runtime observability is
+    # available before the first message; the worker reuses this instance.
+    try:
+        from app.acquisition.pipeline import build_dispatch_coordinator
+
+        build_dispatch_coordinator(app.state)
+    except Exception:
+        logger.exception("Failed to build the dispatch coordinator")
     # Prepare a place to store classification results produced by the integration pipeline
-    app.state.classifications = []
+    app.state.classifications = deque(maxlen=config.qos_recent_trace_capacity)
     app.state.qos_service = TrafficPlanningService()
     app.state.qos_metrics_service = QoSMetricsService()
-    app.state.qos_records = []
+    app.state.qos_records = deque(maxlen=config.qos_recent_trace_capacity)
     device_mapping = None
     system_user_id = None
     threshold_config = None
@@ -132,10 +144,10 @@ async def lifespan(app: FastAPI):
         import uuid as _uuid
 
         app.state.event_processing_service.set_user_id(_uuid.UUID(system_user_id))
-    app.state.events = []
-    app.state.alerts = []
-    app.state.enriched_events = []
-    app.state.notifications = []
+    app.state.events = deque(maxlen=config.qos_recent_trace_capacity)
+    app.state.alerts = deque(maxlen=config.qos_recent_trace_capacity)
+    app.state.enriched_events = deque(maxlen=config.qos_recent_trace_capacity)
+    app.state.notifications = deque(maxlen=config.qos_recent_trace_capacity)
     try:
         from app.notifications.application import (
             AlertAcknowledgementService,
@@ -207,15 +219,16 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown pipeline and MQTT client
+    # Stop the producer before draining the transport and dispatch queues.
+    try:
+        mqtt_client.stop()
+    except Exception:
+        logger.exception("Error stopping MQTT client")
     try:
         if hasattr(app.state, "_acq_pipeline"):
             app.state._acq_pipeline.stop()
     except Exception:
         logging.getLogger(__name__).exception("Error stopping acquisition pipeline")
-
-    mqtt_client.stop()
-
 
 app = FastAPI(title="ColdChain API", lifespan=lifespan)
 
@@ -251,6 +264,13 @@ app.include_router(users_router)
 app.include_router(system_config_router)
 app.include_router(experiments_router)
 app.include_router(devices_router)
+
+
+@app.get("/acquisition/status")
+def get_acquisition_status(_current: AuthenticatedUser = Depends(authenticated)):
+    """Connection observed by the MQTT client, without exposing telemetry."""
+    client = getattr(app.state, "mqtt_client", None)
+    return {"connected": client.is_connected if client is not None else None}
 
 
 @app.get("/acquisition/messages")

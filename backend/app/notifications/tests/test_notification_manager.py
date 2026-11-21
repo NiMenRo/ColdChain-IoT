@@ -63,6 +63,14 @@ def test_manager_can_prepare_requested_delivery_state_without_sending():
     assert notification.status is NotificationStatus.FAILED
 
 
+def test_channel_override_preserves_explicit_production_policy_without_changing_defaults():
+    manager = NotificationManager(default_channel="dashboard")
+    alert = make_alert()
+    assert manager.prepare(alert).channel is NotificationChannel.DASHBOARD
+    assert manager.prepare(alert, channel_override="email").channel is NotificationChannel.EMAIL
+    assert manager.prepare(alert, channel_override="dashboard").channel is NotificationChannel.DASHBOARD
+
+
 @pytest.mark.parametrize("invalid_channel", ("whatsapp", "", 10))
 def test_manager_rejects_invalid_channel_configuration(invalid_channel):
     with pytest.raises((TypeError, ValueError)):

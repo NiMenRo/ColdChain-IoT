@@ -1,55 +1,64 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Deque, Dict, List, Optional
+from typing import Deque, Dict, List, Optional, Tuple
 
 from app.classification import PriorityLevel, TrafficClassification
-from app.qos.application.scheduler import Scheduler
+from app.qos.application.scheduler import ScheduledItem, Scheduler
+from app.qos.domain.work_item import WorkItem
 
-DEFAULT_SLOT = "default"
+FlowId = Tuple[str, str]
 
 
 class RoundRobinScheduler(Scheduler):
-    """Round Robin queue discipline for ``MEDIUM`` priority traffic.
-
-    Services its sub-queues (slots) in cyclic order, taking one element per
-    slot per rotation round.  Classification-based traffic currently arrives
-    into a single slot, so the observable behavior matches arrival order;
-    the cyclic rotation mechanism is kept prepared for a future scheduling
-    policy that defines additional slots.  Empty slots are skipped.
-    """
+    """Quantum-one Round Robin for MEDIUM work, rotating active sensor flows."""
 
     priority = PriorityLevel.MEDIUM
 
     def __init__(self) -> None:
-        self._slots: Dict[str, Deque[TrafficClassification]] = {
-            DEFAULT_SLOT: deque()
-        }
-        self._slot_names: List[str] = [DEFAULT_SLOT]
-        self._cursor: int = 0
+        self._slots: Dict[FlowId, Deque[ScheduledItem]] = {}
+        self._flow_order: Deque[FlowId] = deque()
         self.rounds: int = 0
 
     @property
-    def slot_names(self) -> List[str]:
-        """Return the names of the sub-queues the scheduler rotates over."""
-        return list(self._slot_names)
+    def slot_names(self) -> List[FlowId]:
+        """Active flows in their next-service rotation order."""
+        return list(self._flow_order)
 
-    def dequeue(self) -> Optional[TrafficClassification]:
-        for _ in range(len(self._slot_names)):
-            slot = self._slots[self._slot_names[self._cursor]]
-            if slot:
-                popped = slot.popleft()
-                self._advance_cursor()
-                return popped
-        return None
+    def dequeue(self) -> Optional[ScheduledItem]:
+        if not self._flow_order:
+            return None
+
+        flow = self._flow_order.popleft()
+        queue = self._slots[flow]
+        item = queue.popleft()
+        if queue:
+            # One quantum: an active flow returns at the tail only after its
+            # head has been selected. New flows are also appended at the tail.
+            self._flow_order.append(flow)
+        else:
+            del self._slots[flow]
+        if not self._flow_order:
+            self.rounds += 1
+        return item
 
     def size(self) -> int:
         return sum(len(slot) for slot in self._slots.values())
 
-    def _store(self, classification: TrafficClassification) -> None:
-        self._slots[DEFAULT_SLOT].append(classification)
+    def _store(self, item: ScheduledItem) -> None:
+        flow = self._flow_for(item)
+        queue = self._slots.get(flow)
+        if queue is None:
+            queue = self._slots[flow] = deque()
+            self._flow_order.append(flow)
+        queue.append(item)
 
-    def _advance_cursor(self) -> None:
-        self._cursor = (self._cursor + 1) % len(self._slot_names)
-        if self._cursor == 0:
-            self.rounds += 1
+    @staticmethod
+    def _flow_for(item: ScheduledItem) -> FlowId:
+        if isinstance(item, WorkItem):
+            return item.flow_id
+        # Classification-only planning is a legacy API demonstration. It must
+        # not create the old shared production "default" flow.
+        if isinstance(item, TrafficClassification):
+            return "__legacy__", str(item.reading_id)
+        raise TypeError("'item' must be a WorkItem or TrafficClassification instance")

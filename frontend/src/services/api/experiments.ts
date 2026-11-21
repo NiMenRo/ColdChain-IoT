@@ -7,9 +7,16 @@
 // - GET  /experiment-runs/{id}/metrics?metric_type&page&per_page → {total,…,results[{id,run_id,metric_type,value,timestamp}]}
 // Escenarios: WITH_QOS | WITHOUT_QOS. Métricas CHECK: messages_received,
 // messages_invalid, readings_persisted, alerts_generated, backlog,
-// ingest_to_persist_ms, ingest_to_alert_ms. Todo exige Bearer.
+// ingest_to_persist_ms, ingest_to_alert_ms, readings_admitted,
+// readings_rejected, readings_failed, queue_wait_ms, service_time_ms.
+// Todo exige Bearer.
 
-import type { ExperimentMetric, ExperimentRun, ExperimentScenario } from '../../app/types/experiments';
+import type {
+  ExperimentMetric,
+  ExperimentMetricType,
+  ExperimentRun,
+  ExperimentScenario,
+} from '../../app/types/experiments';
 import { apiFetch } from './client';
 
 export interface ExperimentRunListResponse {
@@ -62,9 +69,10 @@ export interface ExperimentMetricListResponse {
 
 export async function apiGetRunMetrics(
   runId: string,
-  params?: { page?: number; per_page?: number },
+  params?: { metric_type?: ExperimentMetricType; page?: number; per_page?: number },
 ): Promise<ExperimentMetricListResponse> {
   const qs = new URLSearchParams();
+  if (params?.metric_type) qs.set('metric_type', params.metric_type);
   qs.set('page', String(params?.page ?? 1));
   qs.set('per_page', String(params?.per_page ?? 100));
   return apiFetch<ExperimentMetricListResponse>(

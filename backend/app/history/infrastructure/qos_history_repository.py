@@ -26,7 +26,7 @@ class QoSHistoryRepository:
         return total, items
     def get_by_id(self, db: Session, id: UUID):
         return db.query(QoSMetricORM).filter_by(id=id).first()
-    def trends(self, db: Session, *, device_code: str | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, run_id: UUID | None = None, interval: str = "hour"):
+    def trends(self, db: Session, *, device_code: str | None = None, from_ts: datetime | None = None, to_ts: datetime | None = None, run_id: UUID | None = None, interval: str = "hour", processing_version: int = 2):
         if db.bind and db.bind.dialect.name == "sqlite":
             fmt = {"minute": "%Y-%m-%d %H:%M:00", "hour": "%Y-%m-%d %H:00:00", "day": "%Y-%m-%d 00:00:00"}.get(interval, "%Y-%m-%d %H:00:00")
             trunc = func.strftime(fmt, QoSMetricORM.timestamp)
@@ -42,6 +42,7 @@ class QoSHistoryRepository:
             func.avg(QoSMetricORM.pdr).label("avg_pdr"),
             func.avg(QoSMetricORM.jitter).label("avg_jitter"),
         ).join(TrafficClassificationORM, QoSMetricORM.classification_id == TrafficClassificationORM.id).join(SensorReadingORM, TrafficClassificationORM.reading_id == SensorReadingORM.id).join(DeviceORM, SensorReadingORM.device_id == DeviceORM.id)
+        q = q.filter(QoSMetricORM.processing_version == processing_version)
         if device_code:
             q = q.filter(DeviceORM.code == device_code)
         if run_id is not None:
