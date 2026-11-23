@@ -65,7 +65,7 @@ class TrafficPlanningServiceTests(unittest.TestCase):
         self.assertIs(self.service.dequeue(PriorityLevel.HIGH.value), first)
 
     def test_uses_custom_wfq_weight(self):
-        service = TrafficPlanningService(wfq_scheduler=__import__('app.qos.application.wfq_scheduler', fromlist=['WFQScheduler']).WFQScheduler(band_weights={"H7": 1, "H8": 2.5, "H9": 1}))
+        service = TrafficPlanningService(wfq_scheduler=__import__('app.qos.application.wfq_scheduler', fromlist=['WFQScheduler']).WFQScheduler(band_weights={"H8": 2.5, "H9": 1}))
         first = self._make_classification(PriorityLevel.HIGH.value, criticality=8.0)
         second = self._make_classification(PriorityLevel.HIGH.value, criticality=9.0)
 

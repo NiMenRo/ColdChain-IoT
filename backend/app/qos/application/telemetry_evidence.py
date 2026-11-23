@@ -151,6 +151,25 @@ def reconcile(
         received[message_id] = row
 
     matched = sent & set(received)
+    # Variation in transit time between consecutive messages in the same
+    # producer/device stream. Differences of intervals cancel a fixed clock
+    # offset; clock drift and timestamp quality still affect the result.
+    streams: dict[tuple, list[tuple[int, datetime, datetime]]] = {}
+    for message_id in matched:
+        identity = identities[message_id]
+        streams.setdefault((identity[1], identity[2]), []).append((
+            identity[3], _time(attempts[message_id]["event_at"]),
+            _time(received[message_id]["received_at"]),
+        ))
+    jitter_ms: list[float] = []
+    for rows in streams.values():
+        rows.sort(key=lambda row: row[0])
+        for previous, current in zip(rows, rows[1:]):
+            if current[0] != previous[0] + 1 or current[1] < previous[1]:
+                continue
+            send_interval = (current[1] - previous[1]).total_seconds()
+            receive_interval = (current[2] - previous[2]).total_seconds()
+            jitter_ms.append(abs(receive_interval - send_interval) * 1000)
     byte_sizes = []
     for message_id in matched:
         value = received[message_id].get("size_bytes")
@@ -250,6 +269,7 @@ def reconcile(
         "received_payload_bytes": sum(byte_sizes) if final and sent else None,
         "observed_payload_bytes": sum(byte_sizes) if attempts else None,
         "payload_goodput_bytes_per_second": sum(byte_sizes) / duration if final and sent else None,
+        "message_delay_variation_ms": _stats(jitter_ms),
         "device_to_persist_ms": _stats(persistence_ms),
         "device_to_alert_persist_ms": _stats(alert_persistence_ms),
         "device_to_persist_ms_by_sensor": {key: _stats(values) for key, values in by_sensor.items()},

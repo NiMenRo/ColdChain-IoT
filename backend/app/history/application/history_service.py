@@ -76,7 +76,7 @@ class HistoryService:
             "total_qos_metrics": qos_total.count(),
             "total_alerts": alerts.count(),
             "active_alerts": active_alerts.count(),
-            "critical_active_alerts": active_alerts.filter(AlertORM.criticality >= 7).count(),
+            "critical_active_alerts": active_alerts.filter(AlertORM.criticality >= 8).count(),
             "alerts_without_criticality": alerts.filter(AlertORM.criticality.is_(None)).count(),
             "total_predictions": preds.count(),
             "alerts_by_type": dict(alerts.with_entities(AlertORM.type, func.count()).group_by(AlertORM.type).all()),

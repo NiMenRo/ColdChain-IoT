@@ -72,7 +72,7 @@ class QoSApiTests(unittest.TestCase):
         payload = {
             "id": "53b9831e-00af-454f-86cd-0d0ee47010e9",
             "reading_id": "eefbe4d0-8d8d-43cf-aad9-c229d5dce6db",
-            "criticality": 7.0,
+            "criticality": 8.0,
             "priority": "high",
             "queue": "WFQ",
             "classification_time": "2026-08-18T11:03:00",

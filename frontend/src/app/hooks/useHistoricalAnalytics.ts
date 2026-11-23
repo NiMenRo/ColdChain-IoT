@@ -54,8 +54,8 @@ export interface CriticalityBucket {
 
 const CRITICALITY_BUCKETS: Array<{ range: string; min: number; max: number; color: string }> = [
   { range: '3.0 – 4.9', min: 3.0, max: 4.9, color: '#16835B' },
-  { range: '5.0 – 6.9', min: 5.0, max: 6.9, color: '#C47A00' },
-  { range: '7.0 – 9.0', min: 7.0, max: 9.0, color: '#C83B3B' },
+  { range: '5.0 – 7.9', min: 5.0, max: 7.9, color: '#C47A00' },
+  { range: '8.0 – 9.0', min: 8.0, max: 9.0, color: '#C83B3B' },
 ];
 
 export interface AlertsPerDay {

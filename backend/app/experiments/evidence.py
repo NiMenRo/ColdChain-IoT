@@ -158,6 +158,7 @@ def _empty(run_id, status, reason):
         "received_payload_bytes": None, "payload_goodput_bytes_per_second": None,
         "device_to_persist_ms": {"count": 0, "mean": None, "p95": None},
         "device_to_alert_persist_ms": {"count": 0, "mean": None, "p95": None},
+        "message_delay_variation_ms": {"count": 0, "mean": None, "p95": None},
         "by_priority": {}, "clock_unmeasurable": None,
         "scope": "managed_local_producer",
     }
@@ -240,6 +241,7 @@ def report_for_run(run, priority_by_work_id=None):
             "payload_goodput_bytes_per_second": result["payload_goodput_bytes_per_second"] if final else None,
             "device_to_persist_ms": result["device_to_persist_ms"],
             "device_to_alert_persist_ms": result["device_to_alert_persist_ms"],
+            "message_delay_variation_ms": result["message_delay_variation_ms"],
             "by_priority": result["by_priority"],
             "clock_unmeasurable": result["unmeasurable"]["clock_domain"] + result["unmeasurable"]["timestamp"],
             "scope": "managed_local_producer",

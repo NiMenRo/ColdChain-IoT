@@ -53,14 +53,14 @@ class ClassificationServiceTests(unittest.TestCase):
         self.assertEqual(tc.queue, "FIFO")
 
     def test_boundary_high_returns_wfq(self):
-        tc = self.service.classify(self._make_reading(), impact=2, urgency=3, risk=2)
-        self.assertEqual(tc.criticality, 7)
+        tc = self.service.classify(self._make_reading(), impact=3, urgency=3, risk=2)
+        self.assertEqual(tc.criticality, 8)
         self.assertEqual(tc.priority, "high")
         self.assertEqual(tc.queue, "WFQ")
 
     def test_boundary_medium_returns_round_robin(self):
-        tc = self.service.classify(self._make_reading(), impact=1, urgency=1, risk=2)
-        self.assertEqual(tc.criticality, 4)
+        tc = self.service.classify(self._make_reading(), impact=1, urgency=2, risk=2)
+        self.assertEqual(tc.criticality, 5)
         self.assertEqual(tc.priority, "medium")
         self.assertEqual(tc.queue, "Round Robin")
 

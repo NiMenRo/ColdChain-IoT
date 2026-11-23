@@ -26,8 +26,8 @@ def _item(device, sequence, criticality=9):
 
 
 def test_wfq_matches_independent_oracle_for_equal_weights_and_stable_ties():
-    items = [_item("A", 0, 7), _item("B", 1, 8), _item("A", 2, 7), _item("B", 3, 8)]
-    scheduler = WFQScheduler(band_weights={"H7": 1, "H8": 1, "H9": 1})
+    items = [_item("A", 0, 8), _item("B", 1, 9), _item("A", 2, 8), _item("B", 3, 9)]
+    scheduler = WFQScheduler(band_weights={"H8": 1, "H9": 1})
     for item in items:
         scheduler.enqueue(item)
     expected = wfq_reference_order([
@@ -37,8 +37,8 @@ def test_wfq_matches_independent_oracle_for_equal_weights_and_stable_ties():
 
 
 def test_wfq_matches_two_to_one_weight_oracle_and_preserves_flow_fifo():
-    items = [_item("A", 0, 8), _item("B", 1, 7), _item("A", 2, 8), _item("A", 3, 8), _item("B", 4, 7)]
-    scheduler = WFQScheduler()
+    items = [_item("A", 0, 9), _item("B", 1, 8), _item("A", 2, 9), _item("A", 3, 9), _item("B", 4, 8)]
+    scheduler = WFQScheduler(band_weights={"H8": 1, "H9": 2})
     for item in items:
         scheduler.enqueue(item)
     expected = wfq_reference_order([
@@ -55,7 +55,7 @@ def test_wfq_matches_two_to_one_weight_oracle_and_preserves_flow_fifo():
 
 def test_reactivated_flow_does_not_reuse_stale_finish_tag():
     scheduler = WFQScheduler()
-    a1, b1, b2, a2 = _item("A", 0, 7), _item("B", 1, 7), _item("B", 2, 7), _item("A", 3, 7)
+    a1, b1, b2, a2 = _item("A", 0, 8), _item("B", 1, 8), _item("B", 2, 8), _item("A", 3, 8)
     scheduler.enqueue(a1)
     scheduler.enqueue(b1)
     assert scheduler.dequeue() is a1

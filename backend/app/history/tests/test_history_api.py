@@ -153,7 +153,7 @@ def test_dashboard_summary_counts_all_devices_and_only_unacknowledged_alerts(
         db.add_all([
             AlertORM(device_id=device.id, user_id=user.id,
                      type="TEMPERATURE_EXCEEDED", message="old critical",
-                     criticality=7.0, acknowledged=False,
+                     criticality=8.0, acknowledged=False,
                      created_at=datetime(2020, 1, 1, tzinfo=timezone.utc))
             for _ in range(8)
         ])
@@ -171,7 +171,7 @@ def test_dashboard_summary_counts_all_devices_and_only_unacknowledged_alerts(
     assert summary["critical_active_alerts"] == 8
     recent = client.get("/history/alerts?per_page=5").json()["results"]
     assert len(recent) == 5  # Independent of the global indicators.
-    assert sum(a["criticality"] >= 7 and not a["acknowledged"] for a in recent) < 8
+    assert sum(a["criticality"] >= 8 and not a["acknowledged"] for a in recent) < 8
 
 
 def test_summary_distinguishes_uncalculated_criticality(client, session_factory):

@@ -18,7 +18,7 @@ class PriorityAssignerTests(unittest.TestCase):
         self.assertEqual(self.assigner.assign(9), PriorityLevel.HIGH)
 
     def test_assign_high_boundary(self):
-        self.assertEqual(self.assigner.assign(7), PriorityLevel.HIGH)
+        self.assertEqual(self.assigner.assign(8), PriorityLevel.HIGH)
 
     def test_assign_high_representative(self):
         self.assertEqual(self.assigner.assign(8), PriorityLevel.HIGH)
@@ -29,7 +29,7 @@ class PriorityAssignerTests(unittest.TestCase):
         self.assertEqual(self.assigner.assign(6), PriorityLevel.MEDIUM)
 
     def test_assign_medium_boundary(self):
-        self.assertEqual(self.assigner.assign(4), PriorityLevel.MEDIUM)
+        self.assertEqual(self.assigner.assign(5), PriorityLevel.MEDIUM)
 
     def test_assign_medium_representative(self):
         self.assertEqual(self.assigner.assign(5), PriorityLevel.MEDIUM)

@@ -34,15 +34,15 @@ def _band_weights() -> Mapping[str, float]:
         raise ValueError("QOS_WFQ_FLOW_WEIGHTS is obsolete; use QOS_WFQ_BAND_WEIGHTS")
     raw_value = os.getenv("QOS_WFQ_BAND_WEIGHTS", "").strip()
     if not raw_value:
-        return MappingProxyType({"H7": 1.0, "H8": 2.0, "H9": 3.0})
+        return MappingProxyType({"H8": 2.0, "H9": 3.0})
     try:
         configured_weights = json.loads(raw_value)
     except json.JSONDecodeError as error:
         raise ValueError(
-            "QOS_WFQ_BAND_WEIGHTS must be a JSON object of H7, H8 and H9 weights"
+            "QOS_WFQ_BAND_WEIGHTS must be a JSON object of H8 and H9 weights"
         ) from error
-    if not isinstance(configured_weights, dict) or set(configured_weights) != {"H7", "H8", "H9"}:
-        raise ValueError("QOS_WFQ_BAND_WEIGHTS must define exactly H7, H8 and H9")
+    if not isinstance(configured_weights, dict) or set(configured_weights) != {"H8", "H9"}:
+        raise ValueError("QOS_WFQ_BAND_WEIGHTS must define exactly H8 and H9")
 
     weights: dict[str, float] = {}
     for band, weight in configured_weights.items():

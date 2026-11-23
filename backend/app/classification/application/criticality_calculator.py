@@ -17,9 +17,9 @@ class CriticalityCalculator:
     Each criterion (Impact, Urgency, Risk) must be an integer between 1 and 3.
     The resulting score C ranges from 3 to 9 and is classified as:
 
-    * C >= 7  → HIGH   (Muy critico)
-    * 4 <= C < 7 → MEDIUM (Medio)
-    * C < 4  → LOW    (Bajo)
+    * C >= 8 → HIGH (Alto)
+    * 5 <= C < 8 → MEDIUM (Medio)
+    * C < 5 → LOW (Bajo)
     """
 
     MIN_CRITERION = 1
@@ -34,9 +34,9 @@ class CriticalityCalculator:
 
     def classify(self, criticality: float) -> CriticalityLevel:
         """Map a criticality score to its interpretation level."""
-        if criticality >= 7:
+        if criticality >= 8:
             return CriticalityLevel.HIGH
-        if criticality >= 4:
+        if criticality >= 5:
             return CriticalityLevel.MEDIUM
         return CriticalityLevel.LOW
 

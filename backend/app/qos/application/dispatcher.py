@@ -347,7 +347,7 @@ class DispatchCoordinator:
                             WFQScheduler.band_for(item) == band
                             for item in self._planner.get_queue(PriorityLevel.HIGH)
                         )
-                        for band in ("H7", "H8", "H9")
+                        for band in ("H8", "H9")
                     },
                 }
                 def summarize(items):

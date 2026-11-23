@@ -3,8 +3,7 @@
 // Patrón: DashboardView → useDashboardData → services/api/* → apiFetch → API.
 // - Carga inicial al montar + polling ligero en segundo plano (8 s, pausado
 //   con pestaña oculta, sin solapamiento). Sin WebSocket/MQTT.
-// - Fuentes /history/* + /devices y resumen de sesión /qos/metrics.
-//   La sección QoS usa la misma fuente que la pestaña QoS (useQosSnapshot).
+// - Fuentes /history/* + /devices; QoS usa observaciones persistidas v2.
 // - Cada sección expone estado loading | success | empty | error para que la
 //   vista nunca quede rota ante un fallo de la API.
 // - En segundo plano los datos existentes se conservan; solo se informa
@@ -17,10 +16,10 @@ import {
   apiGetHistoryAlerts,
   apiGetHistorySummary,
   apiGetReadingTrends,
+  apiGetQosTrends,
 } from '../../services/api/history';
 import type { Device } from '../types/devices';
 import { formatMs, formatThroughput } from '../lib/qosUnits';
-import { apiGetQosMetrics, type QosMetricsResponse } from '../../services/api/qos';
 import { usePolling, DASHBOARD_POLL_MS } from './usePolling';
 import { dashboardIndicators } from '../lib/dashboardIndicators';
 
@@ -137,7 +136,7 @@ export function useDashboardData(): DashboardDataState {
   const [alertsFailed, setAlertsFailed] = useState(false);
   const [readingTrends, setReadingTrends] = useState<Awaited<ReturnType<typeof apiGetReadingTrends>> | null>(null);
   const [readingFailed, setReadingFailed] = useState(false);
-  const [qosSession, setQosSession] = useState<QosMetricsResponse | null>(null);
+  const [qosTrends, setQosTrends] = useState<Awaited<ReturnType<typeof apiGetQosTrends>> | null>(null);
   const [qosFailed, setQosFailed] = useState(false);
   const [pollSeq, setPollSeq] = useState(0);
 
@@ -167,7 +166,7 @@ export function useDashboardData(): DashboardDataState {
       apiGetHistorySummary(),
       apiGetHistoryAlerts({ page: 1, per_page: 5 }),
       apiGetReadingTrends('hour'),
-      apiGetQosMetrics(),
+      apiGetQosTrends('hour'),
     ]).then((results) => {
       if (cancelled || !mounted.current) return;
       busyRef.current = false;
@@ -229,12 +228,12 @@ export function useDashboardData(): DashboardDataState {
         }
       }
       if (qosRes.status === 'fulfilled') {
-        setQosSession(qosRes.value);
+        setQosTrends(qosRes.value);
         setQosFailed(false);
       } else {
         noteFailure(qosRes);
         if (!background) {
-          setQosSession(null);
+          setQosTrends(null);
           setQosFailed(true);
         }
       }
@@ -299,15 +298,17 @@ export function useDashboardData(): DashboardDataState {
   const avgTemp = lastReading?.avg_temp ?? null;
   const avgHumidity = lastReading?.avg_hum ?? null;
 
-  // Misma fuente y formato que la pestaña QoS (useQosSnapshot):
-  // resumen de sesión /qos/metrics. Sin datos de sesión → sin celdas.
-  const qosCells: QosCell[] = qosSession && qosSession.count > 0
+  // Último intervalo con observaciones persistidas; null significa no medido.
+  const latestQos = [...(qosTrends ?? [])].reverse().find(p =>
+    p.avg_latency !== null || p.avg_jitter !== null || p.avg_packet_loss !== null ||
+    p.avg_pdr !== null || p.avg_throughput !== null);
+  const qosCells: QosCell[] = latestQos
     ? [
-        { label: 'Latencia media', value: formatMs(qosSession.summary.latency), sub: 'Sesión actual' },
-        { label: 'Jitter', value: formatMs(qosSession.summary.jitter), sub: 'Sesión actual' },
-        { label: 'Pérdida paquetes', value: `${qosSession.summary.packet_loss.toFixed(1)} %`, sub: 'Sesión actual' },
-        { label: 'PDR', value: `${qosSession.summary.pdr.toFixed(1)} %`, sub: 'Tasa de entrega' },
-        { label: 'Throughput', value: formatThroughput(qosSession.summary.throughput), sub: 'Promedio sesión' },
+        { label: 'Latencia media', value: latestQos.avg_latency === null ? '—' : formatMs(latestQos.avg_latency), sub: 'Última hora registrada' },
+        { label: 'Jitter', value: latestQos.avg_jitter === null ? '—' : formatMs(latestQos.avg_jitter), sub: 'Última hora registrada' },
+        { label: 'Pérdida paquetes', value: latestQos.avg_packet_loss === null ? '—' : `${latestQos.avg_packet_loss.toFixed(1)} %`, sub: 'Última hora registrada' },
+        { label: 'PDR', value: latestQos.avg_pdr === null ? '—' : `${latestQos.avg_pdr.toFixed(1)} %`, sub: 'Tasa de entrega' },
+        { label: 'Throughput', value: latestQos.avg_throughput === null ? '—' : formatThroughput(latestQos.avg_throughput), sub: 'Última hora registrada' },
       ]
     : [];
 

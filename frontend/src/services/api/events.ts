@@ -2,7 +2,7 @@
 //
 // Contratos reales (backend/app/events/api/__init__.py):
 // - GET /events/alerts?limit            → {count, alerts[]}      (sesión actual)
-// - GET /events/alerts/critical?limit  → {count, alerts[]}      (criticality >= 7, sesión)
+// - GET /events/alerts/critical?limit  → {count, alerts[]}      (criticality >= 8, sesión)
 // - GET /events/events?limit           → {count, events[]}      (eventos detectados, sesión)
 // - GET /events/summary                → {total_alerts, total_events, acknowledged_alerts,
 //                                         unacknowledged_alerts, alert_types, event_types}

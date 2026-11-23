@@ -14,6 +14,7 @@ class ExperimentRunResponse(BaseModel):
     started_at: datetime
     finished_at: Optional[datetime] = None
     config_snapshot: Optional[str] = None
+    closing: bool = False
 
 
 class ExperimentRunListResponse(BaseModel):
@@ -66,6 +67,7 @@ class ExperimentEvidenceResponse(BaseModel):
     configuration: dict | None
     device_to_persist_ms: EvidenceLatency
     device_to_alert_persist_ms: EvidenceLatency
+    message_delay_variation_ms: EvidenceLatency
     by_priority: dict[str, EvidencePriorityLatency]
     clock_unmeasurable: int | None
 

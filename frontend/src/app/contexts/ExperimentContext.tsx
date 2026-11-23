@@ -29,7 +29,7 @@ interface ExperimentContextValue {
   errorMessage: string | null;
   retry: () => void;
   startRun: (input: { scenario: ExperimentScenario; sensorCondition: SensorCondition }) => Promise<{ run: ExperimentRun | null; error?: string }>;
-  finishRun: (id: string) => Promise<{ ok: boolean; error?: string }>;
+  finishRun: (id: string) => Promise<{ ok: boolean; pending?: boolean; error?: string }>;
   fetchAnalysis: (runId: string, bucketSeconds?: number) => Promise<void>;
 }
 
@@ -37,7 +37,7 @@ const ExperimentContext = createContext<ExperimentContextValue | null>(null);
 
 function toErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
-    if (err.status === 409) return 'Hay una ejecución activa o un drenaje en curso en el backend. Espere a que termine antes de iniciar otra.';
+    if (err.status === 409) return 'La ejecución no se pudo cerrar por un conflicto. Actualice el estado e intente de nuevo.';
     if (err.status === 403) return 'Sin permiso: iniciar/finalizar ejecuciones requiere rol administrador.';
     if (err.status === 404) return 'La ejecución ya no existe en el backend.';
     if (err.status === 400) return 'Escenario inválido para el backend.';
@@ -101,6 +101,15 @@ export function ExperimentProvider({ children }: { children: ReactNode }) {
   }, [attempt]);
 
   const activeRun = runs.find((r) => !r.finished_at) ?? null;
+  useEffect(() => {
+    if (!activeRun) return;
+    const timer = window.setInterval(() => {
+      void loadExperimentRuns().then((fresh) => {
+        if (mounted.current) setRuns(fresh);
+      }).catch(() => {});
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [activeRun?.id]);
 
   const fetchAnalysis = useCallback(function loadAnalysis(runId: string, bucketSeconds?: number): Promise<void> {
     const existing = pending.current[runId];
@@ -160,6 +169,7 @@ export function ExperimentProvider({ children }: { children: ReactNode }) {
     try {
       const run = await apiFinishExperimentRun(id);
       setRuns((prev) => prev.map((r) => (r.id === id ? run : r)));
+      if (!run.finished_at) return { ok: true, pending: true };
       try {
         // A request started before closing must not replace the final snapshot.
         await pending.current[id]?.catch(() => {});
@@ -167,7 +177,7 @@ export function ExperimentProvider({ children }: { children: ReactNode }) {
       } catch {
         // Métricas opcionales tras el cierre: el run ya quedó finalizado.
       }
-      return { ok: true };
+      return { ok: true, pending: false };
     } catch (err) {
       return { ok: false, error: toErrorMessage(err, 'No se pudo finalizar la ejecución.') };
     }
