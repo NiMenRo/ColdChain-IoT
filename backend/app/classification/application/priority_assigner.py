@@ -16,9 +16,9 @@ class PriorityAssigner:
 
     Thresholds (derived from the project's criticality classification):
 
-    * C >= 7  → HIGH   (Alta)
-    * 4 <= C < 7 → MEDIUM (Media)
-    * C < 4  → LOW    (Baja)
+    * C >= 8 → HIGH (Alta)
+    * 5 <= C < 8 → MEDIUM (Media)
+    * C < 5 → LOW (Baja)
 
     Valid criticality range: 3 to 9 (result of C = I + U + R with I, U, R in [1, 3]).
     """
@@ -29,9 +29,9 @@ class PriorityAssigner:
     def assign(self, criticality: float) -> PriorityLevel:
         """Return the priority level for the given criticality score."""
         self._validate(criticality)
-        if criticality >= 7:
+        if criticality >= 8:
             return PriorityLevel.HIGH
-        if criticality >= 4:
+        if criticality >= 5:
             return PriorityLevel.MEDIUM
         return PriorityLevel.LOW
 

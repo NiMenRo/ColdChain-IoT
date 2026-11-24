@@ -41,13 +41,13 @@ class CriticalityCalculatorTests(unittest.TestCase):
         self.assertEqual(self.calc.classify(9), CriticalityLevel.HIGH)
 
     def test_classify_high_boundary(self):
-        self.assertEqual(self.calc.classify(7), CriticalityLevel.HIGH)
+        self.assertEqual(self.calc.classify(8), CriticalityLevel.HIGH)
 
     def test_classify_medium_upper(self):
         self.assertEqual(self.calc.classify(6), CriticalityLevel.MEDIUM)
 
     def test_classify_medium_boundary(self):
-        self.assertEqual(self.calc.classify(4), CriticalityLevel.MEDIUM)
+        self.assertEqual(self.calc.classify(5), CriticalityLevel.MEDIUM)
 
     def test_classify_low(self):
         self.assertEqual(self.calc.classify(3), CriticalityLevel.LOW)

@@ -360,7 +360,7 @@ export function TrafficView() {
                   <tbody>
                     {recent.map((c, i) => (
                       <tr key={c.id} style={{ borderTop: '1px solid #EFF4F7', background: i % 2 === 1 ? '#FAFBFC' : '#fff' }}>
-                        <td className="px-4 py-3 fw-semibold" style={{ color: c.criticality >= 7 ? '#B22F2F' : '#123B5D' }}>
+                        <td className="px-4 py-3 fw-semibold" style={{ color: c.criticality >= 8 ? '#B22F2F' : '#123B5D' }}>
                           {c.criticality.toFixed(1)}
                         </td>
                         <td className="px-4 py-3 text-uppercase" style={{ fontSize: 12 }}>{c.priority}</td>

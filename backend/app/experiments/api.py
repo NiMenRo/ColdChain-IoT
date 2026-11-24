@@ -6,13 +6,14 @@ Reads are authenticated; starting/finishing a run is admin-only.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -42,6 +43,39 @@ logger = logging.getLogger(__name__)
 _runs = ExperimentRunRepository()
 _metrics = ExperimentMetricRepository()
 _finish_lock = threading.Lock()
+_background_finishes: set[UUID] = set()
+_background_lock = threading.Lock()
+
+
+def _continue_finish_in_background(run_id: UUID, request: Request) -> None:
+    """Retry a timed-out drain without discarding admitted telemetry."""
+    from app.database.infrastructure.session import SessionLocal
+
+    with _background_lock:
+        if run_id in _background_finishes:
+            return
+        _background_finishes.add(run_id)
+
+    def finish_when_drained():
+        try:
+            while True:
+                try:
+                    with _finish_lock, SessionLocal() as db:
+                        _finish_run_locked(run_id, request, db)
+                    return
+                except HTTPException as exc:
+                    if exc.status_code != 409 or exc.detail != "Experiment is still draining; retry finish":
+                        logger.warning("Background finish for %s stopped: %s", run_id, exc.detail)
+                        return
+                    threading.Event().wait(1)
+                except Exception:
+                    logger.exception("Background finish for %s failed", run_id)
+                    return
+        finally:
+            with _background_lock:
+                _background_finishes.discard(run_id)
+
+    threading.Thread(target=finish_when_drained, name=f"finish-{run_id}", daemon=True).start()
 
 
 def _validate_page(per_page: int, page: int):
@@ -52,12 +86,15 @@ def _validate_page(per_page: int, page: int):
 
 
 def _serialize_run(run) -> ExperimentRunResponse:
+    with _background_lock:
+        closing = run.finished_at is None and run.id in _background_finishes
     return ExperimentRunResponse(
         id=str(run.id),
         scenario=run.scenario,
         started_at=run.started_at,
         finished_at=run.finished_at,
         config_snapshot=run.config_snapshot,
+        closing=closing,
     )
 
 
@@ -152,6 +189,14 @@ def start_run(
         "enabled": bool(getattr(backend_config, "telemetry_evidence_enabled", False)),
         "grace_seconds": getattr(backend_config, "telemetry_evidence_grace_s", None),
     }
+    snapshot["simulator_sampling_interval_seconds"] = os.getenv("SIMULATOR_SAMPLING_INTERVAL", "10.0")
+    snapshot["simulator_random_seed"] = os.getenv("SIMULATOR_RANDOM_SEED")
+    snapshot["smtp_enabled"] = os.getenv("SMTP_ENABLED", "").strip().lower() == "true"
+    current_thresholds = SystemConfigRepository().get_current(db)
+    snapshot["system_thresholds"] = {
+        key: getattr(current_thresholds, key) for key in
+        ("min_temperature", "max_temperature", "min_humidity", "max_humidity")
+    } if current_thresholds is not None else None
     try:
         run = _runs.create(db, scenario=body.scenario, config_snapshot=snapshot)
     except ValueError as exc:
@@ -175,18 +220,27 @@ def start_run(
 def finish_run(
     run_id: UUID,
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     _current=Depends(require_admin),
 ):
-    """Close a run (sets finished_at), stop its producer and drain its work.
+    """Stop admission and the producer, then drain previously accepted work.
 
-    A timeout returns 409 without closing the run or releasing its drain guard;
-    a later request can retry after admitted work has finished.
+    A slow drain returns 202 and continues in the background.
     """
     if not _finish_lock.acquire(blocking=False):
         raise HTTPException(409, "An experiment finish request is already in progress")
     try:
-        return _finish_run_locked(run_id, request, db)
+        try:
+            return _finish_run_locked(run_id, request, db)
+        except HTTPException as exc:
+            if exc.status_code == 409 and exc.detail == "Experiment is still draining; retry finish":
+                _continue_finish_in_background(run_id, request)
+                response.status_code = status.HTTP_202_ACCEPTED
+                result = _serialize_run(_runs.get_by_id(db, run_id))
+                result.closing = True
+                return result
+            raise
     finally:
         _finish_lock.release()
 
@@ -206,19 +260,11 @@ def _finish_run_locked(run_id: UUID, request: Request, db: Session):
         raise HTTPException(409, "A different experiment run is active")
     if message_queue is not None and coordinator is None:
         raise HTTPException(409, "Cannot drain transport without a dispatch coordinator")
-    # Managed runs stop their producer cooperatively, then keep receiving over
-    # the fixed grace window BEFORE closing admission. Legacy semantics remain.
+    # Close the transport boundary first. Messages already claimed by the
+    # ingestion worker retain their acceptance and may still be admitted to
+    # dispatch, but later arrivals cannot enter this run while the producer is
+    # stopping or the reception deadline is being observed.
     from app.experiments import evidence
-    try:
-        managed = evidence.manifest(run.id)
-        if managed is not None:
-            stop_worker(run.id)
-            reception_deadline = evidence.request_close(run.id)
-            remaining = (reception_deadline - datetime.now(timezone.utc)).total_seconds()
-            if remaining > 0:
-                time.sleep(remaining)
-    except (OSError, ValueError, TypeError):
-        logger.exception("Capture closure failed for run %s; rates remain unavailable", run.id)
     if coordinator is not None:
         config = getattr(request.app.state, "backend_config", None)
         timeout = getattr(config, "qos_drain_timeout_s", 30.0)
@@ -230,6 +276,16 @@ def _finish_run_locked(run_id: UUID, request: Request, db: Session):
             if message_queue is not None:
                 message_queue.end_drain(run.id)
             raise HTTPException(409, str(exc)) from exc
+    try:
+        managed = evidence.manifest(run.id)
+        if managed is not None:
+            stop_worker(run.id)
+            reception_deadline = evidence.request_close(run.id)
+            remaining = (reception_deadline - datetime.now(timezone.utc)).total_seconds()
+            if remaining > 0:
+                time.sleep(remaining)
+    except (OSError, ValueError, TypeError):
+        logger.exception("Capture closure failed for run %s; rates remain unavailable", run.id)
     # Keep the run active and its drain guard in place on timeout or DB error.
     stop_worker(run.id)
     deadline = time.monotonic() + timeout if coordinator is not None else None

@@ -168,7 +168,7 @@ def get_alerts(request: Request, limit: Optional[int] = None):
 
 @router.get("/alerts/critical")
 def get_critical_alerts(request: Request, limit: Optional[int] = None):
-    """Get only high-criticality alerts (criticality >= 7)."""
+    """Get only high-criticality alerts (criticality >= 8)."""
     try:
         normalized_limit = _validated_limit(limit)
     except HTTPException:
@@ -177,7 +177,7 @@ def get_critical_alerts(request: Request, limit: Optional[int] = None):
     alerts_list = [
         alert
         for alert in getattr(request.app.state, "alerts", [])
-        if alert.criticality is not None and alert.criticality >= 7.0
+        if alert.criticality is not None and alert.criticality >= 8.0
     ]
     if normalized_limit is not None:
         alerts_list = alerts_list[-normalized_limit:]

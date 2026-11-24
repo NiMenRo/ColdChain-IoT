@@ -1,5 +1,6 @@
 import logging
 import os
+import random
 import sys
 import time
 from pathlib import Path
@@ -26,7 +27,7 @@ else:  # pragma: no cover - package-style execution from repo root
     from simulator.sensors import TemperatureSensor, HumiditySensor, EnergyStatusSensor, EnergyState
 
 
-def load_devices():
+def load_devices(condition=None):
     """Load devices + enabled sensors from DB (single source of truth).
 
     Returns the device list (possibly empty). Retries briefly on DB
@@ -48,6 +49,15 @@ def load_devices():
                 # TSK-059.3 — DeviceSensor is the single source of truth for
                 # enabled sensors; no parallel sensor configuration exists.
                 sensor_rows = db.execute(_sa_text("SELECT device_id, sensor_type FROM device_sensors")).fetchall()
+                normal_bounds = None
+                if condition == "normal":
+                    bounds = db.execute(_sa_text(
+                        "SELECT min_temperature, max_temperature, min_humidity, max_humidity "
+                        "FROM system_configs ORDER BY id ASC LIMIT 1"
+                    )).first()
+                    if bounds is None:
+                        raise RuntimeError("Normal simulation requires configured thresholds")
+                    normal_bounds = tuple(float(value) for value in bounds)
                 if rows:
                     sensor_by_device = sensor_rows
                     # Map rows to ORM-like objects for factory
@@ -84,16 +94,21 @@ def load_devices():
                 device.code,
             )
             continue
-        if _device_type_value(device) == DeviceType.COLD_ROOM.value:
+        if normal_bounds is not None:
+            temp_range = normal_bounds[:2]
+        elif _device_type_value(device) == DeviceType.COLD_ROOM.value:
             temp_range = (0.0, 4.0)
         else:  # REFRIGERATED_SHOWCASE
             temp_range = (3.0, 8.0)
         if "temperature" in enabled:
             device.add_sensor(TemperatureSensor(device=device, min_temperature=temp_range[0], max_temperature=temp_range[1]))
         if "humidity" in enabled:
-            device.add_sensor(HumiditySensor(device=device))
+            if normal_bounds is not None:
+                device.add_sensor(HumiditySensor(device=device, min_humidity=normal_bounds[2], max_humidity=normal_bounds[3]))
+            else:
+                device.add_sensor(HumiditySensor(device=device))
         if "energy" in enabled:
-            initial = EnergyState.POWERED if device.status == DeviceStatus.MAINTENANCE else EnergyState.ON
+            initial = EnergyState.POWERED if condition != "normal" and device.status == DeviceStatus.MAINTENANCE else EnergyState.ON
             device.add_sensor(EnergyStatusSensor(device=device, initial_state=initial))
         ready.append(device)
     return ready
@@ -250,6 +265,9 @@ def main(cycles: int = 1, condition: str | None = None) -> None:
     if cycles < 0:
         raise ValueError("'cycles' must be >= 0 (0 = continuous)")
     config = SimulatorConfig()
+    seed = os.getenv("SIMULATOR_RANDOM_SEED")
+    if seed is not None:
+        random.seed(seed)
 
     logging.basicConfig(
         level=getattr(logging, config.log_level),
@@ -287,7 +305,7 @@ def main(cycles: int = 1, condition: str | None = None) -> None:
             if cycles == 0 or cycles > 1:
                 print(f"\n=== Vuelta {run_cycle}" + (f"/{cycles} ===" if cycles > 0 else " (continuo) ==="))
 
-            devices = load_devices()
+            devices = load_devices(condition)
             if not devices:
                 if cycles > 0:
                     logging.getLogger(__name__).error("No devices available or DB unreachable — aborting simulator (DB is source of truth, no hardcoded fallback)")

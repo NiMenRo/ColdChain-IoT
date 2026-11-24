@@ -286,7 +286,7 @@ export function AlertsView() {
               </div>
             ) : alerts.map(alert => {
               const unscored = alert.criticality === null;
-              const isCritical = alert.criticality !== null && alert.criticality >= 7;
+              const isCritical = alert.criticality !== null && alert.criticality >= 8;
               const borderColor = unscored
                 ? (alert.acknowledged ? '#a3cfbb' : '#9fc5d5')
                 : isCritical && !alert.acknowledged ? '#C83B3B' : alert.acknowledged ? '#a3cfbb' : '#ffda6a';

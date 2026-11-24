@@ -31,16 +31,16 @@ def test_qos_defaults_match_the_approved_policy_and_limits():
     assert config.effective_qos_config() == {
         "class_quotas": {"high": 4, "medium": 2, "low": 1},
         "wfq_policy": "criticality_bands_v1",
-        "wfq_band_weights": {"H7": 1, "H8": 2, "H9": 3},
+        "wfq_band_weights": {"H8": 2, "H9": 3},
         "capacities": {
             "transport_messages": 1000,
             "pending_work_items": 3000,
             "recent_trace_entries": 1000,
             "recent_failure_entries": 100,
         },
-        "timeouts": {"drain_s": 30.0},
+        "timeouts": {"drain_s": 2.0},
     }
-    assert config.qos_wfq_band_weights == {"H7": 1, "H8": 2, "H9": 3}
+    assert config.qos_wfq_band_weights == {"H8": 2, "H9": 3}
 
 
 def test_qos_environment_overrides_are_validated_and_serializable(monkeypatch):
@@ -54,13 +54,13 @@ def test_qos_environment_overrides_are_validated_and_serializable(monkeypatch):
     monkeypatch.setenv("QOS_DRAIN_TIMEOUT_S", "5.5")
     monkeypatch.setenv(
         "QOS_WFQ_BAND_WEIGHTS",
-        '{"H7": 1, "H8": 1.5, "H9": 2}',
+        '{"H8": 1.5, "H9": 2}',
     )
 
     effective = BackendConfig().effective_qos_config()
 
     assert effective["class_quotas"] == {"high": 5, "medium": 3, "low": 2}
-    assert effective["wfq_band_weights"] == {"H7": 1.0, "H8": 1.5, "H9": 2.0}
+    assert effective["wfq_band_weights"] == {"H8": 1.5, "H9": 2.0}
     assert effective["capacities"] == {
         "transport_messages": 11,
         "pending_work_items": 33,

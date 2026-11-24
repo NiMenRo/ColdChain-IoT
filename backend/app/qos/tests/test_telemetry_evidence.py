@@ -60,6 +60,16 @@ def test_controlled_loss_is_measured_instead_of_assuming_all_delivered():
     assert report["payload_goodput_bytes_per_second"] == 23.7
 
 
+def test_transport_rejection_is_distinct_from_message_reception():
+    message = _message()
+    report = _report(_producer(message), [
+        _receipt(message), {**message, "event": "transport_rejected"},
+    ])
+    assert report["pdr_percent"] == 100
+    assert report["counts"]["transport_rejected"] == 1
+    assert report["counts"]["persisted_readings"] == 0
+
+
 def test_duplicate_receipts_and_three_sensors_do_not_multiply_bytes_or_pdr():
     message = _message()
     report = _report(_producer(message), [
@@ -111,6 +121,20 @@ def test_no_evidence_is_not_zero_latency_or_zero_measured_throughput():
     assert report["pdr_percent"] is None
     assert report["payload_goodput_bytes_per_second"] is None
     assert report["device_to_persist_ms"] == {"count": 0, "mean": None, "p95": None}
+    assert report["message_delay_variation_ms"]["mean"] is None
+
+
+def test_jitter_uses_consecutive_messages_of_same_stream():
+    session = str(uuid4())
+    first, second, gap = (_message(i, session) for i in (0, 1, 3))
+    second["event_at"] = (NOW + timedelta(seconds=1)).isoformat()
+    gap["event_at"] = (NOW + timedelta(seconds=3)).isoformat()
+    report = _report(
+        _producer(first) + _producer(second) + _producer(gap),
+        [_receipt(first), _receipt(second, received_at=(NOW + timedelta(seconds=2, milliseconds=250)).isoformat()),
+         _receipt(gap, received_at=(NOW + timedelta(seconds=4)).isoformat())],
+    )
+    assert report["message_delay_variation_ms"] == {"count": 1, "mean": 250, "p95": 250}
 
 
 def test_restarted_producer_can_restart_sequence_in_another_session():

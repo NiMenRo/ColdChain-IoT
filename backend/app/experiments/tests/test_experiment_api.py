@@ -3,6 +3,8 @@
 import sys
 import uuid
 from datetime import datetime, timezone
+import threading
+from contextlib import nullcontext
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -22,6 +24,37 @@ from app.database.infrastructure.repositories import (
 from app.database.infrastructure.session import get_db
 from app.experiments.api import router
 from app.security.dependencies import require_admin
+
+
+def test_evidence_response_preserves_delay_variation():
+    from app.experiments.schemas import ExperimentEvidenceResponse
+
+    sample = {"count": 1, "mean": 12.5, "p95": 12.5}
+    response = ExperimentEvidenceResponse(
+        run_id=str(uuid.uuid4()), status="in_progress", reasons=[],
+        scope="managed_local_producer", counts={}, pending_messages=None,
+        pdr_percent=None, loss_percent=None, received_payload_bytes=None,
+        payload_goodput_bytes_per_second=None, window=None, configuration=None,
+        device_to_persist_ms=sample, device_to_alert_persist_ms=sample,
+        message_delay_variation_ms=sample, by_priority={}, clock_unmeasurable=None,
+    )
+    assert response.model_dump()["message_delay_variation_ms"] == sample
+
+
+def test_timed_out_finish_continues_in_background(monkeypatch):
+    import app.experiments.api as api
+    import app.database.infrastructure.session as session_module
+
+    completed = threading.Event()
+    calls = []
+    monkeypatch.setattr(session_module, "SessionLocal", lambda: nullcontext(object()))
+    monkeypatch.setattr(api, "_finish_run_locked", lambda run_id, request, db: (
+        calls.append(run_id), completed.set()
+    ))
+    run_id = uuid.uuid4()
+    api._continue_finish_in_background(run_id, object())
+    assert completed.wait(5)
+    assert calls == [run_id]
 
 
 def _factory():
@@ -371,6 +404,7 @@ def test_finish_timeout_retains_run_and_drain_until_retry(monkeypatch):
     from app.qos.application.dispatcher import DispatchCoordinator
     from app.qos.application.traffic_planning_service import TrafficPlanningService
     import app.experiments.api as api
+    monkeypatch.setattr(api, "_continue_finish_in_background", lambda *_args: None)
 
     Session = _factory()
     c = _client(Session)
@@ -389,7 +423,8 @@ def test_finish_timeout_retains_run_and_drain_until_retry(monkeypatch):
         active.clear_active_run()
         run_id = c.post("/experiment-runs", json={"scenario": "WITH_QOS"}).json()["id"]
         response = c.post(f"/experiment-runs/{run_id}/finish")
-        assert response.status_code == 409
+        assert response.status_code == 202
+        assert response.json()["closing"] is True
         assert c.get(f"/experiment-runs/{run_id}").json()["finished_at"] is None
         assert active.get_active_run()[0] == uuid.UUID(run_id)
         assert coordinator.draining_run_id == uuid.UUID(run_id)
@@ -409,6 +444,7 @@ def test_finish_timeout_with_transport_and_ingestion_then_retry(monkeypatch):
     from app.qos.application.dispatcher import DispatchCoordinator
     from app.qos.application.traffic_planning_service import TrafficPlanningService
     import app.experiments.api as api
+    monkeypatch.setattr(api, "_continue_finish_in_background", lambda *_args: None)
 
     Session = _factory()
     c = _client(Session)
@@ -427,11 +463,11 @@ def test_finish_timeout_with_transport_and_ingestion_then_retry(monkeypatch):
         active.clear_active_run()
         run_id = c.post("/experiment-runs", json={"scenario": "WITH_QOS"}).json()["id"]
         assert queue.append_received({"payload": "fixture"})
-        assert c.post(f"/experiment-runs/{run_id}/finish").status_code == 409
+        assert c.post(f"/experiment-runs/{run_id}/finish").status_code == 202
         assert c.get(f"/experiment-runs/{run_id}").json()["finished_at"] is None
         assert not queue.append_received({"payload": "too late"})
         claimed = queue.pop_for_processing()
-        assert c.post(f"/experiment-runs/{run_id}/finish").status_code == 409
+        assert c.post(f"/experiment-runs/{run_id}/finish").status_code == 202
         queue.finish_processing(claimed)
         response = c.post(f"/experiment-runs/{run_id}/finish")
         assert response.status_code == 200

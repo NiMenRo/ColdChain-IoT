@@ -6,6 +6,7 @@ import { useDevices, Device, DeviceType, DeviceStatus, DEVICE_TYPE_LABEL } from 
 import { useExperiments } from '../../contexts/ExperimentContext';
 import type { ExperimentMetricType } from '../../types/experiments';
 import { RunEvidencePanel } from '../experiments/RunEvidencePanel';
+import { runCondition } from '../../lib/runSelection';
 
 interface KpiCardProps { label: string; value: React.ReactNode; unit?: string; accent?: string; sub?: string; Icon?: any; }
 function KpiCard({ label, value, unit, accent = '#123B5D', sub, Icon }: KpiCardProps) {
@@ -71,7 +72,7 @@ function FlowDiagram({ conPriorizacion }: { conPriorizacion: boolean }) {
 export function SimulationView() {
   const navigate = useNavigate();
   const { devices, getSensors } = useDevices();
-  const { runs, startRun, finishRun, analyses, analysisErrors, fetchAnalysis, activeRun, status: expStatus, retry: expRetry } = useExperiments();
+  const { runs, runMeta, startRun, finishRun, analyses, analysisErrors, fetchAnalysis, activeRun, status: expStatus, retry: expRetry } = useExperiments();
   const [runId, setRunId] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const [frozenMs, setFrozenMs] = useState<number | null>(null);
@@ -81,7 +82,7 @@ export function SimulationView() {
   const totalVitrinas = devices.filter(d => d.device_type === 'refrigerated_showcase').length;
 
   const [procesamiento, setProcesamiento] = useState<'sin' | 'con'>('con');
-  const [condicion,     setCondicion]     = useState<'normal' | 'critica'>('normal');
+  const [condicion,     setCondicion]     = useState<'normal' | 'critica' | 'desconocida'>('normal');
   const [running,       setRunning]       = useState(false);
   const [hasRun,        setHasRun]        = useState(false);
   const [runError,      setRunError]      = useState<string | null>(null);
@@ -98,11 +99,27 @@ export function SimulationView() {
   const elapsedMs = frozenMs ?? (startedAt ? Math.max(0, nowMs - new Date(startedAt).getTime()) : 0);
   const elapsedLabel = `${String(Math.floor(elapsedMs / 60000)).padStart(2, '0')}:${String(Math.floor((elapsedMs % 60000) / 1000)).padStart(2, '0')}`;
 
-  // Métricas reales de la ejecución (sin sondeo en vivo: el pipeline
-  // del backend las registra mientras el run está activo y se leen al cerrar).
+  // Métricas reales de la ejecución, actualizadas mientras esté activa.
   // Contadores (messages_*, readings_persisted, alerts_generated) = SUMA de
   // muestras; latencias = promedio; backlog = último valor.
   const analysis = runId ? analyses[runId] : undefined;
+  const closing = !!runs.find(run => run.id === runId)?.closing;
+  useEffect(() => {
+    if (!running || !runId) return;
+    const refresh = () => { void fetchAnalysis(runId).catch(() => {}); };
+    refresh();
+    const timer = window.setInterval(refresh, 10000);
+    return () => window.clearInterval(timer);
+  }, [running, runId, fetchAnalysis]);
+  useEffect(() => {
+    if (!running || !runId) return;
+    const completed = runs.find(run => run.id === runId && run.finished_at);
+    if (completed?.finished_at) {
+      if (startedAt) setFrozenMs(Math.max(0, new Date(completed.finished_at).getTime() - new Date(startedAt).getTime()));
+      setRunning(false);
+      setRunError(null);
+    }
+  }, [runs, runId, running, startedAt]);
   const hasMetric = (type: ExperimentMetricType): boolean => !!analysis?.metrics[type]?.count;
   const sumOf = (type: ExperimentMetricType): number =>
     analysis?.metrics[type]?.sum ?? 0;
@@ -156,6 +173,10 @@ export function SimulationView() {
       setRunError(result.error ?? 'No se pudo finalizar la ejecución.');
       return;
     }
+    if (result.pending) {
+      setRunError(null);
+      return;
+    }
     if (startedAt) setFrozenMs(Math.max(0, Date.now() - new Date(startedAt).getTime()));
     setRunning(false);
   }
@@ -196,10 +217,16 @@ export function SimulationView() {
         <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 rounded-3 px-4 py-3 mb-4"
           style={{ background: '#EAF1F5', border: '1px solid #c5d9e6', borderLeft: '4px solid #1F6F8B' }}>
           <p className="mb-0 small">
-            <strong>Hay una ejecución activa</strong> ({activeRun.scenario === 'WITH_QOS' ? 'con priorización' : 'sin priorización'}, iniciada {new Date(activeRun.started_at).toLocaleString('es-CO')}). Finalícela antes de iniciar otra.
+            <strong>Hay una ejecución activa</strong> ({activeRun.scenario === 'WITH_QOS' ? 'con priorización' : 'sin priorización'}, iniciada {new Date(activeRun.started_at).toLocaleString('es-CO')}).
+            {activeRun.closing ? ' El cierre continúa procesando las lecturas pendientes.' : ' Finalícela antes de iniciar otra.'}
           </p>
           <button
-            onClick={() => { setRunId(activeRun.id); setStartedAt(activeRun.started_at); setFrozenMs(null); setHasRun(true); setRunning(true); }}
+            onClick={() => {
+              setProcesamiento(activeRun.scenario === 'WITH_QOS' ? 'con' : 'sin');
+              const condition = runCondition(activeRun, runMeta);
+              setCondicion(condition === 'altered' ? 'critica' : condition === 'normal' ? 'normal' : 'desconocida');
+              setRunId(activeRun.id); setStartedAt(activeRun.started_at); setFrozenMs(null); setHasRun(true); setRunning(true);
+            }}
             className="border-0 bg-transparent fw-semibold"
             style={{ fontSize: 13, color: '#1F6F8B', cursor: 'pointer', whiteSpace: 'nowrap' }}
           >
@@ -284,7 +311,7 @@ export function SimulationView() {
                 ))}
               </Col>
             </Row>
-            <Button variant="primary" className="d-flex align-items-center gap-2" onClick={handleEjecutar} disabled={starting || !hasSimulatableDevices}>
+            <Button variant="primary" className="d-flex align-items-center gap-2" onClick={handleEjecutar} disabled={starting || !hasSimulatableDevices || !!activeRun}>
               <Play size={16} />{starting ? 'Iniciando…' : 'Iniciar simulación'}
             </Button>
             {!hasSimulatableDevices && (
@@ -311,16 +338,16 @@ export function SimulationView() {
             <Col xs={12} lg={8}>
               <span className="small text-muted d-inline-flex align-items-center gap-2">
                 {running && <LoaderCircle size={14} className="cc-spin" style={{ color: '#1F6F8B' }} />}
-                {running ? 'Simulación en curso...' : 'Simulación finalizada'} ·{' '}
+                {running ? (finishing || closing ? 'Cerrando: procesando lecturas pendientes…' : 'Simulación en curso...') : 'Simulación finalizada'} ·{' '}
                 <span className="font-monospace fw-semibold" style={{ color: '#123B5D' }}>{elapsedLabel}</span> ·{' '}
                 {procesamiento === 'con' ? 'Con priorización' : 'Sin priorización'} ·{' '}
-                {condicion === 'critica' ? 'Condición crítica' : 'Operación normal'}
+                {condicion === 'critica' ? 'Condición crítica' : condicion === 'normal' ? 'Operación normal' : 'Condición no registrada'}
               </span>
             </Col>
             <Col xs={12} lg={4} className="d-flex justify-content-lg-end">
               {running ? (
-                <Button variant="danger" size="sm" className="d-flex align-items-center gap-2" onClick={handleDetener} disabled={finishing}>
-                  <Square size={14} />{finishing ? 'Finalizando…' : 'Finalizar simulación'}
+                <Button variant="danger" size="sm" className="d-flex align-items-center gap-2" onClick={handleDetener} disabled={finishing || closing}>
+                  <Square size={14} />{finishing || closing ? 'Finalizando…' : 'Finalizar simulación'}
                 </Button>
               ) : (
                 <Button variant="secondary" size="sm" className="d-flex align-items-center gap-2" onClick={handleReiniciar}>
@@ -337,7 +364,7 @@ export function SimulationView() {
             <Col xs={12} sm={6} xl={4}><KpiCard label="Lecturas persistidas" value={liveValue(sumOf('readings_persisted'), hasMetric('readings_persisted'))} Icon={Activity} accent="#123B5D" sub={hasMetric('readings_persisted') ? 'total en la ejecución' : running ? 'persistiendo…' : 'sin muestras aún'} /></Col>
             <Col xs={12} sm={6} xl={4}><KpiCard label="Alertas generadas" value={liveValue(sumOf('alerts_generated'), hasMetric('alerts_generated'))} Icon={AlertTriangle} accent={sumOf('alerts_generated') > 0 ? '#C83B3B' : '#52616B'} sub="durante la ejecución" /></Col>
             <Col xs={12} sm={6} xl={4}><KpiCard label="Latencia ingesta→persistencia" value={liveValue(avgOf('ingest_to_persist_ms'), hasMetric('ingest_to_persist_ms'), 1)} Icon={Clock} accent="#123B5D" sub="promedio de muestras (ms)" /></Col>
-            <Col xs={12} sm={6} xl={4}><KpiCard label="Cola pendiente" value={liveValue(latestOf('backlog'), hasMetric('backlog'))} Icon={BarChart3} accent="#123B5D" sub="mensajes en espera (último valor)" /></Col>
+            <Col xs={12} sm={6} xl={4}><KpiCard label="Cola de transporte" value={liveValue(latestOf('backlog'), hasMetric('backlog'))} Icon={BarChart3} accent="#123B5D" sub="última muestra; no incluye lecturas pendientes de atención" /></Col>
             <Col xs={12} sm={6} xl={4}><KpiCard label="Lecturas admitidas" value={liveValue(sumOf('readings_admitted'), hasMetric('readings_admitted'))} Icon={Layers} accent="#123B5D" sub="despacho productivo" /></Col>
             <Col xs={12} sm={6} xl={4}><KpiCard label="Lecturas rechazadas" value={liveValue(sumOf('readings_rejected'), hasMetric('readings_rejected'))} Icon={AlertTriangle} accent={sumOf('readings_rejected') > 0 ? '#C83B3B' : '#52616B'} sub="capacidad, cierre o drenaje" /></Col>
             <Col xs={12} sm={6} xl={4}><KpiCard label="Atenciones fallidas" value={liveValue(sumOf('readings_failed'), hasMetric('readings_failed'))} Icon={AlertTriangle} accent={sumOf('readings_failed') > 0 ? '#C83B3B' : '#52616B'} sub="no cuentan como persistidas" /></Col>

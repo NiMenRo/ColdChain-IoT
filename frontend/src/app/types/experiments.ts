@@ -6,6 +6,7 @@ export interface ExperimentRun {
   started_at: string;
   finished_at: string | null;
   config_snapshot: string | null;
+  closing?: boolean;
 }
 
 export interface AnalysisPoint {
@@ -59,6 +60,7 @@ export interface ExperimentEvidence {
   } | null;
   device_to_persist_ms: EvidenceLatency;
   device_to_alert_persist_ms: EvidenceLatency;
+  message_delay_variation_ms: EvidenceLatency;
   by_priority: Record<string, { persist: EvidenceLatency; alert: EvidenceLatency }>;
   clock_unmeasurable: number | null;
 }

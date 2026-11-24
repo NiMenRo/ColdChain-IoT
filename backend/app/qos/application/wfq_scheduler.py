@@ -8,7 +8,7 @@ from app.classification import PriorityLevel, TrafficClassification
 from app.qos.application.scheduler import ScheduledItem, Scheduler
 from app.qos.domain.work_item import WorkItem
 
-DEFAULT_BAND_WEIGHTS = {"H7": 1.0, "H8": 2.0, "H9": 3.0}
+DEFAULT_BAND_WEIGHTS = {"H8": 2.0, "H9": 3.0}
 Entry = Tuple[Fraction, int, ScheduledItem, str]
 
 
@@ -26,7 +26,7 @@ class WFQScheduler(Scheduler):
     ) -> None:
         weights = dict(DEFAULT_BAND_WEIGHTS if band_weights is None else band_weights)
         if set(weights) != set(DEFAULT_BAND_WEIGHTS):
-            raise ValueError("band_weights must define exactly H7, H8 and H9")
+            raise ValueError("band_weights must define exactly H8 and H9")
         self._weights: dict[str, Fraction] = {}
         for band, configured_weight in weights.items():
             self._validate_weight(configured_weight)
@@ -94,10 +94,10 @@ class WFQScheduler(Scheduler):
             raise TypeError("'item' must be a WorkItem or TrafficClassification instance")
         if (
             isinstance(criticality, bool) or not isinstance(criticality, (int, float))
-            or not isfinite(criticality) or not 7 <= criticality <= 9
+            or not isfinite(criticality) or not 8 <= criticality <= 9
         ):
-            raise ValueError("HIGH WFQ requires criticality in [7, 9]")
-        return "H7" if criticality < 8 else "H8" if criticality < 9 else "H9"
+            raise ValueError("HIGH WFQ requires criticality in [8, 9]")
+        return "H8" if criticality < 9 else "H9"
 
     @staticmethod
     def _validate_weight(weight: object) -> None:

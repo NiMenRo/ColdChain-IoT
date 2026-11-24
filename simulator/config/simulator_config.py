@@ -1,4 +1,5 @@
 import os
+import math
 from dataclasses import dataclass, field
 
 
@@ -15,7 +16,9 @@ class SimulatorConfig:
         default_factory=lambda: os.getenv("MQTT_TLS", "true").strip().lower() == "true"
     )
     mqtt_ca_cert: str = field(default_factory=lambda: os.getenv("MQTT_CA_CERT", ""))
-    sampling_interval: float = 1.0
+    sampling_interval: float = field(
+        default_factory=lambda: float(os.getenv("SIMULATOR_SAMPLING_INTERVAL", "10.0"))
+    )
     topic_prefix: str = "coldchain/device"
     log_level: str = "INFO"
     database_url: str = field(
@@ -24,6 +27,10 @@ class SimulatorConfig:
             "postgresql+psycopg://coldchain:coldchain@localhost:5433/coldchain",
         )
     )
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.sampling_interval) or self.sampling_interval <= 0:
+            raise ValueError("SIMULATOR_SAMPLING_INTERVAL must be finite and positive")
 
     def mqtt_credentials(self) -> tuple[str | None, str | None, str | None]:
         """Return (username, password, ca_cert) for MQTT or fail clearly.

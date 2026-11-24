@@ -264,7 +264,7 @@ def test_client_metadata_cannot_select_evidence_directory(monkeypatch):
     assert evidence.directory(data["id"]).is_dir()
 
 
-def test_finish_observes_grace_before_closing_admission(monkeypatch):
+def test_finish_closes_admission_before_stopping_producer_and_grace(monkeypatch):
     import app.experiments.api as api
     from app.auth.dependencies import AuthenticatedUser
     from app.security.dependencies import require_admin
@@ -295,5 +295,5 @@ def test_finish_observes_grace_before_closing_admission(monkeypatch):
     monkeypatch.setattr(api.time, "sleep", lambda seconds: order.append("grace"))
     result = client.post(f"/experiment-runs/{run.id}/finish")
     assert result.status_code == 200, result.text
-    assert order[:4] == ["stop", "grace", "transport_drain", "dispatch_drain"]
+    assert order[:4] == ["transport_drain", "dispatch_drain", "stop", "grace"]
     assert evidence.manifest(run.id)["sealed"] is True

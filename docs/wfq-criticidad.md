@@ -2,9 +2,9 @@
 
 ## Motivo y estado
 
-Diseño aprobado para sustituir el WFQ por dispositivo/sensor con peso
-predeterminado 1. Este documento explica la política; la implementación y
-sus comprobaciones se registran en `sdd/trazabilidad-qos/change.md`.
+WFQ se aplica a las lecturas HIGH mediante dos bandas de criticidad, H8 y H9,
+con pesos predeterminados 2 y 3. Este documento describe la política vigente;
+la implementación y sus comprobaciones se mantienen en el código y sus pruebas.
 No demuestra resultados experimentales por sí mismo.
 
 WFQ necesita flujos que compitan por servicio. Un solo flujo se atiende como
@@ -16,29 +16,30 @@ el arbitraje 4:2:1 entre clases.
 
 1. **Entre clases:** ciclo persistente H,H,H,H,M,M,L, que omite colas vacías.
    Con las tres clases saturadas, HIGH obtiene cuatro de siete selecciones.
-2. **Dentro de HIGH:** WFQ entre tres bandas de criticidad ya calculada por
+2. **Dentro de HIGH:** WFQ entre dos bandas de criticidad ya calculada por
    el backend. MEDIUM conserva RR por dispositivo/sensor; LOW conserva FIFO.
 
 | Flujo lógico HIGH | Criticidad C | Peso por defecto |
 |---|---|---:|
-| H7 | 7 ≤ C < 8 | 1 |
 | H8 | 8 ≤ C < 9 | 2 |
 | H9 | C = 9 | 3 |
 
-Cada banda mantiene FIFO. Dispositivo, sensor e identidad siguen en cada
-lectura, pero ya no definen el flujo WFQ. Una lectura nueva entra en la banda
-que corresponde a su clasificación; no se mueve ni se repondera trabajo
-pendiente cuando cambia la criticidad de lecturas posteriores del dispositivo.
+Cada banda es un flujo lógico FIFO. Dispositivo, sensor e identidad se conservan
+en cada lectura, pero no definen flujos WFQ separados. La banda se determina a
+partir de la criticidad ya calculada: H8 para 8 ≤ C < 9 y H9 para C = 9. Una
+lectura nueva entra en su banda al admitirse; las lecturas pendientes no se
+reclasifican si cambia la criticidad de lecturas posteriores del dispositivo.
 
-Los pesos 1:2:3 favorecen de manera progresiva la criticidad sin excluir H7.
-Son una decisión configurable, no pesos óptimos obtenidos experimentalmente.
-Con las tres bandas continuamente pendientes y coste unitario, sus cuotas
-objetivo dentro de HIGH son 1/6, 2/6 y 3/6. Las diferencias de discretización
-se evalúan sobre ventanas de selecciones; no se promete ese reparto para
-cualquier prefijo pequeño, tráfico finito o bandas que se vacían.
+Los pesos 2:3 favorecen proporcionalmente H9 sin excluir H8. Son valores
+configurables, no pesos óptimos obtenidos experimentalmente. Con ambas bandas
+continuamente pendientes y coste unitario, las cuotas objetivo dentro de HIGH
+son 2/5 para H8 y 3/5 para H9. Las diferencias de discretización se evalúan
+sobre ventanas de selecciones; no se promete ese reparto para cualquier prefijo
+pequeño, tráfico finito o bandas que se vacían.
 
-La configuración es `QOS_WFQ_BAND_WEIGHTS={"H7":1,"H8":2,"H9":3}`.
-Una personalización debe declarar las tres bandas con pesos finitos positivos.
+La configuración predeterminada es
+`QOS_WFQ_BAND_WEIGHTS={"H8":2,"H9":3}`. Una personalización debe declarar
+exactamente ambas bandas con pesos numéricos finitos positivos.
 El snapshot experimental y `/qos/runtime` identifican la política como
 `criticality_bands_v1` y muestran sus pesos efectivos. La configuración anterior
 `QOS_WFQ_FLOW_WEIGHTS` no se reutiliza: si contiene valores, el arranque exige
@@ -55,7 +56,7 @@ F(c,k) = S(c,k) + 1 / w(c)
 
 Se selecciona la cabecera con menor F. En empate se usa el orden global de
 admisión. El incremento es inversamente proporcional al peso: H9 acumula
-etiquetas más pequeñas por lectura que H7 y obtiene más oportunidades.
+etiquetas más pequeñas por lectura que H8 y obtiene más oportunidades.
 No basta con ordenar directamente por criticidad: eso sería prioridad
 estricta y podría dejar sin servicio indefinidamente a criticidades menores.
 
@@ -70,20 +71,21 @@ la cola discreta: extraer un paquete no permite olvidar su trabajo fluido.
 
 ```text
 admitir(lectura):
-    c = banda(criticidad_calculada_por_backend)
-    F = max(ultimo_F[c], V) + 1 / peso[c]
+    C = criticidad_calculada_por_backend
+    c = H8 si 8 <= C < 9; H9 si C = 9
+    F = max(ultimo_F.get(c, 0), V) + 1 / peso[c]
     ultimo_F[c] = F
-    añadir a FIFO[c] (lectura, F, orden_admision)
+    añadir a pendientes (lectura, F, orden_admision, c)
 
 seleccionar_HIGH():
-    si todas las FIFO están vacías: devolver vacío
-    c = argmin_c (FIFO[c].cabecera.F, FIFO[c].cabecera.orden)
-    lectura = retirar_cabecera(FIFO[c])
+    si pendientes está vacío: devolver vacío
+    (lectura, F, orden, c) = retirar el mínimo por (F, orden_admision)
     presupuesto_GPS = 1
-    mientras presupuesto_GPS > 0 y existe ultimo_F[c] > V:
-        activos = {c: ultimo_F[c] > V}
-        W = suma(peso[c] para c en activos)
-        siguiente_fin = min(ultimo_F[c] para c en activos)
+    mientras presupuesto_GPS > 0:
+        activos = {b en {H8, H9} | ultimo_F.get(b, 0) > V}
+        si activos está vacío: terminar el ciclo
+        W = suma(peso[b] para b en activos)
+        siguiente_fin = min(ultimo_F[b] para b en activos)
         coste = (siguiente_fin - V) * W
         si coste <= presupuesto_GPS:
             V = siguiente_fin
@@ -94,16 +96,19 @@ seleccionar_HIGH():
     devolver lectura
 ```
 
-Si todos los flujos quedan inactivos, V no avanza durante el tiempo ocioso.
-Una reactivación usa `max(ultimo_F[c], V)`; no reinicia etiquetas antes de
-que termine el trabajo fluido anterior.
+En la condición del ciclo, `c` representa cualquier banda con trabajo fluido
+pendiente. Los flujos GPS activos se determinan por sus marcas de finalización,
+no por la presencia de paquetes en la cola discreta; por eso una banda puede
+seguir activa aunque ya no tenga lecturas pendientes. Si ambos flujos quedan
+inactivos, V no avanza durante el tiempo ocioso. Una nueva admisión usa
+`max(ultimo_F[c], V)`.
 
 ## Ejemplo y límites
 
 Con seis lecturas pendientes en cada banda, todas admitidas con V=0, las
-etiquetas iniciales son H7: 1,2,3…; H8: 1/2,1,3/2…; H9: 1/3,2/3,1….
-Las primeras selecciones favorecen H9 sin eliminar las oportunidades de H8
-y H7. Los empates dependen del orden de admisión, no del nombre de banda.
+etiquetas iniciales son H8: 1/2,1,3/2… y H9: 1/3,2/3,1…. Las primeras
+selecciones favorecen H9 sin eliminar las oportunidades de H8. Los empates
+dependen del orden global de admisión, no del nombre de banda.
 
 - No se garantiza equidad entre dispositivos dentro de una misma banda.
 - No se mide ni reserva ancho de banda de red: se planifica atención backend.
@@ -266,9 +271,8 @@ commits son reales; no es una validación de HTTP, interfaz o correo.
 Dos casos adicionales precargan H8 y H9 antes de liberar la atención para
 comprobar reparto 2:3 bajo competencia. La espera impuesta se identifica
 expresamente; sus latencias no se mezclan con la comparación en tiempo real.
-La matriz actual produce C=3,6,8,9 para payloads válidos, no C=7: la banda H7
-se comprueba mediante pruebas deterministas, no mediante prioridades falsas
-inyectadas en la campaña MQTT.
+La matriz actual produce C=3,6,8,9 para payloads válidos; los casos con C=8 y
+C=9 comprueban respectivamente H8 y H9 en la campaña.
 
 Los diagnósticos separados generan ausencia de suscripción, republicaciones
 con la misma identidad y un reinicio real del proceso productor. La pérdida
@@ -322,7 +326,7 @@ del experimento; estas diferencias no aíslan por sí solas causalidad de WFQ.
 En el backlog WITH_QOS había 100 lecturas H8 y 100 H9 antes de liberar la
 atención. Las primeras 100 selecciones fueron **40 H8 y 60 H9**, conforme a
 pesos 2:3. WITHOUT_QOS conservó FIFO. No se presenta este caso precargado
-como una comparación de latencia operativa ni se inventa evidencia real H7.
+como una comparación de latencia operativa.
 
 Diagnósticos separados:
 - Sin suscripción: 8 publicaciones completadas y 0 recepciones; **PDR=0%**,

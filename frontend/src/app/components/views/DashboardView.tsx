@@ -5,12 +5,22 @@ import { useDevices, DEVICE_TYPE_LABEL } from '../../contexts/DeviceContext';
 import { useAuth } from '../../hooks/useAuth';
 import { useDashboardData } from '../../hooks/useDashboardData';
 import { SIDEBAR_ROLES } from '../../config/rbac';
+import { useExperiments } from '../../contexts/ExperimentContext';
+import { useRunEvidence } from '../../hooks/useRunEvidence';
 
 export function DashboardView() {
-  const { devices } = useDevices();
+  const { devices, getReading } = useDevices();
   const { role } = useAuth();
   const navigate = useNavigate();
   const dash = useDashboardData();
+  const { runs, status: runsStatus } = useExperiments();
+  const latestRun = [...runs].sort((a, b) => b.started_at.localeCompare(a.started_at))[0] ?? null;
+  const evidence = useRunEvidence(latestRun);
+  const measured = evidence.data;
+  const finalEvidence = measured?.status === 'final';
+  const measuredValue = (value: number | null | undefined, unit: string) =>
+    value === null || value === undefined || !Number.isFinite(value)
+      ? '—' : `${value.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${unit}`;
 
   const total = dash.totalDevices;
   const active = dash.activeDevices;
@@ -280,7 +290,7 @@ export function DashboardView() {
               ) : recentAlerts.length === 0 ? (
                 <div className="text-center text-muted py-5 small">Sin alertas registradas.</div>
               ) : recentAlerts.map(alert => {
-                const isCritical = alert.criticality !== null && alert.criticality >= 7;
+                const isCritical = alert.criticality !== null && alert.criticality >= 8;
                 const unscored = alert.criticality === null;
                 return (
                   <div key={alert.id} className="d-flex align-items-start gap-3 py-3 px-2 border-bottom"
@@ -386,40 +396,58 @@ export function DashboardView() {
         </Col>
       </Row>
 
-      {/* ── QoS Snapshot (fuente: /qos/metrics, igual que la pestaña QoS) ── */}
       <Card className="cc-card">
-        <div className="d-flex justify-content-between align-items-center border-bottom px-4 py-3">
-          <div className="d-flex align-items-center gap-2">
-            <Activity size={17} style={{ color: '#1F6F8B' }} />
-            <h2 className="mb-0 fw-semibold" style={{ fontSize: 15 }}>Métricas QoS de demostración</h2>
+        <div className="d-flex justify-content-between align-items-center border-bottom px-4 py-3 gap-3">
+          <div>
+            <h2 className="mb-1 fw-semibold d-flex align-items-center gap-2" style={{ fontSize: 15 }}>
+              <Activity size={17} style={{ color: '#1F6F8B' }} /> QoS de la última ejecución
+            </h2>
+            <div className="small text-muted">
+              {latestRun
+                ? `${latestRun.scenario === 'WITH_QOS' ? 'Con priorización' : 'Sin priorización'} · iniciada ${new Date(latestRun.started_at).toLocaleString('es-CO')} · ${latestRun.id}`
+                : 'Sin ejecución seleccionada'}
+            </div>
           </div>
-          <button
-            onClick={() => navigate('/app/qos')}
-            className="d-flex align-items-center gap-1 border-0 bg-transparent fw-medium"
-            style={{ fontSize: 13, color: '#123B5D', cursor: 'pointer' }}
-          >
+          <button onClick={() => navigate('/app/qos')} className="d-flex align-items-center gap-1 border-0 bg-transparent fw-medium"
+            style={{ fontSize: 13, color: '#123B5D', cursor: 'pointer' }}>
             Ver análisis completo <ArrowRight size={14} />
           </button>
         </div>
-        <Row className="g-0">
-          {dash.qosStatus === 'loading' ? (
-            <div className="p-4 small text-muted">Cargando métricas QoS…</div>
-          ) : dash.qosStatus === 'error' ? (
-            <div className="p-4 small" style={{ color: '#B22F2F' }}>
-              No se pudieron cargar las métricas QoS. <button onClick={dash.retry} className="border-0 bg-transparent p-0 fw-semibold" style={{ fontSize: 12, color: '#B22F2F', cursor: 'pointer' }}>Reintentar</button>
+        {runsStatus === 'loading' || (latestRun && evidence.loading && !measured) ?
+          <div className="p-4 small text-muted">Cargando evidencia…</div>
+          : runsStatus === 'error' || evidence.error ?
+          <div className="p-4 small" role="alert">No se pudo cargar la evidencia de la ejecución.</div>
+          : !latestRun ? <div className="p-4 small text-muted">No hay ejecuciones para consultar.</div>
+          : measured && <>
+            <div className="px-4 pt-3 small fw-semibold">
+              {measured.status === 'final' ? 'Resultados finales' :
+                measured.status === 'incomplete' ? 'Captura incompleta' :
+                measured.status === 'unavailable' ? 'Evidencia no disponible' : 'Medición provisional'}
             </div>
-          ) : qosCells.length === 0 ? (
-            <div className="p-4 small text-muted">Sin métricas QoS registradas.</div>
-          ) : (
-            qosCells.map((m, i) => (
-              <Col key={m.label} xs={6} sm={3} className="p-4" style={{ borderRight: i < qosCells.length - 1 ? '1px solid #D9E2E8' : undefined }}>
-                <div className="small text-muted mb-2">{m.label}</div>
-                <div className="fw-bold" style={{ fontSize: 22, color: '#123B5D' }}>{m.value}</div>
-                <div className="small text-muted">{m.sub}</div>
-              </Col>
-            ))
-          )}
-        </Row>
+            {measured.reasons.map(reason => <p key={reason} className="small text-muted px-4 mb-1">{reason}</p>)}
+            <Row className="g-0">
+              {[
+                { label: 'Jitter de mensajes', value: measuredValue(measured.message_delay_variation_ms?.mean, 'ms'), sub: `${measured.message_delay_variation_ms?.count ?? 0} pares consecutivos` },
+                { label: 'Mensajes no recibidos', value: measuredValue(finalEvidence ? measured.loss_percent : null, '%'), sub: 'Pérdida de mensajes en la ventana' },
+                { label: 'PDR de mensajes', value: measuredValue(finalEvidence ? measured.pdr_percent : null, '%'), sub: 'Recepción de mensajes de aplicación' },
+                { label: 'Throughput útil', value: measuredValue(finalEvidence ? measured.payload_goodput_bytes_per_second : null, 'B/s'), sub: 'Bytes de carga recibidos por segundo' },
+              ].map(item => <Col key={item.label} xs={6} lg={3} className="p-4">
+                <div className="small text-muted mb-2">{item.label}</div>
+                <div className="fw-bold" style={{ fontSize: 22, color: '#123B5D' }}>{item.value}</div>
+                <div className="small text-muted">{item.sub}</div>
+              </Col>)}
+            </Row>
+            <p className="small text-muted px-4 pb-3 mb-0">
+              El jitter mide variación entre intervalos de publicación y recepción, no jitter IP.
+              PDR, pérdida y velocidad solo se muestran con captura completa; no miden paquetes IP.
+            </p>
+          </>}
+        <div className="border-top px-4 py-3 small text-muted">
+          Latencia media histórica (última hora registrada):{' '}
+          <strong>{dash.qosStatus === 'loading' ? 'Cargando…' : dash.qosStatus === 'error'
+            ? 'No disponible' : qosCells.find(cell => cell.label === 'Latencia media')?.value ?? '—'}</strong>.
+          Es un agregado histórico y no necesariamente corresponde a la ejecución mostrada.
+        </div>
       </Card>
 
       {/* ── Dispositivos (fuente: DeviceContext → GET /devices, TSK-049) ── */}
@@ -437,6 +465,7 @@ export function DashboardView() {
         <div className="p-3">
           <Row className="g-2">
             {devices.map(d => {
+              const reading = getReading(d.id);
               const statusMap = {
                 active:      { label: 'Activo',       bg: '#EAF6EF', color: '#16835B', border: '#a3cfbb' },
                 inactive:    { label: 'Inactivo',     bg: '#EFF4F7', color: '#52616B', border: '#D9E2E8' },
@@ -459,13 +488,13 @@ export function DashboardView() {
                     {d.status === 'active' && (
                       <div className="d-flex gap-3 mt-2">
                         <span className="small text-muted d-flex align-items-center gap-1">
-                          <Thermometer size={12} />— °C
+                          <Thermometer size={12} />{reading?.temperature != null ? reading.temperature.toFixed(1) : '—'} °C
                         </span>
                         <span className="small text-muted d-flex align-items-center gap-1">
-                          <Droplets size={12} />— %
+                          <Droplets size={12} />{reading?.humidity != null ? reading.humidity.toFixed(1) : '—'} %
                         </span>
                         <span className="small d-flex align-items-center gap-1" style={{ color: '#52616B' }}>
-                          <Zap size={12} />—
+                          <Zap size={12} />{reading?.energy ?? '—'}
                         </span>
                       </div>
                     )}

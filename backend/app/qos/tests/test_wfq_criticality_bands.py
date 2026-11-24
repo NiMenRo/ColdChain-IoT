@@ -8,10 +8,10 @@ from app.qos.tests.test_wfq_work_items import _item
 from app.qos.tests.wfq_reference import ReferencePacket, wfq_reference_order
 
 
-def test_saturated_bands_match_independent_tags_and_one_two_three_share():
+def test_saturated_bands_match_independent_tags_and_two_three_share():
     scheduler = WFQScheduler()
-    items = [_item(f"device-{i}", 3 * i + c - 7, c)
-             for i in range(120) for c in (7, 8, 9)]
+    items = [_item(f"device-{i}", 2 * i + c - 8, c)
+             for i in range(120) for c in (8, 9)]
     for item in items:
         scheduler.enqueue(item)
     expected = wfq_reference_order([
@@ -22,9 +22,9 @@ def test_saturated_bands_match_independent_tags_and_one_two_three_share():
     selected = [scheduler.dequeue() for _ in range(120)]
     assert [str(item.id) for item in selected] == expected[:120]
     assert Counter(scheduler.band_for(item) for item in selected) == {
-        "H7": 20, "H8": 40, "H9": 60,
+        "H8": 48, "H9": 72,
     }
-    for band in ("H7", "H8", "H9"):
+    for band in ("H8", "H9"):
         sequences = [item.sequence for item in selected if scheduler.band_for(item) == band]
         assert sequences == sorted(sequences)
 
@@ -38,16 +38,16 @@ def test_same_band_is_fifo_across_devices_and_sensors():
 
 
 def test_ties_use_global_admission_not_band_name():
-    scheduler = WFQScheduler(band_weights={"H7": 1, "H8": 1, "H9": 1})
-    items = [_item("A", 0, 9), _item("B", 1, 7), _item("C", 2, 8)]
+    scheduler = WFQScheduler(band_weights={"H8": 1, "H9": 1})
+    items = [_item("A", 0, 9), _item("B", 1, 8)]
     for item in items:
         scheduler.enqueue(item)
     assert [scheduler.dequeue() for _ in items] == items
 
 
 def test_gps_reactivation_retains_fluid_work_after_packet_queue_empties():
-    scheduler = WFQScheduler()
-    h9, h7, h9_new = _item("A", 0, 9), _item("B", 1, 7), _item("C", 2, 9)
+    scheduler = WFQScheduler(band_weights={"H8": 1, "H9": 3})
+    h9, h7, h9_new = _item("A", 0, 9), _item("B", 1, 8), _item("C", 2, 9)
     scheduler.enqueue(h9)
     scheduler.enqueue(h7)
     assert scheduler.dequeue() is h9
@@ -64,9 +64,9 @@ def test_gps_reactivation_retains_fluid_work_after_packet_queue_empties():
 
 
 def test_gps_removes_weight_at_fluid_completion_within_opportunity():
-    scheduler = WFQScheduler()
+    scheduler = WFQScheduler(band_weights={"H8": 1, "H9": 3})
     scheduler.enqueue(_item("A", 0, 9))
-    scheduler.enqueue(_item("B", 1, 7))
+    scheduler.enqueue(_item("B", 1, 8))
     scheduler.dequeue()
     scheduler.dequeue()
     # A naive single increment using packet-active weights gives 1.25,
@@ -79,15 +79,15 @@ def test_gps_removes_weight_at_fluid_completion_within_opportunity():
 
 
 @pytest.mark.parametrize("criticality,band", [
-    (7, "H7"), (7.99, "H7"), (8, "H8"), (8.99, "H8"), (9, "H9"),
+    (8, "H8"), (8.99, "H8"), (9, "H9"),
 ])
 def test_boundaries(criticality, band):
     assert WFQScheduler.band_for(_item("A", 0, criticality)) == band
 
 
 @pytest.mark.parametrize("weights", [
-    {}, {"H7": 1}, {"H7": 1, "H8": 2, "H9": float("nan")},
-    {"H7": 1, "H8": 2, "H9": float("inf")},
+    {}, {"H8": 1}, {"H8": 2, "H9": float("nan")},
+    {"H8": 2, "H9": float("inf")},
 ])
 def test_invalid_band_configuration(weights):
     with pytest.raises(ValueError):
