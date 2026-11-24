@@ -1,6 +1,9 @@
 import pytest
-
 from simulator.config import SimulatorConfig
+
+def test_default_sampling_interval_limits_simulator_load(monkeypatch):
+    monkeypatch.delenv("SIMULATOR_SAMPLING_INTERVAL", raising=False)
+    assert SimulatorConfig().sampling_interval == 10
 
 
 def test_sampling_interval_can_be_configured(monkeypatch):

@@ -189,7 +189,7 @@ def start_run(
         "enabled": bool(getattr(backend_config, "telemetry_evidence_enabled", False)),
         "grace_seconds": getattr(backend_config, "telemetry_evidence_grace_s", None),
     }
-    snapshot["simulator_sampling_interval_seconds"] = os.getenv("SIMULATOR_SAMPLING_INTERVAL", "1.0")
+    snapshot["simulator_sampling_interval_seconds"] = os.getenv("SIMULATOR_SAMPLING_INTERVAL", "10.0")
     snapshot["simulator_random_seed"] = os.getenv("SIMULATOR_RANDOM_SEED")
     snapshot["smtp_enabled"] = os.getenv("SMTP_ENABLED", "").strip().lower() == "true"
     current_thresholds = SystemConfigRepository().get_current(db)

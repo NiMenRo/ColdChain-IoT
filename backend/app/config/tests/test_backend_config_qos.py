@@ -38,7 +38,7 @@ def test_qos_defaults_match_the_approved_policy_and_limits():
             "recent_trace_entries": 1000,
             "recent_failure_entries": 100,
         },
-        "timeouts": {"drain_s": 30.0},
+        "timeouts": {"drain_s": 2.0},
     }
     assert config.qos_wfq_band_weights == {"H8": 2, "H9": 3}
 

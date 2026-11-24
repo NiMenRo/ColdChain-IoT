@@ -96,7 +96,7 @@ class BackendConfig:
         default_factory=lambda: _positive_int("QOS_RECENT_FAILURE_CAPACITY", 100)
     )
     qos_drain_timeout_s: float = field(
-        default_factory=lambda: _positive_float("QOS_DRAIN_TIMEOUT_S", 30.0)
+        default_factory=lambda: _positive_float("QOS_DRAIN_TIMEOUT_S", 2.0)
     )
     telemetry_evidence_enabled: bool = field(
         default_factory=lambda: os.getenv("TELEMETRY_EVIDENCE_ENABLED", "true").strip().lower() == "true"

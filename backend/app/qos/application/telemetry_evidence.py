@@ -262,6 +262,12 @@ def reconcile(
             "duplicate_receptions": duplicates, "late_receptions": late,
             "uncorrelated_receptions": uncorrelated, "untraced_receptions": legacy,
             "persisted_readings": len(persist_ids),
+            "transport_rejected": sum(
+                row.get("event") == "transport_rejected"
+                and (_identity(row) or (None,))[-1] == selected_run
+                and _time(row["event_at"]) <= processing_limit
+                for row in backend
+            ),
             **reading_counts,
         },
         "pdr_percent": pdr,

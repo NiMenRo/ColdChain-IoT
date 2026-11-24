@@ -54,10 +54,16 @@ export function EvidenceContent({ data, compact = false }: {
     ['No recibidos (%)', value(final ? data.loss_percent : null, ' %')],
     ['Volumen recibido', value(data.received_payload_bytes, ' B')],
     ['Velocidad de recepción', value(final ? data.payload_goodput_bytes_per_second : null, ' B/s')],
+    ['Mensajes rechazados en transporte', value(data.counts.transport_rejected)],
+    ['Lecturas admitidas', value(data.counts.reading_admitted)],
+    ['Lecturas rechazadas', value(data.counts.reading_rejected)],
+    ['Lecturas fallidas', value(data.counts.reading_failed)],
+    ['Lecturas canceladas', value(data.counts.reading_cancelled)],
   ];
   return <>
     <p className="small fw-semibold mb-2" role="status">{STATUS[data.status]}</p>
     {data.reasons.map(reason => <p className="small text-muted mb-1" key={reason}>{reason}</p>)}
+    <p className="small text-muted mb-1">La recepción de mensajes no garantiza que todas sus lecturas hayan sido admitidas o guardadas.</p>
     {!final && pendingReadings !== null && <p className="small text-muted mb-1">
       Lecturas admitidas aún sin terminar (estimación): {value(pendingReadings)}. No incluye mensajes todavía en transporte.
     </p>}

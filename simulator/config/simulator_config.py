@@ -17,7 +17,7 @@ class SimulatorConfig:
     )
     mqtt_ca_cert: str = field(default_factory=lambda: os.getenv("MQTT_CA_CERT", ""))
     sampling_interval: float = field(
-        default_factory=lambda: float(os.getenv("SIMULATOR_SAMPLING_INTERVAL", "1.0"))
+        default_factory=lambda: float(os.getenv("SIMULATOR_SAMPLING_INTERVAL", "10.0"))
     )
     topic_prefix: str = "coldchain/device"
     log_level: str = "INFO"

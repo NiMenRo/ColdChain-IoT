@@ -60,6 +60,16 @@ def test_controlled_loss_is_measured_instead_of_assuming_all_delivered():
     assert report["payload_goodput_bytes_per_second"] == 23.7
 
 
+def test_transport_rejection_is_distinct_from_message_reception():
+    message = _message()
+    report = _report(_producer(message), [
+        _receipt(message), {**message, "event": "transport_rejected"},
+    ])
+    assert report["pdr_percent"] == 100
+    assert report["counts"]["transport_rejected"] == 1
+    assert report["counts"]["persisted_readings"] == 0
+
+
 def test_duplicate_receipts_and_three_sensors_do_not_multiply_bytes_or_pdr():
     message = _message()
     report = _report(_producer(message), [
